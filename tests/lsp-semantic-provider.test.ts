@@ -1,0 +1,156 @@
+import { EventEmitter } from "node:events";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { LspSemanticProvider } from "../src/core/lsp-semantic-provider.js";
+import type { LspClient, ServerProcessConfig } from "../src/core/json-rpc-lsp-client.js";
+import { filePathToUri } from "../src/utils/uri.js";
+
+class FakeClient extends EventEmitter implements LspClient {
+  readonly requests: Array<{ method: string; params?: unknown }> = [];
+  readonly notifications: Array<{ method: string; params?: unknown }> = [];
+  symbolResults: unknown[] = [];
+  sourceDefinitionResult: unknown[] | null = null;
+  definitionResult: unknown = null;
+  referencesResult: unknown[] = [];
+  hoverResult: unknown = null;
+  stopped = false;
+
+  request<T>(method: string, params?: unknown): Promise<T> {
+    this.requests.push({ method, params });
+    if (method === "initialize") return Promise.resolve({} as T);
+    if (method === "workspace/symbol") return Promise.resolve(this.symbolResults as T);
+    if (method === "workspace/executeCommand") return Promise.resolve(this.sourceDefinitionResult as T);
+    if (method === "textDocument/definition") return Promise.resolve(this.definitionResult as T);
+    if (method === "textDocument/references") return Promise.resolve(this.referencesResult as T);
+    if (method === "textDocument/hover") return Promise.resolve(this.hoverResult as T);
+    return Promise.resolve({} as T);
+  }
+
+  notify(method: string, params?: unknown): void {
+    this.notifications.push({ method, params });
+  }
+
+  stop(): Promise<void> {
+    this.stopped = true;
+    return Promise.resolve();
+  }
+}
+
+describe("LspSemanticProvider", () => {
+  let rootPath: string;
+  let filePath: string;
+  let client: FakeClient;
+
+  beforeEach(async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-bridge-"));
+    filePath = path.join(rootPath, "src", "editor.ts");
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, "export const Editor = 1;\n", "utf8");
+    client = new FakeClient();
+  });
+
+  afterEach(async () => {
+    await fs.rm(rootPath, { recursive: true, force: true });
+  });
+
+  function createProvider(): LspSemanticProvider {
+    return new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
+      workspaceSeedFiles: ["src/editor.ts"],
+      clientFactory: (_config: ServerProcessConfig) => client
+    });
+  }
+
+  it("initializes once and captures publishDiagnostics notifications", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+
+    client.emit("notification", "textDocument/publishDiagnostics", {
+      uri,
+      diagnostics: [
+        {
+          range: { start: { line: 1, character: 2 }, end: { line: 1, character: 4 } },
+          severity: 1,
+          message: "missing id",
+          source: "ts"
+        }
+      ]
+    });
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject([
+      { file: filePath, line: 2, character: 3, severity: "error", message: "missing id" }
+    ]);
+    expect(client.requests.filter((request) => request.method === "initialize")).toHaveLength(1);
+    expect(client.notifications.some((notification) => notification.method === "textDocument/didOpen")).toBe(true);
+  });
+
+  it("resolves definition, references, and hover through a single exact symbol", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+    client.symbolResults = [
+      {
+        name: "Editor",
+        kind: 13,
+        containerName: "src",
+        location: { uri, range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } } }
+      }
+    ];
+    client.definitionResult = { uri, range: { start: { line: 0, character: 13 }, end: { line: 0, character: 19 } } };
+    client.sourceDefinitionResult = [client.definitionResult];
+    client.referencesResult = [client.definitionResult];
+    client.hoverResult = { contents: [{ value: "const Editor: 1" }, "readonly"] };
+
+    await expect(provider.symbols("Editor")).resolves.toMatchObject([{ name: "Editor", line: 1, character: 14 }]);
+    expect(client.notifications.filter((notification) => notification.method === "textDocument/didOpen")).toHaveLength(1);
+    await expect(provider.definition("Editor")).resolves.toMatchObject({ file: filePath, line: 1, character: 14 });
+    await expect(provider.definitionAt({ file: filePath, line: 1, character: 14 })).resolves.toMatchObject({
+      file: filePath,
+      line: 1,
+      character: 14
+    });
+    await expect(provider.references("Editor")).resolves.toHaveLength(1);
+    await expect(provider.referencesAt({ file: filePath, line: 1, character: 14 })).resolves.toHaveLength(1);
+    await expect(provider.hover("Editor")).resolves.toMatchObject({ contents: "const Editor: 1\n\nreadonly" });
+    await expect(provider.hoverAt({ file: filePath, line: 1, character: 14 })).resolves.toMatchObject({
+      contents: "const Editor: 1\n\nreadonly"
+    });
+  });
+
+  it("fails closed when workspace symbol lookup has no seed file", async () => {
+    const provider = new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
+      workspaceSeedFiles: ["src/missing.ts"],
+      clientFactory: (_config: ServerProcessConfig) => client
+    });
+
+    await expect(provider.symbols("Editor")).rejects.toThrow("No typescript workspace seed file found");
+  });
+
+  it("fails closed when symbol resolution is missing or ambiguous", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+
+    await expect(provider.definition("Editor")).rejects.toThrow("Symbol not found");
+
+    client.symbolResults = [
+      { name: "Editor", location: { uri, range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } } },
+      { name: "Editor", location: { uri, range: { start: { line: 1, character: 0 }, end: { line: 1, character: 1 } } } }
+    ];
+
+    await expect(provider.definition("Editor")).rejects.toThrow("Symbol is ambiguous");
+  });
+
+  it("disposes the backing client", async () => {
+    const provider = createProvider();
+
+    await provider.dispose();
+
+    expect(client.stopped).toBe(true);
+  });
+});

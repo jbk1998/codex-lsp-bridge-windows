@@ -1,0 +1,52 @@
+{
+  "name": "codex-lsp-bridge",
+  "version": "0.1.0",
+  "description": "A semantic intelligence bridge that connects LSP features to Codex CLI through MCP/plugin architecture.",
+  "license": "MIT",
+  "author": "codex-lsp-bridge contributors",
+  "type": "module",
+  "bin": {
+    "codex-lsp-bridge": "./dist/index.js",
+    "codex-lsp-bridge-install": "./scripts/install-codex.mjs"
+  },
+  "files": [
+    "dist/index.js",
+    "dist/adapters",
+    "dist/core",
+    "dist/transport",
+    "dist/utils",
+    "scripts/codex-lsp-post-tool-use.mjs",
+    "scripts/install-codex.mjs",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run --coverage",
+    "test:run": "vitest run",
+    "type-check": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": [
+    "codex",
+    "mcp",
+    "lsp",
+    "language-server",
+    "typescript",
+    "semantic-code-intelligence"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@vitest/coverage-v8": "^3.1.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
