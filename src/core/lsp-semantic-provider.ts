@@ -35,6 +35,7 @@ export interface LspSemanticProviderOptions {
   server: ServerProcessConfig;
   clientFactory: (config: ServerProcessConfig) => LspClient;
   workspaceSeedFiles?: string[];
+  workspaceSeedExtensions?: string[];
   diagnosticsTimeoutMs?: number;
 }
 
@@ -236,7 +237,7 @@ export class LspSemanticProvider implements SemanticProvider {
       if (await fileExists(filePath)) return filePath;
     }
 
-    return undefined;
+    return findFirstSourceFile(this.options.rootPath, this.options.workspaceSeedExtensions ?? []);
   }
 
   private async resolveSingleSymbol(symbol: string): Promise<SymbolMatch> {
@@ -344,5 +345,47 @@ async function fileExists(filePath: string): Promise<boolean> {
     return stat.isFile();
   } catch {
     return false;
+  }
+}
+
+const skippedDirectories = new Set([
+  ".git",
+  ".next",
+  ".turbo",
+  ".vercel",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out"
+]);
+
+async function findFirstSourceFile(rootPath: string, extensions: string[]): Promise<string | undefined> {
+  if (extensions.length === 0) return undefined;
+
+  const queue = [rootPath];
+  while (queue.length > 0) {
+    const directory = queue.shift()!;
+    const entries = await readDirectory(directory);
+    const sorted = entries.sort((left, right) => {
+      if (left.isDirectory() !== right.isDirectory()) return left.isDirectory() ? 1 : -1;
+      return left.name.localeCompare(right.name);
+    });
+
+    for (const entry of sorted) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isFile() && extensions.includes(path.extname(entry.name))) return entryPath;
+      if (entry.isDirectory() && !skippedDirectories.has(entry.name)) queue.push(entryPath);
+    }
+  }
+
+  return undefined;
+}
+
+async function readDirectory(directory: string): Promise<import("node:fs").Dirent[]> {
+  try {
+    return await fs.readdir(directory, { withFileTypes: true });
+  } catch {
+    return [];
   }
 }

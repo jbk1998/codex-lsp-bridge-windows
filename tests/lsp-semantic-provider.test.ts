@@ -63,6 +63,7 @@ describe("LspSemanticProvider", () => {
       languageId: "typescript",
       server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
       workspaceSeedFiles: ["src/editor.ts"],
+      workspaceSeedExtensions: [".ts", ".tsx"],
       diagnosticsTimeoutMs: 20,
       clientFactory: (_config: ServerProcessConfig) => client
     });
@@ -165,10 +166,45 @@ describe("LspSemanticProvider", () => {
       languageId: "typescript",
       server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
       workspaceSeedFiles: ["src/missing.ts"],
+      workspaceSeedExtensions: [],
       clientFactory: (_config: ServerProcessConfig) => client
     });
 
     await expect(provider.symbols("Editor")).rejects.toThrow("No typescript workspace seed file found");
+  });
+
+  it("finds a workspace seed file by extension when known seed paths are absent", async () => {
+    const nestedFile = path.join(rootPath, "packages", "app", "src", "fallback.ts");
+    await fs.mkdir(path.dirname(nestedFile), { recursive: true });
+    await fs.writeFile(nestedFile, "export const Fallback = 1;\n", "utf8");
+    client.symbolResults = [
+      {
+        name: "Fallback",
+        location: {
+          uri: filePathToUri(nestedFile),
+          range: { start: { line: 0, character: 13 }, end: { line: 0, character: 21 } }
+        }
+      }
+    ];
+    const provider = new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
+      workspaceSeedFiles: ["src/missing.ts"],
+      workspaceSeedExtensions: [".ts"],
+      diagnosticsTimeoutMs: 20,
+      clientFactory: (_config: ServerProcessConfig) => client
+    });
+
+    await expect(provider.symbols("Fallback")).resolves.toMatchObject([{ file: nestedFile, name: "Fallback" }]);
+    const didOpen = client.notifications.find((notification) => notification.method === "textDocument/didOpen");
+    expect(didOpen).toMatchObject({
+      params: {
+        textDocument: {
+          uri: filePathToUri(filePath)
+        }
+      }
+    });
   });
 
   it("fails closed when symbol resolution is missing or ambiguous", async () => {

@@ -307,6 +307,9 @@ printf '%s\n' \
   wait briefly for `textDocument/publishDiagnostics` before returning. Repeated
   diagnostics use `didChange` when the file contents changed instead of sending
   duplicate `didOpen` notifications.
+- Workspace symbol requests first try known seed files, then scan for the first
+  supported source file while skipping heavy generated directories such as
+  `node_modules`, `.next`, `dist`, `build`, and `coverage`.
 - TypeScript definition uses source-definition when available, which avoids
   stopping at import aliases in common cases.
 - Symbol-only commands can be ambiguous. File-position commands are more

@@ -18,6 +18,7 @@ export class LspManager {
       languageId: config.languageId,
       server: config.server,
       workspaceSeedFiles: config.workspaceSeedFiles,
+      workspaceSeedExtensions: config.extensions,
       clientFactory: (server) => new JsonRpcLspClient(server)
     });
     this.providers.set(language, provider);
