@@ -1,4 +1,4 @@
-import type { Diagnostic, DiagnosticSummary, Severity } from "./types.js";
+import type { Diagnostic, DiagnosticReport, DiagnosticSummary, Severity } from "./types.js";
 
 const severityRank: Record<Severity, number> = {
   error: 0,
@@ -17,7 +17,8 @@ export function sortDiagnostics(diagnostics: Diagnostic[]): Diagnostic[] {
   });
 }
 
-export function summarizeDiagnostics(diagnostics: Diagnostic[], limit = 10): DiagnosticSummary {
+export function summarizeDiagnostics(report: DiagnosticReport | Diagnostic[], limit = 10): DiagnosticSummary {
+  const diagnostics = Array.isArray(report) ? report : report.items;
   const sorted = sortDiagnostics(diagnostics);
   const bySeverity: Record<Severity, number> = {
     error: 0,
@@ -36,6 +37,10 @@ export function summarizeDiagnostics(diagnostics: Diagnostic[], limit = 10): Dia
   });
 
   return {
+    status: Array.isArray(report) ? "ok" : report.status,
+    timedOut: Array.isArray(report) ? false : report.timedOut,
+    stale: Array.isArray(report) ? false : report.stale,
+    sourceRevision: Array.isArray(report) ? undefined : report.sourceRevision,
     total: sorted.length,
     bySeverity,
     items: sorted,

@@ -1,21 +1,27 @@
 import { describe, expect, it } from "vitest";
 import { CommandService, WorkspaceCommandService } from "../src/core/command-service.js";
-import type { Diagnostic, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
+import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
 import { filePathToUri } from "../src/utils/uri.js";
 
 class FakeProvider implements SemanticProvider {
   constructor(private readonly label = "src") {}
 
-  diagnostics(): Promise<Diagnostic[]> {
-    return Promise.resolve([
-      {
-        file: `${this.label}/editor/store.ts`,
-        line: 182,
-        character: 7,
-        severity: "error",
-        message: "Property 'id' does not exist on type"
-      }
-    ]);
+  diagnostics(): Promise<DiagnosticReport> {
+    return Promise.resolve({
+      status: "ok",
+      timedOut: false,
+      stale: false,
+      sourceRevision: 1,
+      items: [
+        {
+          file: `${this.label}/editor/store.ts`,
+          line: 182,
+          character: 7,
+          severity: "error",
+          message: "Property 'id' does not exist on type"
+        }
+      ]
+    });
   }
 
   definition(symbol: string): Promise<Location> {

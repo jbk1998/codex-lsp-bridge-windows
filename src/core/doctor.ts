@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { listLanguageServerConfigs } from "../adapters/language-config.js";
 
 export interface DoctorResult {
@@ -8,10 +10,22 @@ export interface DoctorResult {
     command: string;
     status: "ok" | "missing";
     path?: string;
+    seedFile?: string;
   }>;
+  codex: {
+    mcpConfigured: boolean;
+    hookConfigured: boolean;
+    instructionsConfigured: boolean;
+  };
+  build: {
+    distExists: boolean;
+    stale: boolean;
+  };
 }
 
 export function runDoctor(rootPath: string): DoctorResult {
+  const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   return {
     languages: listLanguageServerConfigs(rootPath).map((config) => {
       const executablePath = findExecutable(config.server.command);
@@ -19,9 +33,16 @@ export function runDoctor(rootPath: string): DoctorResult {
         language: config.language,
         command: config.server.command,
         status: executablePath ? "ok" : "missing",
+        seedFile: findSeedFile(rootPath, config.workspaceSeedFiles, config.extensions),
         ...(executablePath ? { path: executablePath } : {})
       };
-    })
+    }),
+    codex: {
+      mcpConfigured: readText(path.join(codexHome, "config.toml")).includes("[mcp_servers.codex-lsp-bridge]"),
+      hookConfigured: readText(path.join(codexHome, "hooks.json")).includes("codex-lsp-bridge:post-tool-diagnostics"),
+      instructionsConfigured: readText(path.join(codexHome, "AGENTS.md")).includes("BEGIN codex-lsp-bridge")
+    },
+    build: inspectBuildFreshness(packageRoot)
   };
 }
 
@@ -41,6 +62,61 @@ function findExecutable(command: string): string | undefined {
   }
 
   return undefined;
+}
+
+function findSeedFile(rootPath: string, seedFiles: string[], extensions: string[]): string | undefined {
+  for (const seed of seedFiles) {
+    const filePath = path.join(rootPath, seed);
+    if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) return filePath;
+  }
+  return findFirstSourceFile(rootPath, extensions);
+}
+
+function findFirstSourceFile(rootPath: string, extensions: string[]): string | undefined {
+  const skipped = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules"]);
+  const queue = [rootPath];
+  while (queue.length > 0) {
+    const directory = queue.shift()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const entryPath = path.join(directory, entry.name);
+      if (entry.isFile() && extensions.includes(path.extname(entry.name))) return entryPath;
+      if (entry.isDirectory() && !skipped.has(entry.name)) queue.push(entryPath);
+    }
+  }
+  return undefined;
+}
+
+function inspectBuildFreshness(packageRoot: string): { distExists: boolean; stale: boolean } {
+  const distIndex = path.join(packageRoot, "dist", "index.js");
+  if (!fs.existsSync(distIndex)) return { distExists: false, stale: true };
+  return {
+    distExists: true,
+    stale: newestMtime(path.join(packageRoot, "src")) > fs.statSync(distIndex).mtimeMs
+  };
+}
+
+function newestMtime(directory: string): number {
+  let newest = 0;
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) newest = Math.max(newest, newestMtime(entryPath));
+    else newest = Math.max(newest, fs.statSync(entryPath).mtimeMs);
+  }
+  return newest;
+}
+
+function readText(filePath: string): string {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch {
+    return "";
+  }
 }
 
 function isExecutable(filePath: string): boolean {

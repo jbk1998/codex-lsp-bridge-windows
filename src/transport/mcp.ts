@@ -21,6 +21,15 @@ interface JsonRpcResponse {
   };
 }
 
+class JsonRpcError extends Error {
+  constructor(
+    readonly code: number,
+    message: string
+  ) {
+    super(message);
+  }
+}
+
 const tools = [
   {
     name: "lsp_diagnostics",
@@ -42,7 +51,7 @@ const tools = [
   },
   {
     name: "lsp_definition",
-    description: "Find the semantic definition for a symbol or a concrete file position.",
+    description: "Find the semantic definition. Prefer file, line, and character when the occurrence is known; symbol-only lookup can be ambiguous.",
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -62,7 +71,7 @@ const tools = [
   },
   {
     name: "lsp_references",
-    description: "Find semantic references for a symbol or a concrete file position.",
+    description: "Find semantic references. Prefer file, line, and character when the occurrence is known; symbol-only lookup can be ambiguous.",
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -100,7 +109,7 @@ const tools = [
   },
   {
     name: "lsp_hover",
-    description: "Return hover/type information for a symbol or a concrete file position.",
+    description: "Return hover/type information. Prefer file, line, and character when the occurrence is known; symbol-only lookup can be ambiguous.",
     annotations: {
       readOnlyHint: true,
       destructiveHint: false,
@@ -125,9 +134,23 @@ export async function runStdioMcp(service: LspCommandService): Promise<void> {
 
   for await (const line of rl) {
     if (line.trim().length === 0) continue;
-    const request = JSON.parse(line) as Request;
-    const response = await handleRequest(service, request);
+    const response = await handleJsonRpcLine(service, line);
     if (response) output.write(`${JSON.stringify(response)}\n`);
+  }
+}
+
+export async function handleJsonRpcLine(service: LspCommandService, line: string): Promise<JsonRpcResponse | undefined> {
+  try {
+    return handleRequest(service, JSON.parse(line) as Request);
+  } catch {
+    return {
+      jsonrpc: "2.0",
+      id: null,
+      error: {
+        code: -32700,
+        message: "Parse error"
+      }
+    };
   }
 }
 
@@ -145,7 +168,7 @@ export async function handleRequest(service: LspCommandService, request: Request
       jsonrpc: "2.0",
       id: request.id,
       error: {
-        code: -32000,
+        code: error instanceof JsonRpcError ? error.code : -32000,
         message: error instanceof Error ? error.message : "Unknown error"
       }
     };
@@ -210,14 +233,14 @@ async function dispatchLspMethod(service: LspCommandService, method: string | un
     return service.hover(readStringParam(params, "symbol"));
   }
 
-  throw new Error(`Unsupported method: ${method ?? "undefined"}`);
+  throw new JsonRpcError(-32601, `Unsupported method: ${method ?? "undefined"}`);
 }
 
 async function callTool(service: LspCommandService, params: Record<string, unknown>): Promise<unknown> {
   const name = readStringParam(params, "name");
   const argumentsValue = params.arguments ?? {};
   if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
-    throw new Error("arguments parameter must be an object");
+    throw new JsonRpcError(-32602, "arguments parameter must be an object");
   }
   const args = argumentsValue as Record<string, unknown>;
 
@@ -227,20 +250,20 @@ async function callTool(service: LspCommandService, params: Record<string, unkno
   if (name === "lsp_symbols") return dispatchLspMethod(service, "lsp.symbols", args);
   if (name === "lsp_hover") return dispatchLspMethod(service, "lsp.hover", args);
 
-  throw new Error(`Unsupported tool: ${name}`);
+  throw new JsonRpcError(-32601, `Unsupported tool: ${name}`);
 }
 
 function readStringParam(params: Record<string, unknown>, key: string): string {
   const value = params[key];
-  if (typeof value !== "string") throw new Error(`${key} parameter is required`);
+  if (typeof value !== "string") throw new JsonRpcError(-32602, `${key} parameter is required`);
   return value;
 }
 
 function readOptionalPosition(params: Record<string, unknown>): { file: string; line: number; character: number } | undefined {
   if (params.file === undefined && params.line === undefined && params.character === undefined) return undefined;
-  if (typeof params.file !== "string") throw new Error("file parameter is required");
-  if (typeof params.line !== "number") throw new Error("line parameter is required");
-  if (typeof params.character !== "number") throw new Error("character parameter is required");
+  if (typeof params.file !== "string") throw new JsonRpcError(-32602, "file parameter is required");
+  if (typeof params.line !== "number") throw new JsonRpcError(-32602, "line parameter is required");
+  if (typeof params.character !== "number") throw new JsonRpcError(-32602, "character parameter is required");
   return {
     file: params.file,
     line: params.line,

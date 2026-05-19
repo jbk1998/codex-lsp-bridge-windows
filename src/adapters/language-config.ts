@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs";
 import type { ServerProcessConfig } from "../core/json-rpc-lsp-client.js";
 
 export type SupportedLanguage = "typescript" | "rust" | "python" | "go";
@@ -64,11 +65,18 @@ export function createLanguageServerConfig(language: SupportedLanguage, rootPath
     extensions: [...config.extensions],
     workspaceSeedFiles: [...config.workspaceSeedFiles],
     server: {
-      command: config.command,
+      command: resolveServerCommand(rootPath, config.command),
       args: [...config.args],
       cwd: path.resolve(rootPath)
     }
   };
+}
+
+function resolveServerCommand(rootPath: string, command: string): string {
+  const localCommand = path.join(rootPath, "node_modules", ".bin", command);
+  if (fs.existsSync(localCommand)) return localCommand;
+  if (process.platform === "win32" && fs.existsSync(`${localCommand}.cmd`)) return `${localCommand}.cmd`;
+  return command;
 }
 
 export function listLanguageServerConfigs(rootPath: string): LanguageServerConfig[] {

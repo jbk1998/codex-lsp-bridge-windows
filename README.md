@@ -191,6 +191,14 @@ The hook is intentionally post-tool, not pre-tool. Diagnostics are useful after
 a file changes, not before. Read-only review sessions will not trigger the hook
 unless Codex edits a file or explicitly calls the MCP diagnostics tool.
 
+Hook output is intentionally quiet:
+
+- clean files print one short line
+- timed-out diagnostics print `LSP diagnostics pending`
+- warning/hint-only diagnostics print a compact count
+- repeated identical error output is deduplicated
+- `CODEX_LSP_HOOK_MAX_FILES` limits touched-file fanout, default `5`
+
 The installer also adds a managed `codex-lsp-bridge` section to
 `~/.codex/AGENTS.md`. That section is what makes review, audit, and
 investigation workflows ask for semantic diagnostics even when no file edit has
@@ -229,6 +237,21 @@ File-position commands and file diagnostics auto-detect the language from the
 file extension. Symbol-only commands use TypeScript by default unless
 `--language` is provided.
 
+Diagnostics include trust metadata:
+
+```json
+{
+  "status": "ok",
+  "timedOut": false,
+  "stale": false,
+  "sourceRevision": 1
+}
+```
+
+`status: "timed_out"` means the bridge did not receive fresh
+`textDocument/publishDiagnostics` before the timeout. Treat that differently
+from "no diagnostics".
+
 ## MCP Tools
 
 The MCP server implements:
@@ -241,9 +264,9 @@ Available tools:
 
 | Tool | Purpose |
 | --- | --- |
-| `lsp_diagnostics` | Return compressed diagnostics |
-| `lsp_definition` | Find definition by symbol or file position |
-| `lsp_references` | Find references by symbol or file position |
+| `lsp_diagnostics` | Return compressed diagnostics with trust metadata |
+| `lsp_definition` | Find definition by symbol or file position; prefer position |
+| `lsp_references` | Find references by symbol or file position; prefer position |
 | `lsp_symbols` | Search workspace symbols |
 | `lsp_hover` | Return hover/type information |
 
@@ -274,8 +297,8 @@ TypeScript/TSX semantic feedback. After editing TS/TSX files, call
 renames, moves, signature changes, or multi-file semantic refactors, call
 `lsp_definition` and `lsp_references`. Prefer file-position inputs over
 symbol-only inputs when the occurrence is known. If LSP is unavailable, stale,
-or ambiguous, say so and fall back to the narrowest repo-native verification
-command.
+timed out, or ambiguous, say so and fall back to the narrowest repo-native
+verification command.
 ```
 
 ## Smoke Test
@@ -300,6 +323,9 @@ printf '%s\n' \
 ## Design Notes
 
 - The bridge is read-only.
+- File access is constrained to the workspace root. The bridge resolves both
+  the workspace root and requested files with `fs.realpath` before reading, so
+  symlinks cannot be used to read files outside the workspace.
 - Language servers are started lazily.
 - Diagnostics are compressed into AI-readable summaries while preserving
   structured items.
@@ -310,6 +336,8 @@ printf '%s\n' \
 - Workspace symbol requests first try known seed files, then scan for the first
   supported source file while skipping heavy generated directories such as
   `node_modules`, `.next`, `dist`, `build`, and `coverage`.
+- Open documents are versioned with `didOpen`/`didChange`, closed with
+  `didClose`, and re-synchronized after a language server restart.
 - TypeScript definition uses source-definition when available, which avoids
   stopping at import aliases in common cases.
 - Symbol-only commands can be ambiguous. File-position commands are more

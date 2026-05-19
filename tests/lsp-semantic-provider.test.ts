@@ -73,21 +73,27 @@ describe("LspSemanticProvider", () => {
     const provider = createProvider();
     const uri = filePathToUri(filePath);
 
-    client.emit("notification", "textDocument/publishDiagnostics", {
-      uri,
-      diagnostics: [
-        {
-          range: { start: { line: 1, character: 2 }, end: { line: 1, character: 4 } },
-          severity: 1,
-          message: "missing id",
-          source: "ts"
-        }
-      ]
-    });
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      const documentUri = (params as { textDocument: { uri: string } }).textDocument.uri;
+      client.emit("notification", "textDocument/publishDiagnostics", {
+        uri: documentUri,
+        diagnostics: [
+          {
+            range: { start: { line: 1, character: 2 }, end: { line: 1, character: 4 } },
+            severity: 1,
+            message: "missing id",
+            source: "ts"
+          }
+        ]
+      });
+    };
 
-    await expect(provider.diagnostics(uri)).resolves.toMatchObject([
-      { file: filePath, line: 2, character: 3, severity: "error", message: "missing id" }
-    ]);
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+      status: "ok",
+      timedOut: false,
+      items: [{ file: expect.any(String), line: 2, character: 3, severity: "error", message: "missing id" }]
+    });
     expect(client.requests.filter((request) => request.method === "initialize")).toHaveLength(1);
     expect(client.notifications.some((notification) => notification.method === "textDocument/didOpen")).toBe(true);
   });
@@ -98,13 +104,14 @@ describe("LspSemanticProvider", () => {
 
     client.onNotify = (method, params) => {
       if (method !== "textDocument/didOpen" && method !== "textDocument/didChange") return;
+      const textDocument = (params as { textDocument: { uri: string; version: number } }).textDocument;
       const version =
         method === "textDocument/didOpen"
-          ? (params as { textDocument: { version: number } }).textDocument.version
-          : (params as { textDocument: { version: number } }).textDocument.version;
+          ? textDocument.version
+          : textDocument.version;
       setTimeout(() => {
         client.emit("notification", "textDocument/publishDiagnostics", {
-          uri,
+          uri: textDocument.uri,
           diagnostics: [
             {
               range: { start: { line: version, character: 0 }, end: { line: version, character: 1 } },
@@ -117,15 +124,39 @@ describe("LspSemanticProvider", () => {
       }, 0);
     };
 
-    await expect(provider.diagnostics(uri)).resolves.toMatchObject([{ line: 2, message: "version 1" }]);
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({ items: [{ line: 2, message: "version 1" }] });
     await fs.writeFile(filePath, "export const Editor = 2;\n", "utf8");
-    await expect(provider.diagnostics(uri)).resolves.toMatchObject([{ line: 3, message: "version 2" }]);
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({ items: [{ line: 3, message: "version 2" }] });
     await expect(provider.definitionAt({ file: filePath, line: 1, character: 14 })).rejects.toThrow(
       "No source definition found"
     );
 
     expect(client.notifications.filter((notification) => notification.method === "textDocument/didOpen")).toHaveLength(1);
     expect(client.notifications.filter((notification) => notification.method === "textDocument/didChange")).toHaveLength(1);
+  });
+
+  it("marks diagnostics as timed out instead of returning an indistinguishable empty success", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+      status: "timed_out",
+      timedOut: true,
+      stale: false,
+      items: []
+    });
+  });
+
+  it("rejects files outside the workspace root after resolving symlinks", async () => {
+    const outsidePath = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-outside-")), "outside.ts");
+    await fs.writeFile(outsidePath, "export const outside = 1;\n", "utf8");
+    const symlinkPath = path.join(rootPath, "src", "linked-outside.ts");
+    await fs.symlink(outsidePath, symlinkPath);
+    const provider = createProvider();
+
+    await expect(provider.diagnostics(filePathToUri(outsidePath))).rejects.toThrow("outside workspace root");
+    await expect(provider.diagnostics(filePathToUri(symlinkPath))).rejects.toThrow("outside workspace root");
+    await fs.rm(path.dirname(outsidePath), { recursive: true, force: true });
   });
 
   it("resolves definition, references, and hover through a single exact symbol", async () => {
@@ -201,7 +232,7 @@ describe("LspSemanticProvider", () => {
     expect(didOpen).toMatchObject({
       params: {
         textDocument: {
-          uri: filePathToUri(filePath)
+          uri: filePathToUri(await fs.realpath(filePath))
         }
       }
     });

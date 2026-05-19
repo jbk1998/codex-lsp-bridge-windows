@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { dispatch, handleRequest } from "../src/transport/mcp.js";
+import { dispatch, handleJsonRpcLine, handleRequest } from "../src/transport/mcp.js";
 import { CommandService } from "../src/core/command-service.js";
-import type { Diagnostic, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
+import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
 
 class EmptyProvider implements SemanticProvider {
-  diagnostics(): Promise<Diagnostic[]> {
-    return Promise.resolve([]);
+  diagnostics(): Promise<DiagnosticReport> {
+    return Promise.resolve({ status: "ok", timedOut: false, stale: false, items: [] });
   }
   definition(): Promise<Location> {
     return Promise.resolve({ file: "src/a.ts", line: 1, character: 1 });
@@ -100,7 +100,15 @@ describe("MCP dispatch", () => {
     await expect(handleRequest(service, { id: "bad", method: "tools/call", params: { name: "missing" } })).resolves.toMatchObject({
       jsonrpc: "2.0",
       id: "bad",
-      error: { code: -32000, message: "Unsupported tool: missing" }
+      error: { code: -32601, message: "Unsupported tool: missing" }
+    });
+    await expect(handleJsonRpcLine(service, "{bad json")).resolves.toMatchObject({
+      jsonrpc: "2.0",
+      id: null,
+      error: { code: -32700, message: "Parse error" }
+    });
+    await expect(handleRequest(service, { id: 2, method: "lsp.hover", params: {} })).resolves.toMatchObject({
+      error: { code: -32602, message: "symbol parameter is required" }
     });
   });
 
