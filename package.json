@@ -4,6 +4,14 @@
   "description": "A semantic intelligence bridge that connects LSP features to Codex CLI through MCP/plugin architecture.",
   "license": "MIT",
   "author": "codex-lsp-bridge contributors",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WEED-Jeonseonghun/codex-lsp-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/WEED-Jeonseonghun/codex-lsp-bridge/issues"
+  },
+  "homepage": "https://github.com/WEED-Jeonseonghun/codex-lsp-bridge#readme",
   "type": "module",
   "bin": {
     "codex-lsp-bridge": "./dist/index.js",
