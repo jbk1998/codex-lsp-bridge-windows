@@ -117,7 +117,7 @@ function upsertAgentInstructions(content) {
     "When the `codex-lsp-bridge` MCP tools are available, use them as the semantic feedback layer for code work.",
     "",
     "- After editing supported source files, use `lsp_diagnostics` for the touched files before broader verification.",
-    "- During review or self-review workflows, do not rely only on grep and diff review. After identifying changed supported source files, call `lsp_diagnostics` for the changed files or the smallest representative set before final findings.",
+    "- During code review, audit, or investigation workflows, do not rely only on grep and diff review. After identifying changed supported source files, call `lsp_diagnostics` for the changed files or the smallest representative set before final findings.",
     "- Before renames, moves, signature changes, import rewrites, or multi-file semantic refactors, call `lsp_definition` and `lsp_references` for the relevant symbol or file position.",
     "- Prefer file-position or file-specific inputs over symbol-only inputs when the exact occurrence is known.",
     "- If LSP is unavailable, stale, missing a language server, or ambiguous, say so and fall back to the narrowest repo-native verification command.",
