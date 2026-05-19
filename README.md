@@ -13,6 +13,76 @@ It is meant to be a semantic safety layer for AI coding workflows:
 - inspect hover/type information at known file positions
 - keep review and refactor loops read-only by default
 
+## Why Use It
+
+AI coding agents are good at text search, but semantic mistakes still happen:
+wrong imports, missed references, stale type assumptions, and edits made before
+diagnostics are known. `codex-lsp-bridge` gives Codex a read-only semantic
+feedback layer from the same language servers your editor uses.
+
+Typical loop:
+
+1. Codex edits a TypeScript file.
+2. The hook asks the local language server for diagnostics on touched files.
+3. Codex sees compact semantic errors before it continues.
+4. If diagnostics are stale or time out, the result says so instead of
+   pretending there are no errors.
+
+## Install In 30 Seconds
+
+Install a language server for your project. For TypeScript:
+
+```bash
+npm install -g typescript-language-server typescript
+```
+
+Install and register the Codex integration:
+
+```bash
+npm install -g codex-lsp-bridge
+codex-lsp-bridge install --auto-update
+codex-lsp-bridge doctor --root .
+```
+
+Restart Codex. The `lsp_diagnostics`, `lsp_definition`, `lsp_references`,
+`lsp_symbols`, `lsp_hover`, and `lsp_status` MCP tools are then available.
+
+If you do not want a global install, use npm directly:
+
+```bash
+npx codex-lsp-bridge@latest install --auto-update
+```
+
+## Verify
+
+From any project:
+
+```bash
+codex-lsp-bridge doctor --root .
+codex-lsp-bridge diagnostics --file src/file.ts --root .
+```
+
+In Codex, ask it to check LSP status or diagnostics. After installation and
+restart, Codex can call:
+
+- `lsp_status`
+- `lsp_diagnostics`
+- `lsp_definition`
+- `lsp_references`
+- `lsp_symbols`
+- `lsp_hover`
+
+## What Codex Gets
+
+- Read-only diagnostics with `status`, `timedOut`, `stale`, and
+  `sourceRevision` metadata.
+- Definition, references, symbols, and hover from local language servers.
+- Position-based lookup for precise navigation when file/line/character is
+  known.
+- Quiet PostToolUse diagnostics for touched TS/TSX files.
+- Workspace-root boundaries with realpath checks, including symlink escape
+  protection.
+
 ## Status
 
 The MVP is intentionally narrow and ready for local always-on use.
@@ -46,43 +116,19 @@ npm install -g typescript-language-server typescript
 language-server command, support level, seed file, install hint, and actionable
 recommendations for missing setup.
 
-## Quick Start
+## Install Options
 
-Install a language server for your project. For TypeScript:
-
-```bash
-npm install -g typescript-language-server typescript
-```
-
-Install the Codex MCP server, hook, and instructions:
+Recommended install:
 
 ```bash
-npx codex-lsp-bridge@latest install
+npm install -g codex-lsp-bridge
+codex-lsp-bridge install --auto-update
 ```
 
-Restart Codex. The `lsp_diagnostics`, `lsp_definition`, `lsp_references`,
-`lsp_symbols`, `lsp_hover`, and `lsp_status` MCP tools are then available to
-Codex.
-
-For an auto-updating install that resolves the latest npm package whenever
-Codex restarts:
+One-shot install through npm:
 
 ```bash
 npx codex-lsp-bridge@latest install --auto-update
-```
-
-## Install Options
-
-From the private GitHub repository before npm publish:
-
-```bash
-npm exec --package=github:shjeon-96/codex-lsp-bridge -- codex-lsp-bridge install
-```
-
-Auto-updating setup from the private GitHub repository:
-
-```bash
-npm exec --package=github:shjeon-96/codex-lsp-bridge -- codex-lsp-bridge install --auto-update --package github:shjeon-96/codex-lsp-bridge#main
 ```
 
 From a local checkout:
@@ -141,12 +187,6 @@ Remove the MCP server registration and automatic diagnostics hook:
 
 ```bash
 npx codex-lsp-bridge@latest uninstall
-```
-
-From the private GitHub repository before npm publish:
-
-```bash
-npm exec --package=github:shjeon-96/codex-lsp-bridge -- codex-lsp-bridge uninstall
 ```
 
 For a local checkout or global install:
