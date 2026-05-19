@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { CommandService } from "../src/core/command-service.js";
+import { CommandService, WorkspaceCommandService } from "../src/core/command-service.js";
 import type { Diagnostic, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
+import { filePathToUri } from "../src/utils/uri.js";
 
 class FakeProvider implements SemanticProvider {
+  constructor(private readonly label = "src") {}
+
   diagnostics(): Promise<Diagnostic[]> {
     return Promise.resolve([
       {
-        file: "src/editor/store.ts",
+        file: `${this.label}/editor/store.ts`,
         line: 182,
         character: 7,
         severity: "error",
@@ -16,7 +19,7 @@ class FakeProvider implements SemanticProvider {
   }
 
   definition(symbol: string): Promise<Location> {
-    return Promise.resolve({ file: `src/${symbol}.ts`, line: 24, character: 1 });
+    return Promise.resolve({ file: `${this.label}/${symbol}.ts`, line: 24, character: 1 });
   }
 
   definitionAt(): Promise<Location> {
@@ -45,6 +48,21 @@ class FakeProvider implements SemanticProvider {
 
   dispose(): Promise<void> {
     return Promise.resolve();
+  }
+}
+
+class FakeRegistry {
+  readonly defaultProvider = new FakeProvider("typescript");
+  readonly fileProvider = new FakeProvider("file");
+  readonly files: string[] = [];
+
+  forLanguage() {
+    return this.defaultProvider;
+  }
+
+  forFile(filePath: string) {
+    this.files.push(filePath);
+    return this.fileProvider;
   }
 }
 
@@ -86,5 +104,35 @@ describe("CommandService", () => {
     await expect(service.hoverAt({ file: "src/index.ts", line: 2, character: 10 })).resolves.toMatchObject({
       contents: "position hover"
     });
+  });
+});
+
+describe("WorkspaceCommandService", () => {
+  it("uses file-specific providers for file-position operations", async () => {
+    const registry = new FakeRegistry();
+    const service = new WorkspaceCommandService(registry, "typescript");
+
+    await expect(service.diagnostics(filePathToUri("cmd/server/main.go"))).resolves.toMatchObject({
+      items: [expect.objectContaining({ file: "file/editor/store.ts" })]
+    });
+    await expect(service.definitionAt({ file: "cmd/server/main.go", line: 1, character: 1 })).resolves.toMatchObject({
+      file: "src/position.ts"
+    });
+    await expect(service.referencesAt({ file: "cmd/server/main.go", line: 1, character: 1 })).resolves.toHaveLength(1);
+    await expect(service.hoverAt({ file: "cmd/server/main.go", line: 1, character: 1 })).resolves.toMatchObject({
+      contents: "position hover"
+    });
+    expect(registry.files).toEqual(expect.arrayContaining([expect.stringContaining("cmd/server/main.go")]));
+  });
+
+  it("uses the default language provider for symbol-only operations", async () => {
+    const registry = new FakeRegistry();
+    const service = new WorkspaceCommandService(registry, "typescript");
+
+    await expect(service.definition("Editor")).resolves.toMatchObject({ file: "typescript/Editor.ts" });
+    await expect(service.references("Editor")).resolves.toHaveLength(1);
+    await expect(service.symbols("Editor")).resolves.toMatchObject([{ name: "Editor" }]);
+    await expect(service.hover("Editor")).resolves.toMatchObject({ contents: "type Editor = string" });
+    expect(registry.files).toEqual([]);
   });
 });

@@ -22,7 +22,7 @@ This project is early and intentionally narrow.
 
 - Read-only first
 - TypeScript-focused in practice
-- Rust and Python adapters are present but less exercised
+- Rust, Python, and Go adapters are present but less exercised
 - No automatic language server installation
 - No rename/code-action support yet
 
@@ -37,6 +37,7 @@ This project is early and intentionally narrow.
 | TypeScript / JavaScript | `typescript-language-server` |
 | Rust | `rust-analyzer` |
 | Python | `pyright-langserver` |
+| Go | `gopls` |
 
 For TypeScript projects, install a language server if needed:
 
@@ -190,6 +191,7 @@ a file changes, not before.
 Run against the current repository:
 
 ```bash
+codex-lsp-bridge doctor --root .
 codex-lsp-bridge diagnostics --file src/file.ts --root .
 codex-lsp-bridge symbols Editor --root .
 codex-lsp-bridge definition Editor --root .
@@ -210,7 +212,12 @@ Choose another language:
 ```bash
 codex-lsp-bridge diagnostics --file src/main.rs --language rust --root .
 codex-lsp-bridge diagnostics --file app.py --language python --root .
+codex-lsp-bridge diagnostics --file main.go --root .
 ```
+
+File-position commands and file diagnostics auto-detect the language from the
+file extension. Symbol-only commands use TypeScript by default unless
+`--language` is provided.
 
 ## MCP Tools
 

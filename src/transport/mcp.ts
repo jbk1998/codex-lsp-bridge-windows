@@ -1,6 +1,9 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
-import type { CommandService } from "../core/command-service.js";
+import type { CommandService, WorkspaceCommandService } from "../core/command-service.js";
+import { filePathToUri } from "../utils/uri.js";
+
+type LspCommandService = CommandService | WorkspaceCommandService;
 
 interface Request {
   id?: string | number;
@@ -31,7 +34,8 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        uri: { type: "string", description: "Optional file:// URI to diagnose." }
+        uri: { type: "string", description: "Optional file:// URI to diagnose." },
+        file: { type: "string", description: "Optional file path to diagnose." }
       },
       additionalProperties: false
     }
@@ -116,7 +120,7 @@ const tools = [
   }
 ];
 
-export async function runStdioMcp(service: CommandService): Promise<void> {
+export async function runStdioMcp(service: LspCommandService): Promise<void> {
   const rl = createInterface({ input, output });
 
   for await (const line of rl) {
@@ -127,7 +131,7 @@ export async function runStdioMcp(service: CommandService): Promise<void> {
   }
 }
 
-export async function handleRequest(service: CommandService, request: Request): Promise<JsonRpcResponse | undefined> {
+export async function handleRequest(service: LspCommandService, request: Request): Promise<JsonRpcResponse | undefined> {
   if (request.id === undefined) {
     if (request.method === "notifications/initialized") return undefined;
     return undefined;
@@ -148,7 +152,7 @@ export async function handleRequest(service: CommandService, request: Request): 
   }
 }
 
-export async function dispatch(service: CommandService, request: Request): Promise<unknown> {
+export async function dispatch(service: LspCommandService, request: Request): Promise<unknown> {
   const params = request.params ?? {};
 
   if (request.method === "initialize") {
@@ -182,8 +186,9 @@ export async function dispatch(service: CommandService, request: Request): Promi
   return dispatchLspMethod(service, request.method, params);
 }
 
-async function dispatchLspMethod(service: CommandService, method: string | undefined, params: Record<string, unknown>): Promise<unknown> {
+async function dispatchLspMethod(service: LspCommandService, method: string | undefined, params: Record<string, unknown>): Promise<unknown> {
   if (method === "lsp.diagnostics") {
+    if (typeof params.file === "string") return service.diagnostics(filePathToUri(params.file));
     return service.diagnostics(typeof params.uri === "string" ? params.uri : undefined);
   }
   if (method === "lsp.definition") {
@@ -208,7 +213,7 @@ async function dispatchLspMethod(service: CommandService, method: string | undef
   throw new Error(`Unsupported method: ${method ?? "undefined"}`);
 }
 
-async function callTool(service: CommandService, params: Record<string, unknown>): Promise<unknown> {
+async function callTool(service: LspCommandService, params: Record<string, unknown>): Promise<unknown> {
   const name = readStringParam(params, "name");
   const argumentsValue = params.arguments ?? {};
   if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {

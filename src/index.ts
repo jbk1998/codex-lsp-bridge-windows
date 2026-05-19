@@ -2,7 +2,8 @@
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CommandService } from "./core/command-service.js";
+import { WorkspaceCommandService } from "./core/command-service.js";
+import { runDoctor } from "./core/doctor.js";
 import { LspManager } from "./core/lsp-manager.js";
 import { filePathToUri } from "./utils/uri.js";
 import { runStdioMcp } from "./transport/mcp.js";
@@ -27,14 +28,19 @@ async function main(): Promise<void> {
   const manager = new LspManager(root);
 
   try {
-    if (args[0] === "mcp") {
-      const service = new CommandService(manager.forLanguage(readLanguage(args)));
-      await runStdioMcp(service);
+    if (args[0] === "doctor") {
+      console.log(JSON.stringify(runDoctor(root), null, 2));
       return;
     }
 
     const language = readLanguage(args);
-    const service = new CommandService(manager.forLanguage(language));
+    const service = new WorkspaceCommandService(manager, language);
+
+    if (args[0] === "mcp") {
+      await runStdioMcp(service);
+      return;
+    }
+
     const command = args[0];
     const value = args.find((arg) => !arg.startsWith("--") && arg !== command);
 
@@ -85,7 +91,7 @@ async function main(): Promise<void> {
 function readLanguage(args: string[]): SupportedLanguage {
   const value = readOption(args, "--language");
   if (!value) return "typescript";
-  if (value === "typescript" || value === "rust" || value === "python") return value;
+  if (value === "typescript" || value === "rust" || value === "python" || value === "go") return value;
   throw new Error(`Unsupported language: ${value}`);
 }
 
@@ -125,15 +131,16 @@ function printUsage(): void {
   codex-lsp-bridge install [--auto-update] [--package package-spec] [--dry-run]
   codex-lsp-bridge uninstall [--dry-run]
   codex-lsp-bridge post-tool-diagnostics
-  codex-lsp-bridge diagnostics [--file path] [--language typescript|rust|python] [--root path]
-  codex-lsp-bridge definition <symbol> [--language typescript|rust|python] [--root path]
-  codex-lsp-bridge definition --file path --line n --character n [--language typescript|rust|python] [--root path]
-  codex-lsp-bridge references <symbol> [--language typescript|rust|python] [--root path]
-  codex-lsp-bridge references --file path --line n --character n [--language typescript|rust|python] [--root path]
-  codex-lsp-bridge symbols <query> [--language typescript|rust|python] [--root path]
-  codex-lsp-bridge hover <symbol> [--language typescript|rust|python] [--root path]
-  codex-lsp-bridge hover --file path --line n --character n [--language typescript|rust|python] [--root path]
-  codex-lsp-bridge mcp [--root path] [--language typescript|rust|python]`);
+  codex-lsp-bridge doctor [--root path]
+  codex-lsp-bridge diagnostics [--file path] [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge definition <symbol> [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge definition --file path --line n --character n [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge references <symbol> [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge references --file path --line n --character n [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge symbols <query> [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge hover <symbol> [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge hover --file path --line n --character n [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge mcp [--root path] [--language typescript|rust|python|go]`);
 }
 
 function runPackageScript(scriptName: string, args: string[]): void {

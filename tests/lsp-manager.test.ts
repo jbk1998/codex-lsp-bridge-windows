@@ -7,6 +7,7 @@ describe("LspManager", () => {
 
     expect(manager.forLanguage("typescript")).toBe(manager.forLanguage("typescript"));
     expect(manager.forFile("src/app.ts")).toBe(manager.forLanguage("typescript"));
+    expect(manager.forFile("cmd/server/main.go")).toBe(manager.forLanguage("go"));
   });
 
   it("rejects unsupported file extensions at the manager boundary", () => {

@@ -1,5 +1,12 @@
 import { summarizeDiagnostics } from "./diagnostics.js";
 import type { DiagnosticSummary, DocumentPosition, HoverInfo, Location, SemanticProvider, SymbolMatch } from "./types.js";
+import { uriToFilePath } from "../utils/uri.js";
+import type { SupportedLanguage } from "../adapters/language-config.js";
+
+export interface SemanticProviderRegistry {
+  forLanguage(language: SupportedLanguage): SemanticProvider;
+  forFile(filePath: string): SemanticProvider;
+}
 
 export class CommandService {
   constructor(private readonly provider: SemanticProvider) {}
@@ -41,6 +48,54 @@ export class CommandService {
   async hoverAt(position: DocumentPosition): Promise<HoverInfo> {
     assertPosition(position);
     return this.provider.hoverAt(position);
+  }
+}
+
+export class WorkspaceCommandService {
+  constructor(
+    private readonly manager: SemanticProviderRegistry,
+    private readonly defaultLanguage: SupportedLanguage
+  ) {}
+
+  async diagnostics(uri?: string): Promise<DiagnosticSummary> {
+    const service = uri ? this.forFile(uriToFilePath(uri)) : this.forDefaultLanguage();
+    return service.diagnostics(uri);
+  }
+
+  async definition(symbol: string): Promise<Location> {
+    return this.forDefaultLanguage().definition(symbol);
+  }
+
+  async definitionAt(position: DocumentPosition): Promise<Location> {
+    return this.forFile(position.file).definitionAt(position);
+  }
+
+  async references(symbol: string): Promise<Location[]> {
+    return this.forDefaultLanguage().references(symbol);
+  }
+
+  async referencesAt(position: DocumentPosition): Promise<Location[]> {
+    return this.forFile(position.file).referencesAt(position);
+  }
+
+  async symbols(query: string): Promise<SymbolMatch[]> {
+    return this.forDefaultLanguage().symbols(query);
+  }
+
+  async hover(symbol: string): Promise<HoverInfo> {
+    return this.forDefaultLanguage().hover(symbol);
+  }
+
+  async hoverAt(position: DocumentPosition): Promise<HoverInfo> {
+    return this.forFile(position.file).hoverAt(position);
+  }
+
+  private forDefaultLanguage(): CommandService {
+    return new CommandService(this.manager.forLanguage(this.defaultLanguage));
+  }
+
+  private forFile(filePath: string): CommandService {
+    return new CommandService(this.manager.forFile(filePath));
   }
 }
 
