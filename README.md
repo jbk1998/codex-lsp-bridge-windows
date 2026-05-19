@@ -95,6 +95,8 @@ The installer writes:
 
 - `~/.codex/config.toml`: global MCP server registration
 - `~/.codex/hooks.json`: `PostToolUse` hook for touched TS/TSX diagnostics
+- `~/.codex/AGENTS.md`: managed workflow instructions that tell Codex to use
+  LSP diagnostics during review/self-review workflows, not only after edits
 
 Restart Codex after installing.
 
@@ -125,7 +127,8 @@ codex-lsp-bridge uninstall --dry-run
 ```
 
 The uninstall command removes only the `codex-lsp-bridge` config block and hook
-entry. It leaves unrelated Codex config intact.
+entry, plus the managed `codex-lsp-bridge` block in `~/.codex/AGENTS.md`. It
+leaves unrelated Codex config and instructions intact.
 
 ## What Gets Installed
 
@@ -186,6 +189,10 @@ The hook runs after edit tools and checks touched TS/TSX files:
 The hook is intentionally post-tool, not pre-tool. Diagnostics are useful after
 a file changes, not before. Read-only review sessions will not trigger the hook
 unless Codex edits a file or explicitly calls the MCP diagnostics tool.
+
+The installer also adds a managed `codex-lsp-bridge` section to
+`~/.codex/AGENTS.md`. That section is what makes review/self-review workflows
+ask for semantic diagnostics even when no file edit has happened yet.
 
 ## CLI Usage
 

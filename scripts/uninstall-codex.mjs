@@ -6,15 +6,18 @@ import path from "node:path";
 const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const configPath = path.join(codexHome, "config.toml");
 const hooksPath = path.join(codexHome, "hooks.json");
+const agentsPath = path.join(codexHome, "AGENTS.md");
 const dryRun = process.argv.includes("--dry-run");
 
 const configResult = removeMcpConfig(readText(configPath));
 const hooksResult = removePostToolUseHook(readJson(hooksPath));
+const agentsResult = removeAgentInstructions(readText(agentsPath));
 
 if (dryRun) {
   console.log(`[codex-lsp-bridge] dry run uninstall for ${codexHome}`);
   console.log(configResult);
   console.log(JSON.stringify(hooksResult, null, 2));
+  console.log(agentsResult);
   process.exit(0);
 }
 
@@ -24,9 +27,13 @@ if (fs.existsSync(configPath)) {
 if (fs.existsSync(hooksPath)) {
   fs.writeFileSync(hooksPath, `${JSON.stringify(hooksResult, null, 2)}\n`);
 }
+if (fs.existsSync(agentsPath)) {
+  fs.writeFileSync(agentsPath, agentsResult);
+}
 
 console.log(`[codex-lsp-bridge] removed Codex MCP config from: ${configPath}`);
 console.log(`[codex-lsp-bridge] removed PostToolUse diagnostics hook from: ${hooksPath}`);
+console.log(`[codex-lsp-bridge] removed Codex workflow instructions from: ${agentsPath}`);
 console.log("[codex-lsp-bridge] restart Codex for the changes to take effect.");
 
 function readText(filePath) {
@@ -65,4 +72,10 @@ function removePostToolUseHook(config) {
   }
 
   return next;
+}
+
+function removeAgentInstructions(content) {
+  const pattern = /\n?<!-- BEGIN codex-lsp-bridge -->[\s\S]*?<!-- END codex-lsp-bridge -->/;
+  const result = content.trimEnd().replace(pattern, "");
+  return result.length > 0 ? `${result}\n` : "";
 }
