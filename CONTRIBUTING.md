@@ -6,9 +6,7 @@ Thanks for helping improve `codex-lsp-bridge`.
 
 ```bash
 npm install
-npm run type-check
-npm test
-npm run build
+npm run ci:verify
 ```
 
 ## Scope
@@ -21,5 +19,9 @@ Do not add fallback branches or permissive alternate paths to hide LSP failures.
 
 - Keep changes narrowly scoped.
 - Add or update tests for behavior changes.
-- Run `npm run type-check`, `npm test`, and `npm run build`.
+- Run `npm run ci:verify`.
 - Document new user-facing commands or install behavior in `README.md`.
+
+## Release
+
+See [docs/RELEASE.md](./docs/RELEASE.md).

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +11,19 @@ import { LspManager } from "./core/lsp-manager.js";
 import { filePathToUri } from "./utils/uri.js";
 import { runStdioMcp } from "./transport/mcp.js";
 import type { SupportedLanguage } from "./adapters/language-config.js";
+
+const defaultDirectoryDiagnosticsOptions = {
+  maxFiles: 50,
+  timeoutBudgetMs: 15000,
+  concurrency: 2
+};
+const sourceFileListCacheTtlMs = 5000;
+
+interface SourceFileListCacheEntry {
+  createdAt: number;
+  files: string[];
+  truncated: boolean;
+}
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -28,10 +42,21 @@ async function main(): Promise<void> {
 
   const root = path.resolve(readOption(args, "--root") ?? process.cwd());
   const config = loadConfig(root);
-  const manager = new LspManager(root, {
-    diagnosticsTimeoutMs: config.diagnosticsTimeoutMs,
-    languageServers: config.languageServers
-  });
+  const managers = new Map<string, LspManager>();
+  const sourceFileListCache = new Map<string, SourceFileListCacheEntry>();
+  const serviceForRoot = (serviceRoot: string, languageOverride?: SupportedLanguage) => {
+    const resolvedRoot = path.resolve(serviceRoot);
+    const rootConfig = loadConfig(resolvedRoot);
+    let scopedManager = managers.get(resolvedRoot);
+    if (!scopedManager) {
+      scopedManager = new LspManager(resolvedRoot, {
+        diagnosticsTimeoutMs: rootConfig.diagnosticsTimeoutMs,
+        languageServers: rootConfig.languageServers
+      });
+      managers.set(resolvedRoot, scopedManager);
+    }
+    return new WorkspaceCommandService(scopedManager, languageOverride ?? rootConfig.defaultLanguage);
+  };
 
   try {
     if (args[0] === "doctor") {
@@ -40,22 +65,20 @@ async function main(): Promise<void> {
     }
 
     const language = readLanguage(args, config.defaultLanguage);
-    const service = new WorkspaceCommandService(manager, language);
+    const service = serviceForRoot(root, language);
 
     if (args[0] === "mcp") {
       await runStdioMcp(service, {
         status: () => runDoctor(root),
-        directoryDiagnostics: async (dir, severity) =>
-          filterDiagnosticSummary(
-            mergeDiagnosticSummaries(
-              await Promise.all(
-                (await collectSourceFiles(resolveDirectoryInsideRoot(root, dir))).map((diagnosticFile) =>
-                  service.diagnostics(filePathToUri(diagnosticFile))
-                )
-              )
-            ),
-            severity
-          )
+        serviceForParams: (params) => serviceForRoot(resolveRequestedRootSync(root, params), language),
+        directoryDiagnostics: async ({ dir, severity, root: requestedRoot, maxFiles, timeoutBudgetMs, concurrency }) => {
+          const effectiveRoot = requestedRoot ? resolveExplicitWorkspaceRootSync(requestedRoot) : root;
+          return collectDirectoryDiagnostics(effectiveRoot, dir, language, severity, serviceForRoot, {
+            maxFiles: readPositiveIntegerValue(maxFiles, defaultDirectoryDiagnosticsOptions.maxFiles),
+            timeoutBudgetMs: readPositiveIntegerValue(timeoutBudgetMs, defaultDirectoryDiagnosticsOptions.timeoutBudgetMs),
+            concurrency: readPositiveIntegerValue(concurrency, defaultDirectoryDiagnosticsOptions.concurrency)
+          }, sourceFileListCache);
+        }
       });
       return;
     }
@@ -68,11 +91,7 @@ async function main(): Promise<void> {
       const dir = readOption(args, "--dir");
       const severity = readOption(args, "--severity");
       if (dir) {
-        const summaries = [];
-        for (const diagnosticFile of await collectSourceFiles(resolveDirectoryInsideRoot(root, dir))) {
-          summaries.push(await service.diagnostics(filePathToUri(diagnosticFile)));
-        }
-        console.log(JSON.stringify(filterDiagnosticSummary(mergeDiagnosticSummaries(summaries), severity), null, 2));
+        console.log(JSON.stringify(await collectDirectoryDiagnostics(root, dir, language, severity, serviceForRoot, readDirectoryDiagnosticsOptions(args), sourceFileListCache), null, 2));
         return;
       }
       console.log(JSON.stringify(await service.diagnostics(file ? filePathToUri(file) : undefined), null, 2));
@@ -113,7 +132,7 @@ async function main(): Promise<void> {
     printUsage();
     process.exitCode = 1;
   } finally {
-    await manager.dispose();
+    await Promise.all([...managers.values()].map((manager) => manager.dispose()));
   }
 }
 
@@ -162,7 +181,7 @@ function printUsage(): void {
   codex-lsp-bridge post-tool-diagnostics
   codex-lsp-bridge doctor [--root path]
   codex-lsp-bridge diagnostics [--file path] [--language typescript|rust|python|go] [--root path]
-  codex-lsp-bridge diagnostics --dir path [--severity error|warning|information|hint] [--root path]
+  codex-lsp-bridge diagnostics --dir path [--severity error|warning|information|hint] [--max-files n] [--timeout-budget-ms n] [--concurrency n] [--root path]
   codex-lsp-bridge definition <symbol> [--language typescript|rust|python|go] [--root path]
   codex-lsp-bridge definition --file path --line n --character n [--language typescript|rust|python|go] [--root path]
   codex-lsp-bridge references <symbol> [--language typescript|rust|python|go] [--root path]
@@ -173,16 +192,116 @@ function printUsage(): void {
   codex-lsp-bridge mcp [--root path] [--language typescript|rust|python|go]`);
 }
 
-async function collectSourceFiles(directory: string): Promise<string[]> {
+function readDirectoryDiagnosticsOptions(args: string[]): DirectoryDiagnosticsOptions {
+  return {
+    maxFiles: readPositiveIntegerOption(args, "--max-files", defaultDirectoryDiagnosticsOptions.maxFiles),
+    timeoutBudgetMs: readPositiveIntegerOption(args, "--timeout-budget-ms", defaultDirectoryDiagnosticsOptions.timeoutBudgetMs),
+    concurrency: readPositiveIntegerOption(args, "--concurrency", defaultDirectoryDiagnosticsOptions.concurrency)
+  };
+}
+
+function readPositiveIntegerOption(args: string[], option: string, fallback: number): number {
+  return readPositiveIntegerValue(readNumberOption(args, option), fallback);
+}
+
+function readPositiveIntegerValue(value: number | undefined, fallback: number): number {
+  return Number.isInteger(value) && value !== undefined && value > 0 ? value : fallback;
+}
+
+interface DirectoryDiagnosticsOptions {
+  maxFiles: number;
+  timeoutBudgetMs: number;
+  concurrency: number;
+}
+
+async function collectSourceFiles(directory: string, maxFiles: number): Promise<{ files: string[]; truncated: boolean }> {
   const skipped = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules"]);
   const files: string[] = [];
-  const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
-  for (const entry of entries) {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.isDirectory() && !skipped.has(entry.name)) files.push(...(await collectSourceFiles(entryPath)));
-    if (entry.isFile() && /\.(ts|tsx|js|jsx|rs|py|go)$/.test(entry.name)) files.push(entryPath);
+  let truncated = false;
+
+  async function visit(currentDirectory: string): Promise<void> {
+    if (truncated) return;
+    const entries = await fs.readdir(currentDirectory, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (truncated) return;
+      const entryPath = path.join(currentDirectory, entry.name);
+      if (entry.isDirectory() && !skipped.has(entry.name)) {
+        await visit(entryPath);
+        continue;
+      }
+      if (entry.isFile() && /\.(ts|tsx|js|jsx|rs|py|go)$/.test(entry.name)) {
+        if (files.length >= maxFiles) {
+          truncated = true;
+          return;
+        }
+        files.push(entryPath);
+      }
+    }
   }
-  return files;
+
+  await visit(directory);
+  return { files, truncated };
+}
+
+async function collectDirectoryDiagnostics(
+  root: string,
+  dir: string,
+  language: SupportedLanguage,
+  severity: string | undefined,
+  serviceForRoot: (serviceRoot: string, languageOverride?: SupportedLanguage) => WorkspaceCommandService,
+  options: DirectoryDiagnosticsOptions,
+  sourceFileListCache: Map<string, SourceFileListCacheEntry>
+) {
+  const scopedService = serviceForRoot(root, language);
+  const startedAt = Date.now();
+  const sourceFiles = await readCachedSourceFiles(resolveDirectoryInsideRoot(root, dir), options.maxFiles, sourceFileListCache);
+  const summaries = [];
+  let budgetTimedOut = false;
+
+  for (let index = 0; index < sourceFiles.files.length; index += options.concurrency) {
+    if (Date.now() - startedAt >= options.timeoutBudgetMs) {
+      budgetTimedOut = true;
+      break;
+    }
+    const batch = sourceFiles.files.slice(index, index + options.concurrency);
+    summaries.push(...(await Promise.all(batch.map((diagnosticFile) => scopedService.diagnostics(filePathToUri(diagnosticFile))))));
+  }
+  const summary = filterDiagnosticSummary(mergeDiagnosticSummaries(summaries), severity);
+  return {
+    ...summary,
+    status: budgetTimedOut ? "timed_out" : summary.status,
+    timedOut: budgetTimedOut || summary.timedOut,
+    directory: {
+      scannedFiles: summaries.length,
+      matchedFiles: sourceFiles.files.length,
+      maxFiles: options.maxFiles,
+      truncated: sourceFiles.truncated,
+      sourceFileListCache: sourceFiles.cached ? "hit" : "miss",
+      timeoutBudgetMs: options.timeoutBudgetMs,
+      budgetTimedOut,
+      concurrency: options.concurrency
+    }
+  };
+}
+
+async function readCachedSourceFiles(
+  directory: string,
+  maxFiles: number,
+  cache: Map<string, SourceFileListCacheEntry>
+): Promise<{ files: string[]; truncated: boolean; cached: boolean }> {
+  const cacheKey = `${directory}\0${maxFiles}`;
+  const cached = cache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt <= sourceFileListCacheTtlMs) {
+    return { files: cached.files, truncated: cached.truncated, cached: true };
+  }
+
+  const collected = await collectSourceFiles(directory, maxFiles);
+  cache.set(cacheKey, {
+    createdAt: Date.now(),
+    files: collected.files,
+    truncated: collected.truncated
+  });
+  return { ...collected, cached: false };
 }
 
 function mergeDiagnosticSummaries(summaries: Array<Awaited<ReturnType<WorkspaceCommandService["diagnostics"]>>>) {
@@ -227,10 +346,28 @@ function filterDiagnosticSummary<T extends { items: Array<{ severity: string }>;
 
 function resolveDirectoryInsideRoot(root: string, dir: string): string {
   const directory = path.resolve(root, dir);
-  if (directory !== root && !directory.startsWith(`${root}${path.sep}`)) {
+  const relative = path.relative(root, directory);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`Directory is outside workspace root: ${directory}`);
   }
   return directory;
+}
+
+function resolveRequestedRootSync(fallbackRoot: string, params: Record<string, unknown>): string {
+  if (typeof params.root === "string") return resolveExplicitWorkspaceRootSync(params.root);
+  return fallbackRoot;
+}
+
+function resolveExplicitWorkspaceRootSync(root: string): string {
+  const resolvedRoot = path.resolve(root);
+  if (!isWorkspaceRootSync(resolvedRoot)) {
+    throw new Error(`Workspace root is not recognized: ${resolvedRoot}`);
+  }
+  return resolvedRoot;
+}
+
+function isWorkspaceRootSync(directory: string): boolean {
+  return existsSync(path.join(directory, ".git")) || existsSync(path.join(directory, "package.json")) || existsSync(path.join(directory, "tsconfig.json"));
 }
 
 function runPackageScript(scriptName: string, args: string[]): void {

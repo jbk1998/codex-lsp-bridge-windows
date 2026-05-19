@@ -7,7 +7,8 @@ type LspCommandService = CommandService | WorkspaceCommandService;
 
 interface McpRuntime {
   status?: () => unknown;
-  directoryDiagnostics?: (dir: string, severity?: string) => Promise<unknown>;
+  directoryDiagnostics?: (request: { dir: string; severity?: string; root?: string; maxFiles?: number; timeoutBudgetMs?: number; concurrency?: number }) => Promise<unknown>;
+  serviceForParams?: (params: Record<string, unknown>) => LspCommandService;
 }
 
 interface Request {
@@ -50,8 +51,12 @@ const tools = [
       properties: {
         uri: { type: "string", description: "Optional file:// URI to diagnose." },
         file: { type: "string", description: "Optional file path to diagnose." },
+        root: { type: "string", description: "Optional workspace root for detached worktrees." },
         dir: { type: "string", description: "Optional directory path to diagnose recursively." },
-        severity: { type: "string", enum: ["error", "warning", "information", "hint"] }
+        severity: { type: "string", enum: ["error", "warning", "information", "hint"] },
+        maxFiles: { type: "number", description: "Maximum source files to diagnose for directory scans." },
+        timeoutBudgetMs: { type: "number", description: "Maximum directory diagnostics wall-clock budget in milliseconds." },
+        concurrency: { type: "number", description: "Maximum concurrent file diagnostics for directory scans." }
       },
       additionalProperties: false
     }
@@ -70,6 +75,7 @@ const tools = [
       properties: {
         symbol: { type: "string" },
         file: { type: "string" },
+        root: { type: "string", description: "Optional workspace root for detached worktrees." },
         line: { type: "number" },
         character: { type: "number" }
       },
@@ -90,6 +96,7 @@ const tools = [
       properties: {
         symbol: { type: "string" },
         file: { type: "string" },
+        root: { type: "string", description: "Optional workspace root for detached worktrees." },
         line: { type: "number" },
         character: { type: "number" }
       },
@@ -108,7 +115,8 @@ const tools = [
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string" }
+        query: { type: "string" },
+        root: { type: "string", description: "Optional workspace root for detached worktrees." }
       },
       required: ["query"],
       additionalProperties: false
@@ -128,6 +136,7 @@ const tools = [
       properties: {
         symbol: { type: "string" },
         file: { type: "string" },
+        root: { type: "string", description: "Optional workspace root for detached worktrees." },
         line: { type: "number" },
         character: { type: "number" }
       },
@@ -236,7 +245,7 @@ export async function dispatch(service: LspCommandService, request: Request, run
     };
   }
 
-  return dispatchLspMethod(service, request.method, params);
+  return dispatchLspMethod(selectService(service, params, runtime), request.method, params);
 }
 
 async function dispatchLspMethod(service: LspCommandService, method: string | undefined, params: Record<string, unknown>): Promise<unknown> {
@@ -279,16 +288,28 @@ async function callTool(service: LspCommandService, params: Record<string, unkno
 
   if (name === "lsp_diagnostics" && typeof args.dir === "string") {
     if (!runtime.directoryDiagnostics) throw new JsonRpcError(-32602, "directory diagnostics are unavailable");
-    return runtime.directoryDiagnostics(args.dir, typeof args.severity === "string" ? args.severity : undefined);
+    return runtime.directoryDiagnostics({
+      dir: args.dir,
+      severity: typeof args.severity === "string" ? args.severity : undefined,
+      root: typeof args.root === "string" ? args.root : undefined,
+      maxFiles: typeof args.maxFiles === "number" ? args.maxFiles : undefined,
+      timeoutBudgetMs: typeof args.timeoutBudgetMs === "number" ? args.timeoutBudgetMs : undefined,
+      concurrency: typeof args.concurrency === "number" ? args.concurrency : undefined
+    });
   }
-  if (name === "lsp_diagnostics") return dispatchLspMethod(service, "lsp.diagnostics", args);
-  if (name === "lsp_definition") return dispatchLspMethod(service, "lsp.definition", args);
-  if (name === "lsp_references") return dispatchLspMethod(service, "lsp.references", args);
-  if (name === "lsp_symbols") return dispatchLspMethod(service, "lsp.symbols", args);
-  if (name === "lsp_hover") return dispatchLspMethod(service, "lsp.hover", args);
+  const scopedService = selectService(service, args, runtime);
+  if (name === "lsp_diagnostics") return dispatchLspMethod(scopedService, "lsp.diagnostics", args);
+  if (name === "lsp_definition") return dispatchLspMethod(scopedService, "lsp.definition", args);
+  if (name === "lsp_references") return dispatchLspMethod(scopedService, "lsp.references", args);
+  if (name === "lsp_symbols") return dispatchLspMethod(scopedService, "lsp.symbols", args);
+  if (name === "lsp_hover") return dispatchLspMethod(scopedService, "lsp.hover", args);
   if (name === "lsp_status") return runtime.status ? runtime.status() : { status: "unavailable" };
 
   throw new JsonRpcError(-32601, `Unsupported tool: ${name}`);
+}
+
+function selectService(service: LspCommandService, params: Record<string, unknown>, runtime: McpRuntime): LspCommandService {
+  return runtime.serviceForParams && typeof params.root === "string" ? runtime.serviceForParams(params) : service;
 }
 
 function readStringParam(params: Record<string, unknown>, key: string): string {

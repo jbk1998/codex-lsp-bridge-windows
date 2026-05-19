@@ -15,6 +15,8 @@ describe("language config", () => {
     expect(config).toMatchObject({
       language: "typescript",
       languageId: "typescript",
+      installHint: "npm install -g typescript-language-server typescript",
+      supportLevel: "primary",
       workspaceSeedFiles: expect.arrayContaining(["src/proxy.ts"]),
       server: { command: "typescript-language-server", args: ["--stdio"] }
     });
@@ -33,7 +35,13 @@ describe("language config", () => {
     expect(supportedLanguages()).toEqual(["typescript", "rust", "python", "go"]);
     expect(listLanguageServerConfigs(".")).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ language: "go", languageId: "go", server: expect.objectContaining({ command: "gopls" }) })
+        expect.objectContaining({
+          language: "go",
+          languageId: "go",
+          installHint: "go install golang.org/x/tools/gopls@latest",
+          supportLevel: "experimental",
+          server: expect.objectContaining({ command: "gopls" })
+        })
       ])
     );
   });

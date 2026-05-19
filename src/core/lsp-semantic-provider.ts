@@ -29,6 +29,8 @@ interface LspHover {
   contents: string | { value: string } | Array<string | { value: string }>;
 }
 
+const defaultDiagnosticsTimeoutMs = 5000;
+
 export interface LspSemanticProviderOptions {
   rootPath: string;
   languageId: string;
@@ -316,7 +318,7 @@ export class LspSemanticProvider implements SemanticProvider {
         if (nextWaiters.length > 0) this.diagnosticsWaitersByUri.set(uri, nextWaiters);
         else this.diagnosticsWaitersByUri.delete(uri);
         resolve(false);
-      }, this.options.diagnosticsTimeoutMs ?? 1500);
+      }, this.options.diagnosticsTimeoutMs ?? defaultDiagnosticsTimeoutMs);
 
       waiter.timer = timer;
       waiters.push(waiter);

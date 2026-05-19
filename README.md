@@ -1,24 +1,21 @@
 # codex-lsp-bridge
 
-`codex-lsp-bridge` is a read-only semantic intelligence bridge for Codex CLI.
-It connects Language Server Protocol features to Codex through a small MCP
-server and CLI.
+Read-only LSP tools for Codex CLI.
 
-The goal is not to build another editor. The goal is to give coding agents
-fast semantic feedback:
+`codex-lsp-bridge` gives Codex semantic signals from your local language
+servers — diagnostics, definitions, references, symbols, hover, and status —
+without granting write access or escaping the workspace root.
 
-- diagnostics for touched files
-- go to definition
-- find references
-- workspace symbol search
-- hover/type information
+It is meant to be a semantic safety layer for AI coding workflows:
 
-This helps Codex work with large typed codebases without relying only on grep,
-full type-check loops, or broad file reads.
+- understand type and semantic diagnostics after edits
+- navigate definitions and references without guessing from grep alone
+- inspect hover/type information at known file positions
+- keep review and refactor loops read-only by default
 
 ## Status
 
-This project is early and intentionally narrow.
+The MVP is intentionally narrow and ready for local always-on use.
 
 - Read-only first
 - TypeScript-focused in practice
@@ -32,12 +29,12 @@ This project is early and intentionally narrow.
 - Codex CLI with MCP support
 - Local language server executable for the language you want to use
 
-| Language | Required command |
-| --- | --- |
-| TypeScript / JavaScript | `typescript-language-server` |
-| Rust | `rust-analyzer` |
-| Python | `pyright-langserver` |
-| Go | `gopls` |
+| Language | Support | Required command | Install hint |
+| --- | --- | --- | --- |
+| TypeScript / JavaScript | Primary | `typescript-language-server` | `npm install -g typescript-language-server typescript` |
+| Rust | Experimental | `rust-analyzer` | `rustup component add rust-analyzer` |
+| Python | Experimental | `pyright-langserver` | `npm install -g pyright` |
+| Go | Experimental | `gopls` | `go install golang.org/x/tools/gopls@latest` |
 
 For TypeScript projects, install a language server if needed:
 
@@ -45,30 +42,47 @@ For TypeScript projects, install a language server if needed:
 npm install -g typescript-language-server typescript
 ```
 
-## Install
+`lsp_status` and `codex-lsp-bridge doctor --root .` report the detected
+language-server command, support level, seed file, install hint, and actionable
+recommendations for missing setup.
 
-One-command setup from npm:
+## Quick Start
+
+Install a language server for your project. For TypeScript:
+
+```bash
+npm install -g typescript-language-server typescript
+```
+
+Install the Codex MCP server, hook, and instructions:
 
 ```bash
 npx codex-lsp-bridge@latest install
 ```
 
-Auto-updating setup from npm:
+Restart Codex. The `lsp_diagnostics`, `lsp_definition`, `lsp_references`,
+`lsp_symbols`, `lsp_hover`, and `lsp_status` MCP tools are then available to
+Codex.
+
+For an auto-updating install that resolves the latest npm package whenever
+Codex restarts:
 
 ```bash
 npx codex-lsp-bridge@latest install --auto-update
 ```
 
+## Install Options
+
 From the private GitHub repository before npm publish:
 
 ```bash
-npm exec --package=github:WEED-Jeonseonghun/codex-lsp-bridge -- codex-lsp-bridge install
+npm exec --package=github:shjeon-96/codex-lsp-bridge -- codex-lsp-bridge install
 ```
 
 Auto-updating setup from the private GitHub repository:
 
 ```bash
-npm exec --package=github:WEED-Jeonseonghun/codex-lsp-bridge -- codex-lsp-bridge install --auto-update --package github:WEED-Jeonseonghun/codex-lsp-bridge#main
+npm exec --package=github:shjeon-96/codex-lsp-bridge -- codex-lsp-bridge install --auto-update --package github:shjeon-96/codex-lsp-bridge#main
 ```
 
 From a local checkout:
@@ -101,6 +115,26 @@ The installer writes:
 
 Restart Codex after installing.
 
+## Codex Plugin Package
+
+This repository includes Codex plugin metadata for marketplace-style
+distribution:
+
+- `.codex-plugin/plugin.json`
+- `.mcp.json`
+- `hooks/hooks.json`
+- `skills/lsp/SKILL.md`
+
+When a marketplace entry is available, Codex CLI installs plugins with:
+
+```bash
+codex plugin add codex-lsp-bridge@<marketplace>
+```
+
+Until then, use the `npx codex-lsp-bridge@latest install` path above. It writes
+the same MCP registration, hook, and workflow instructions directly into
+`~/.codex`.
+
 ## Uninstall
 
 Remove the MCP server registration and automatic diagnostics hook:
@@ -112,7 +146,7 @@ npx codex-lsp-bridge@latest uninstall
 From the private GitHub repository before npm publish:
 
 ```bash
-npm exec --package=github:WEED-Jeonseonghun/codex-lsp-bridge -- codex-lsp-bridge uninstall
+npm exec --package=github:shjeon-96/codex-lsp-bridge -- codex-lsp-bridge uninstall
 ```
 
 For a local checkout or global install:
@@ -165,6 +199,10 @@ resolution, so use the default local install mode for active local development.
 
 Without `--root`, the server uses the Codex process working directory as the
 workspace root. That makes one global registration usable from any repository.
+MCP tool calls do not infer a new workspace root from `file` or `dir` paths.
+For detached review worktrees such as `/tmp/pr-1558-review`, pass `root`
+explicitly in the tool call. Explicit `root` values must point at a
+recognizable workspace containing `.git`, `package.json`, or `tsconfig.json`.
 
 The hook runs after edit tools and checks touched TS/TSX files:
 
@@ -212,7 +250,7 @@ Run against the current repository:
 ```bash
 codex-lsp-bridge doctor --root .
 codex-lsp-bridge diagnostics --file src/file.ts --root .
-codex-lsp-bridge diagnostics --dir src --severity error --root .
+codex-lsp-bridge diagnostics --dir src --severity error --max-files 50 --timeout-budget-ms 15000 --concurrency 2 --root .
 codex-lsp-bridge symbols Editor --root .
 codex-lsp-bridge definition Editor --root .
 codex-lsp-bridge references Editor --root .
@@ -269,7 +307,7 @@ Available tools:
 | `lsp_diagnostics` | Return compressed diagnostics with trust metadata |
 | `lsp_definition` | Find definition by symbol or file position; prefer position |
 | `lsp_references` | Find references by symbol or file position; prefer position |
-| `lsp_symbols` | Search workspace symbols |
+| `lsp_symbols` | Search workspace symbols; accepts optional `root` |
 | `lsp_hover` | Return hover/type information |
 | `lsp_status` | Return language server, Codex install, and build status |
 
@@ -311,7 +349,7 @@ Optional JSON config is read from `~/.codex/lsp-client.json` and then
 ```json
 {
   "defaultLanguage": "typescript",
-  "diagnosticsTimeoutMs": 1500,
+  "diagnosticsTimeoutMs": 5000,
   "hook": {
     "maxFiles": 5,
     "verbosePending": false
@@ -340,6 +378,9 @@ The package includes plugin-oriented metadata:
 
 These files mirror the one-command installer and make the package easier to
 adapt to Codex plugin distribution flows.
+
+See [docs/MARKETPLACE.md](./docs/MARKETPLACE.md) for marketplace packaging
+notes.
 
 ## Suggested Codex Behavior
 
@@ -381,6 +422,19 @@ printf '%s\n' \
 - File access is constrained to the workspace root. The bridge resolves both
   the workspace root and requested files with `fs.realpath` before reading, so
   symlinks cannot be used to read files outside the workspace.
+- MCP file and directory requests use the MCP server root unless the request
+  includes an explicit validated `root`. The bridge does not infer trust
+  boundaries from arbitrary absolute file paths.
+- Directory diagnostics are bounded by default: at most 50 source files, a
+  15000 ms wall-clock budget, and 2 concurrent file diagnostics. Override these
+  with `maxFiles`, `timeoutBudgetMs`, and `concurrency` when a wider scan is
+  intentional. Results include directory metadata so truncated scans are not
+  mistaken for full-workspace validation. Top-level `timedOut` means either
+  the directory budget expired or at least one file diagnostic timed out;
+  `directory.budgetTimedOut` only describes the directory scan budget.
+- Directory scans keep a short in-process source-file-list cache for repeated
+  MCP calls against the same directory and limit. Diagnostic results themselves
+  are not cached, so edited file feedback still comes from the language server.
 - Language servers are started lazily.
 - Diagnostics are compressed into AI-readable summaries while preserving
   structured items.
@@ -413,11 +467,15 @@ Language servers are external executables. Install them from trusted sources.
 
 ```bash
 npm install
-npm run type-check
-npm test
-npm run build
-npm pack --dry-run
+npm run ci:verify
 ```
+
+`ci:verify` runs type-checking, coverage tests, build, package file
+verification, install/uninstall smoke tests, and a real tarball install smoke.
+GitHub Actions runs the same command on Node 20 and 22 across Linux, macOS, and
+Windows.
+
+Release preparation is documented in [docs/RELEASE.md](./docs/RELEASE.md).
 
 ## Contributing
 

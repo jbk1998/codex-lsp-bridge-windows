@@ -4,8 +4,26 @@ import { CommandService } from "../src/core/command-service.js";
 import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
 
 class EmptyProvider implements SemanticProvider {
+  constructor(private readonly label = "default") {}
+
   diagnostics(): Promise<DiagnosticReport> {
-    return Promise.resolve({ status: "ok", timedOut: false, stale: false, items: [] });
+    return Promise.resolve({
+      status: "ok",
+      timedOut: false,
+      stale: false,
+      items:
+        this.label === "default"
+          ? []
+          : [
+              {
+                file: `${this.label}/src/a.ts`,
+                line: 1,
+                character: 1,
+                severity: "error",
+                message: `${this.label} diagnostic`
+              }
+            ]
+    });
   }
   definition(): Promise<Location> {
     return Promise.resolve({ file: "src/a.ts", line: 1, character: 1 });
@@ -91,6 +109,96 @@ describe("MCP dispatch", () => {
       dispatch(service, { method: "tools/call", params: { name: "lsp_status", arguments: {} } }, { status: () => ({ ok: true }) })
     ).resolves.toMatchObject({
       structuredContent: { ok: true }
+    });
+  });
+
+  it("allows MCP runtimes to select a scoped workspace service from tool arguments", async () => {
+    const defaultService = new CommandService(new EmptyProvider());
+    const scopedService = new CommandService(new EmptyProvider("detached"));
+    const seenParams: Record<string, unknown>[] = [];
+
+    await expect(
+      dispatch(
+        defaultService,
+        {
+          method: "tools/call",
+          params: {
+            name: "lsp_diagnostics",
+            arguments: { file: "/tmp/pr-review/src/a.ts", root: "/tmp/pr-review" }
+          }
+        },
+        {
+          serviceForParams: (params) => {
+            seenParams.push(params);
+            return scopedService;
+          }
+        }
+      )
+    ).resolves.toMatchObject({
+      structuredContent: {
+        total: 1,
+        items: [{ file: "detached/src/a.ts", message: "detached diagnostic" }]
+      }
+    });
+    expect(seenParams).toEqual([{ file: "/tmp/pr-review/src/a.ts", root: "/tmp/pr-review" }]);
+  });
+
+  it("keeps the default MCP service when no root argument is provided", async () => {
+    const defaultService = new CommandService(new EmptyProvider());
+    const scopedService = new CommandService(new EmptyProvider("detached"));
+    let scopedCalls = 0;
+
+    await expect(
+      dispatch(
+        defaultService,
+        {
+          method: "tools/call",
+          params: {
+            name: "lsp_diagnostics",
+            arguments: { file: "/tmp/pr-review/src/a.ts" }
+          }
+        },
+        {
+          serviceForParams: () => {
+            scopedCalls += 1;
+            return scopedService;
+          }
+        }
+      )
+    ).resolves.toMatchObject({
+      structuredContent: {
+        total: 0
+      }
+    });
+    expect(scopedCalls).toBe(0);
+  });
+
+  it("passes directory diagnostics through the runtime with optional root and severity", async () => {
+    const service = new CommandService(new EmptyProvider());
+
+    await expect(
+      dispatch(
+        service,
+        {
+          method: "tools/call",
+          params: {
+            name: "lsp_diagnostics",
+            arguments: { dir: "/tmp/pr-review/src", root: "/tmp/pr-review", severity: "error", maxFiles: 3, timeoutBudgetMs: 1000, concurrency: 2 }
+          }
+        },
+        {
+          directoryDiagnostics: async (request) => request
+        }
+      )
+    ).resolves.toMatchObject({
+      structuredContent: {
+        dir: "/tmp/pr-review/src",
+        root: "/tmp/pr-review",
+        severity: "error",
+        maxFiles: 3,
+        timeoutBudgetMs: 1000,
+        concurrency: 2
+      }
     });
   });
 

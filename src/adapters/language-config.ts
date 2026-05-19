@@ -10,6 +10,8 @@ export interface LanguageServerConfig {
   server: ServerProcessConfig;
   extensions: string[];
   workspaceSeedFiles: string[];
+  installHint: string;
+  supportLevel: "primary" | "experimental";
 }
 
 export interface LanguageServerOverride {
@@ -19,7 +21,7 @@ export interface LanguageServerOverride {
 
 const serverByLanguage: Record<
   SupportedLanguage,
-  { languageId: string; command: string; args: string[]; extensions: string[]; workspaceSeedFiles: string[] }
+  { languageId: string; command: string; args: string[]; extensions: string[]; workspaceSeedFiles: string[]; installHint: string; supportLevel: "primary" | "experimental" }
 > = {
   typescript: {
     languageId: "typescript",
@@ -37,28 +39,36 @@ const serverByLanguage: Record<
       "src/instrumentation.ts",
       "app/page.tsx",
       "pages/index.tsx"
-    ]
+    ],
+    installHint: "npm install -g typescript-language-server typescript",
+    supportLevel: "primary"
   },
   rust: {
     languageId: "rust",
     command: "rust-analyzer",
     args: [],
     extensions: [".rs"],
-    workspaceSeedFiles: ["src/main.rs", "src/lib.rs"]
+    workspaceSeedFiles: ["src/main.rs", "src/lib.rs"],
+    installHint: "rustup component add rust-analyzer",
+    supportLevel: "experimental"
   },
   python: {
     languageId: "python",
     command: "pyright-langserver",
     args: ["--stdio"],
     extensions: [".py"],
-    workspaceSeedFiles: ["main.py", "src/main.py", "app.py", "src/app.py"]
+    workspaceSeedFiles: ["main.py", "src/main.py", "app.py", "src/app.py"],
+    installHint: "npm install -g pyright",
+    supportLevel: "experimental"
   },
   go: {
     languageId: "go",
     command: "gopls",
     args: [],
     extensions: [".go"],
-    workspaceSeedFiles: ["main.go", "cmd/main.go"]
+    workspaceSeedFiles: ["main.go", "cmd/main.go"],
+    installHint: "go install golang.org/x/tools/gopls@latest",
+    supportLevel: "experimental"
   }
 };
 
@@ -74,6 +84,8 @@ export function createLanguageServerConfig(
     languageId: config.languageId,
     extensions: [...config.extensions],
     workspaceSeedFiles: [...config.workspaceSeedFiles],
+    installHint: config.installHint,
+    supportLevel: config.supportLevel,
     server: {
       command: resolveServerCommand(rootPath, command),
       args: [...(override.args ?? config.args)],

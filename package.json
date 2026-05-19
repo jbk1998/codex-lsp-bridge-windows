@@ -1,22 +1,22 @@
 {
   "name": "codex-lsp-bridge",
   "version": "0.1.0",
-  "description": "A semantic intelligence bridge that connects LSP features to Codex CLI through MCP/plugin architecture.",
+  "description": "Read-only LSP tools for Codex CLI.",
   "license": "MIT",
   "author": "codex-lsp-bridge contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/WEED-Jeonseonghun/codex-lsp-bridge.git"
+    "url": "git+https://github.com/shjeon-96/codex-lsp-bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/WEED-Jeonseonghun/codex-lsp-bridge/issues"
+    "url": "https://github.com/shjeon-96/codex-lsp-bridge/issues"
   },
-  "homepage": "https://github.com/WEED-Jeonseonghun/codex-lsp-bridge#readme",
+  "homepage": "https://github.com/shjeon-96/codex-lsp-bridge#readme",
   "type": "module",
   "bin": {
-    "codex-lsp-bridge": "./dist/index.js",
-    "codex-lsp-bridge-install": "./scripts/install-codex.mjs",
-    "codex-lsp-bridge-uninstall": "./scripts/uninstall-codex.mjs"
+    "codex-lsp-bridge": "dist/index.js",
+    "codex-lsp-bridge-install": "scripts/install-codex.mjs",
+    "codex-lsp-bridge-uninstall": "scripts/uninstall-codex.mjs"
   },
   "files": [
     "dist/index.js",
@@ -26,12 +26,18 @@
     "dist/utils",
     "scripts/codex-lsp-post-tool-use.mjs",
     "scripts/install-codex.mjs",
+    "scripts/smoke-install.mjs",
+    "scripts/smoke-package.mjs",
     "scripts/uninstall-codex.mjs",
+    "scripts/verify-package.mjs",
     ".codex-plugin/plugin.json",
     ".mcp.json",
     "hooks/hooks.json",
     "skills/lsp/SKILL.md",
+    "docs/RELEASE.md",
+    "docs/MARKETPLACE.md",
     "README.md",
+    "CHANGELOG.md",
     "CONTRIBUTING.md",
     "LICENSE",
     "SECURITY.md"
@@ -41,7 +47,11 @@
     "prepare": "npm run build",
     "test": "vitest run --coverage",
     "test:run": "vitest run",
-    "type-check": "tsc -p tsconfig.json --noEmit"
+    "type-check": "tsc -p tsconfig.json --noEmit",
+    "verify:package": "node scripts/verify-package.mjs",
+    "smoke:install": "node scripts/smoke-install.mjs",
+    "smoke:package": "node scripts/smoke-package.mjs",
+    "ci:verify": "npm run type-check && npm test && npm run build && npm run verify:package && npm run smoke:install && npm run smoke:package"
   },
   "keywords": [
     "codex",

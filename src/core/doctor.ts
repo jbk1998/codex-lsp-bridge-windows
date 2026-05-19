@@ -4,14 +4,18 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listLanguageServerConfigs } from "../adapters/language-config.js";
 
+type DoctorLanguageResult = {
+  language: string;
+  command: string;
+  status: "ok" | "missing";
+  supportLevel: "primary" | "experimental";
+  installHint: string;
+  path?: string;
+  seedFile?: string;
+};
+
 export interface DoctorResult {
-  languages: Array<{
-    language: string;
-    command: string;
-    status: "ok" | "missing";
-    path?: string;
-    seedFile?: string;
-  }>;
+  languages: DoctorLanguageResult[];
   codex: {
     mcpConfigured: boolean;
     hookConfigured: boolean;
@@ -21,29 +25,56 @@ export interface DoctorResult {
     distExists: boolean;
     stale: boolean;
   };
+  recommendations: string[];
 }
 
 export function runDoctor(rootPath: string): DoctorResult {
   const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
-  return {
-    languages: listLanguageServerConfigs(rootPath).map((config) => {
-      const executablePath = findExecutable(config.server.command);
-      return {
-        language: config.language,
-        command: config.server.command,
-        status: executablePath ? "ok" : "missing",
-        seedFile: findSeedFile(rootPath, config.workspaceSeedFiles, config.extensions),
-        ...(executablePath ? { path: executablePath } : {})
-      };
-    }),
-    codex: {
-      mcpConfigured: readText(path.join(codexHome, "config.toml")).includes("[mcp_servers.codex-lsp-bridge]"),
-      hookConfigured: readText(path.join(codexHome, "hooks.json")).includes("codex-lsp-bridge:post-tool-diagnostics"),
-      instructionsConfigured: readText(path.join(codexHome, "AGENTS.md")).includes("BEGIN codex-lsp-bridge")
-    },
-    build: inspectBuildFreshness(packageRoot)
+  const languages: DoctorLanguageResult[] = listLanguageServerConfigs(rootPath).map((config) => {
+    const executablePath = findExecutable(config.server.command);
+    return {
+      language: config.language,
+      command: config.server.command,
+      status: (executablePath ? "ok" : "missing") as DoctorLanguageResult["status"],
+      supportLevel: config.supportLevel,
+      installHint: config.installHint,
+      seedFile: findSeedFile(rootPath, config.workspaceSeedFiles, config.extensions),
+      ...(executablePath ? { path: executablePath } : {})
+    };
+  });
+  const codex = {
+    mcpConfigured: readText(path.join(codexHome, "config.toml")).includes("[mcp_servers.codex-lsp-bridge]"),
+    hookConfigured: readText(path.join(codexHome, "hooks.json")).includes("codex-lsp-bridge:post-tool-diagnostics"),
+    instructionsConfigured: readText(path.join(codexHome, "AGENTS.md")).includes("BEGIN codex-lsp-bridge")
   };
+  const build = inspectBuildFreshness(packageRoot);
+  return {
+    languages,
+    codex,
+    build,
+    recommendations: buildRecommendations(languages, codex, build)
+  };
+}
+
+function buildRecommendations(
+  languages: DoctorResult["languages"],
+  codex: DoctorResult["codex"],
+  build: DoctorResult["build"]
+): string[] {
+  const recommendations: string[] = [];
+  for (const language of languages) {
+    if (language.status === "missing") {
+      recommendations.push(`Install ${language.language} language server: ${language.installHint}`);
+    }
+  }
+  if (!codex.mcpConfigured || !codex.hookConfigured || !codex.instructionsConfigured) {
+    recommendations.push("Run codex-lsp-bridge install and restart Codex.");
+  }
+  if (!build.distExists || build.stale) {
+    recommendations.push("Run npm run build before using the local package.");
+  }
+  return recommendations;
 }
 
 function findExecutable(command: string): string | undefined {
@@ -92,12 +123,14 @@ function findFirstSourceFile(rootPath: string, extensions: string[]): string | u
   return undefined;
 }
 
-function inspectBuildFreshness(packageRoot: string): { distExists: boolean; stale: boolean } {
+export function inspectBuildFreshness(packageRoot: string): { distExists: boolean; stale: boolean } {
   const distIndex = path.join(packageRoot, "dist", "index.js");
   if (!fs.existsSync(distIndex)) return { distExists: false, stale: true };
+  const sourceRoot = path.join(packageRoot, "src");
+  if (!fs.existsSync(sourceRoot)) return { distExists: true, stale: false };
   return {
     distExists: true,
-    stale: newestMtime(path.join(packageRoot, "src")) > fs.statSync(distIndex).mtimeMs
+    stale: newestMtime(sourceRoot) > fs.statSync(distIndex).mtimeMs
   };
 }
 

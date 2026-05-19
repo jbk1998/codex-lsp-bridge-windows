@@ -37,4 +37,12 @@ describe("config", () => {
       hook: { maxFiles: 9, verbosePending: true }
     });
   });
+
+  it("uses a diagnostics timeout suitable for cold language-server analysis by default", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
+
+    expect(loadConfig(rootPath)).toMatchObject({
+      diagnosticsTimeoutMs: 5000
+    });
+  });
 });
