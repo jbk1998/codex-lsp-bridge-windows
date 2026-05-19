@@ -43,7 +43,10 @@ describe("MCP dispatch", () => {
     });
     await expect(dispatch(service, { method: "tools/list" })).resolves.toMatchObject({
       tools: expect.arrayContaining([
-        expect.objectContaining({ name: "lsp_diagnostics" }),
+        expect.objectContaining({
+          name: "lsp_diagnostics",
+          annotations: expect.objectContaining({ readOnlyHint: true, destructiveHint: false })
+        }),
         expect.objectContaining({ name: "lsp_definition" }),
         expect.objectContaining({ name: "lsp_references" }),
         expect.objectContaining({ name: "lsp_symbols" }),

@@ -22,6 +22,12 @@ const tools = [
   {
     name: "lsp_diagnostics",
     description: "Return compressed LSP diagnostics for a file or currently opened workspace documents.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -33,6 +39,12 @@ const tools = [
   {
     name: "lsp_definition",
     description: "Find the semantic definition for a symbol or a concrete file position.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -47,6 +59,12 @@ const tools = [
   {
     name: "lsp_references",
     description: "Find semantic references for a symbol or a concrete file position.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -61,6 +79,12 @@ const tools = [
   {
     name: "lsp_symbols",
     description: "Search workspace symbols by query.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       properties: {
@@ -73,6 +97,12 @@ const tools = [
   {
     name: "lsp_hover",
     description: "Return hover/type information for a symbol or a concrete file position.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
     inputSchema: {
       type: "object",
       properties: {
