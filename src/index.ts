@@ -190,7 +190,7 @@ function requireValue(command: string, value: string | undefined): string {
 function printUsage(stream: "stdout" | "stderr"): void {
   const usage = `Usage:
   codex-lsp-bridge install [--dry-run]
-  codex-lsp-bridge install [--auto-update] [--package package-spec] [--dry-run]
+  codex-lsp-bridge install [--auto-update] [--package package-spec] [--with-rust-analyzer] [--dry-run]
   codex-lsp-bridge uninstall [--dry-run]
   codex-lsp-bridge post-tool-diagnostics
   codex-lsp-bridge doctor [--root path]
@@ -333,6 +333,7 @@ async function readCachedSourceFiles(
 function mergeDiagnosticSummaries(summaries: Array<Awaited<ReturnType<WorkspaceCommandService["diagnostics"]>>>) {
   const items = summaries.flatMap((summary) => summary.items);
   const status = summaries.some((summary) => summary.status === "timed_out") ? "timed_out" : "ok";
+  const unavailableReason = summaries.find((summary) => summary.status === "unavailable")?.unavailableReason;
   const bySeverity = {
     error: items.filter((item) => item.severity === "error").length,
     warning: items.filter((item) => item.severity === "warning").length,
@@ -340,9 +341,10 @@ function mergeDiagnosticSummaries(summaries: Array<Awaited<ReturnType<WorkspaceC
     hint: items.filter((item) => item.severity === "hint").length
   };
   return {
-    status,
+    status: status === "timed_out" ? "timed_out" : unavailableReason ? "unavailable" : "ok",
     timedOut: summaries.some((summary) => summary.timedOut),
     stale: summaries.some((summary) => summary.stale),
+    ...(unavailableReason ? { unavailableReason } : {}),
     total: items.length,
     bySeverity,
     items,
@@ -393,7 +395,12 @@ function resolveExplicitWorkspaceRootSync(root: string): string {
 }
 
 function isWorkspaceRootSync(directory: string): boolean {
-  return existsSync(path.join(directory, ".git")) || existsSync(path.join(directory, "package.json")) || existsSync(path.join(directory, "tsconfig.json"));
+  return (
+    existsSync(path.join(directory, ".git")) ||
+    existsSync(path.join(directory, "package.json")) ||
+    existsSync(path.join(directory, "tsconfig.json")) ||
+    existsSync(path.join(directory, "Cargo.toml"))
+  );
 }
 
 function runPackageScript(scriptName: string, args: string[]): void {

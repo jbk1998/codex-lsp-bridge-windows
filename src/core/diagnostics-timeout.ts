@@ -67,10 +67,19 @@ function hasMonorepoMarker(rootPath: string): boolean {
   if (fileExists(path.join(rootPath, "pnpm-workspace.yaml"))) return true;
   if (fileExists(path.join(rootPath, "turbo.json"))) return true;
   if (fileExists(path.join(rootPath, "nx.json"))) return true;
+  if (hasCargoWorkspaceMarker(path.join(rootPath, "Cargo.toml"))) return true;
 
   const packageJson = readJson(path.join(rootPath, "package.json"));
   const workspaces = packageJson?.workspaces;
   return Array.isArray(workspaces) || (typeof workspaces === "object" && workspaces !== null);
+}
+
+function hasCargoWorkspaceMarker(filePath: string): boolean {
+  try {
+    return /^\s*\[workspace\]/m.test(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 function countTsconfigReferences(filePath: string): number {
@@ -105,7 +114,7 @@ function countSourceFiles(rootPath: string): number {
 }
 
 function isSourceFile(fileName: string): boolean {
-  return [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts"].includes(path.extname(fileName));
+  return [".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".rs", ".py", ".go"].includes(path.extname(fileName));
 }
 
 function readJson(filePath: string): Record<string, unknown> | undefined {

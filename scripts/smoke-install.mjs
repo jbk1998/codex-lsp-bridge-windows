@@ -34,6 +34,9 @@ assert(autoConfig.includes('command = "npm"'), "auto-update install did not use 
 assert(autoConfig.includes('"--package=codex-lsp-bridge@0.0.0-smoke"'), "auto-update install did not preserve package spec");
 assert(autoHooks.includes("npm exec --yes --package='codex-lsp-bridge@0.0.0-smoke' -- codex-lsp-bridge post-tool-diagnostics"), "auto-update hook did not use npm package spec");
 
+const rustDryRun = run(["scripts/install-codex.mjs", "--dry-run", "--with-rust-analyzer"]);
+assert(rustDryRun.stdout.includes("would install rust-analyzer"), "with-rust-analyzer dry run did not report rustup action");
+
 fs.rmSync(codexHome, { recursive: true, force: true });
 console.log("[codex-lsp-bridge] install/uninstall smoke passed");
 
@@ -48,6 +51,7 @@ function run(args) {
     process.stderr.write(result.stdout);
     process.exit(result.status ?? 1);
   }
+  return result;
 }
 
 function read(relativePath) {

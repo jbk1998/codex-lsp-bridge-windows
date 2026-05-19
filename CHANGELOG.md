@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.3
+
+- Publish the `--with-rust-analyzer` installer option in the CLI package.
+
+## 0.3.2
+
+- Add `codex-lsp-bridge install --with-rust-analyzer` to install `rust-analyzer` through `rustup` during Codex setup.
+
+## 0.3.1
+
+- Return `status: "unavailable"` diagnostics instead of throwing when a language server command is missing.
+- Document `rust-toolchain.toml` as the preferred per-project way to request `rust-analyzer`.
+
+## 0.3.0
+
+- Extend automatic PostToolUse diagnostics and timeout sizing to Rust source files.
+- Skip PostToolUse diagnostics quietly when an optional language server is not installed.
+- Return a normal request error instead of crashing when a language server command is missing.
+- Recognize `Cargo.toml` as an explicit MCP workspace root.
+
 ## 0.2.0
 
 - Add `diagnosticsTimeoutMs: "auto"` for workspace-aware diagnostics timeout selection.

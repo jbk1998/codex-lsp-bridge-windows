@@ -57,4 +57,14 @@ describe("config", () => {
       diagnosticsTimeoutMs: "auto"
     });
   });
+
+  it("accepts Rust as the default language", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
+    await fs.mkdir(path.join(rootPath, ".codex"), { recursive: true });
+    await fs.writeFile(path.join(rootPath, ".codex", "lsp-client.json"), JSON.stringify({ defaultLanguage: "rust" }));
+
+    expect(loadConfig(rootPath)).toMatchObject({
+      defaultLanguage: "rust"
+    });
+  });
 });

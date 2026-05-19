@@ -32,4 +32,20 @@ describe("diagnostics", () => {
     expect(lspSeverityToText(4)).toBe("hint");
     expect(lspSeverityToText(undefined)).toBe("hint");
   });
+
+  it("preserves unavailable diagnostics metadata", () => {
+    expect(
+      summarizeDiagnostics({
+        status: "unavailable",
+        timedOut: false,
+        stale: false,
+        unavailableReason: "Failed to start LSP server",
+        items: []
+      })
+    ).toMatchObject({
+      status: "unavailable",
+      unavailableReason: "Failed to start LSP server",
+      total: 0
+    });
+  });
 });

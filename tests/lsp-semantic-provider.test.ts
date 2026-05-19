@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LspSemanticProvider } from "../src/core/lsp-semantic-provider.js";
+import { JsonRpcLspClient } from "../src/core/json-rpc-lsp-client.js";
 import type { LspClient, ServerProcessConfig } from "../src/core/json-rpc-lsp-client.js";
 import { filePathToUri } from "../src/utils/uri.js";
 
@@ -165,6 +166,26 @@ describe("LspSemanticProvider", () => {
     await expect(provider.diagnostics(uri, { timeoutMs: 80 })).resolves.toMatchObject({
       status: "ok",
       timedOut: false,
+      items: []
+    });
+  });
+
+  it("returns unavailable diagnostics when the language server command is missing", async () => {
+    const provider = new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      server: { command: path.join(os.tmpdir(), "codex-lsp-missing-server"), args: [], cwd: rootPath },
+      workspaceSeedFiles: ["src/editor.ts"],
+      workspaceSeedExtensions: [".ts", ".tsx"],
+      diagnosticsTimeoutMs: 20,
+      clientFactory: (server) => new JsonRpcLspClient(server)
+    });
+
+    await expect(provider.diagnostics(filePathToUri(filePath))).resolves.toMatchObject({
+      status: "unavailable",
+      timedOut: false,
+      stale: false,
+      unavailableReason: expect.stringContaining("Failed to start LSP server"),
       items: []
     });
   });

@@ -4,13 +4,15 @@
 [![CI](https://github.com/shjeon-96/codex-lsp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/shjeon-96/codex-lsp-bridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Read-only LSP tools for Codex CLI.
+Read-only LSP tools for Codex CLI, with TypeScript as the primary path and
+experimental Rust support through `rust-analyzer`.
 
 `codex-lsp-bridge` gives Codex semantic signals from your local language
 servers — diagnostics, definitions, references, symbols, hover, and status —
 without granting write access or escaping the workspace root.
 
-It is meant to be a semantic safety layer for AI coding workflows:
+It is meant to be a semantic safety layer for AI coding workflows across
+supported languages:
 
 - understand type and semantic diagnostics after edits
 - navigate definitions and references without guessing from grep alone
@@ -26,8 +28,9 @@ feedback layer from the same language servers your editor uses.
 
 Typical loop:
 
-1. Codex edits a TypeScript file.
-2. The hook asks the local language server for diagnostics on touched files.
+1. Codex edits a supported source file.
+2. The hook asks the matching local language server for diagnostics on touched
+   files.
 3. Codex sees compact semantic errors before it continues.
 4. If diagnostics are stale or time out, the result says so instead of
    pretending there are no errors.
@@ -54,11 +57,26 @@ Install a language server for your project. For TypeScript:
 npm install -g typescript-language-server typescript
 ```
 
+For Rust:
+
+```bash
+rustup component add rust-analyzer
+```
+
 Install and register the Codex integration:
 
 ```bash
 npm install -g codex-lsp-bridge
 codex-lsp-bridge install --auto-update
+codex-lsp-bridge doctor --root .
+```
+
+For a Rust-first setup, the installer can ask `rustup` to install
+`rust-analyzer` during setup:
+
+```bash
+npm install -g codex-lsp-bridge
+codex-lsp-bridge install --auto-update --with-rust-analyzer
 codex-lsp-bridge doctor --root .
 ```
 
@@ -97,7 +115,8 @@ restart, Codex can call:
 - Definition, references, symbols, and hover from local language servers.
 - Position-based lookup for precise navigation when file/line/character is
   known.
-- Quiet PostToolUse diagnostics for touched TS/TSX files.
+- Quiet PostToolUse diagnostics for touched supported source files.
+- Rust workspace detection through `Cargo.toml` and `.rs` hook coverage.
 - Workspace-root boundaries with realpath checks, including symlink escape
   protection.
 
@@ -106,9 +125,11 @@ restart, Codex can call:
 The MVP is intentionally narrow and ready for local always-on use.
 
 - Read-only first
-- TypeScript-focused in practice
-- Rust, Python, and Go adapters are present but less exercised
-- No automatic language server installation
+- TypeScript remains the primary path
+- Rust adapter and hook coverage are supported experimentally
+- Python and Go adapters are present but less exercised
+- No broad automatic language server installation; `--with-rust-analyzer` is a
+  narrow explicit Rust setup helper
 - No rename/code-action support yet
 
 ## Requirements
@@ -117,17 +138,32 @@ The MVP is intentionally narrow and ready for local always-on use.
 - Codex CLI with MCP support
 - Local language server executable for the language you want to use
 
-| Language | Support | Required command | Install hint |
-| --- | --- | --- | --- |
-| TypeScript / JavaScript | Primary | `typescript-language-server` | `npm install -g typescript-language-server typescript` |
-| Rust | Experimental | `rust-analyzer` | `rustup component add rust-analyzer` |
-| Python | Experimental | `pyright-langserver` | `npm install -g pyright` |
-| Go | Experimental | `gopls` | `go install golang.org/x/tools/gopls@latest` |
+| Language | Support | Required command | Hook coverage | Install hint |
+| --- | --- | --- | --- | --- |
+| TypeScript / JavaScript | Primary | `typescript-language-server` | `.ts`, `.tsx`, `.js`, `.jsx` | `npm install -g typescript-language-server typescript` |
+| Rust | Experimental | `rust-analyzer` | `.rs` | `rustup component add rust-analyzer` |
+| Python | Experimental | `pyright-langserver` | `.py` | `npm install -g pyright` |
+| Go | Experimental | `gopls` | `.go` | `go install golang.org/x/tools/gopls@latest` |
 
 For TypeScript projects, install a language server if needed:
 
 ```bash
 npm install -g typescript-language-server typescript
+```
+
+For Rust projects, install `rust-analyzer` if needed:
+
+```bash
+rustup component add rust-analyzer
+```
+
+For Rust repos where contributors should get the same component naturally,
+make `rust-toolchain.toml` the project source of truth:
+
+```toml
+[toolchain]
+channel = "stable"
+components = ["rust-analyzer"]
 ```
 
 `lsp_status` and `codex-lsp-bridge doctor --root .` report the detected
@@ -143,10 +179,24 @@ npm install -g codex-lsp-bridge
 codex-lsp-bridge install --auto-update
 ```
 
+Rust-first install that also asks `rustup` to install `rust-analyzer` when it is
+missing:
+
+```bash
+npm install -g codex-lsp-bridge
+codex-lsp-bridge install --auto-update --with-rust-analyzer
+```
+
 One-shot install through npm:
 
 ```bash
 npx codex-lsp-bridge@latest install --auto-update
+```
+
+One-shot Rust-first install:
+
+```bash
+npx codex-lsp-bridge@latest install --auto-update --with-rust-analyzer
 ```
 
 From a local checkout:
@@ -172,7 +222,7 @@ codex-lsp-bridge install --dry-run
 The installer writes:
 
 - `~/.codex/config.toml`: global MCP server registration
-- `~/.codex/hooks.json`: `PostToolUse` hook for touched TS/TSX diagnostics
+- `~/.codex/hooks.json`: `PostToolUse` hook for touched supported source-file diagnostics
 - `~/.codex/AGENTS.md`: managed workflow instructions that tell Codex to use
   LSP diagnostics during review, audit, and investigation workflows, not only
   after edits
@@ -260,9 +310,10 @@ workspace root. That makes one global registration usable from any repository.
 MCP tool calls do not infer a new workspace root from `file` or `dir` paths.
 For detached review worktrees such as `/tmp/pr-1558-review`, pass `root`
 explicitly in the tool call. Explicit `root` values must point at a
-recognizable workspace containing `.git`, `package.json`, or `tsconfig.json`.
+recognizable workspace containing `.git`, `package.json`, `tsconfig.json`, or
+`Cargo.toml`.
 
-The hook runs after edit tools and checks touched TS/TSX files:
+The hook runs after edit tools and checks touched supported source files:
 
 ```json
 {
@@ -286,12 +337,22 @@ The hook runs after edit tools and checks touched TS/TSX files:
 The hook is intentionally post-tool, not pre-tool. Diagnostics are useful after
 a file changes, not before. Read-only review sessions will not trigger the hook
 unless Codex edits a file or explicitly calls the MCP diagnostics tool.
+If the touched file's language server is not installed, the hook skips that file
+quietly by default so a contributor without optional language tooling is not
+blocked.
+
+Rust files use the same hook path as TypeScript files. A touched `.rs` file
+calls `codex-lsp-bridge diagnostics --file <file> --root <workspace>`, which
+auto-detects Rust from the extension and starts `rust-analyzer` lazily. Missing
+`rust-analyzer` is treated as unavailable language tooling, not as a successful
+clean diagnostic result.
 
 Hook output is intentionally quiet:
 
 - clean files print one short line
 - `timed_out` with no diagnostics is silent by default
-- `CODEX_LSP_HOOK_VERBOSE_PENDING=1` prints `LSP diagnostics pending`
+- `CODEX_LSP_HOOK_VERBOSE_PENDING=1` prints pending or skipped language-server
+  details
 - warning/hint-only diagnostics print a compact count
 - repeated identical error output is deduplicated
 - `CODEX_LSP_HOOK_MAX_FILES` limits touched-file fanout, default `5`
@@ -327,6 +388,8 @@ Choose another language:
 
 ```bash
 codex-lsp-bridge diagnostics --file src/main.rs --language rust --root .
+codex-lsp-bridge definition --file src/main.rs --line 12 --character 8 --root .
+codex-lsp-bridge references --file src/main.rs --line 12 --character 8 --root .
 codex-lsp-bridge diagnostics --file app.py --language python --root .
 codex-lsp-bridge diagnostics --file main.go --root .
 ```
@@ -349,6 +412,10 @@ Diagnostics include trust metadata:
 `status: "timed_out"` means the bridge did not receive fresh
 `textDocument/publishDiagnostics` before the timeout. Treat that differently
 from "no diagnostics".
+
+`status: "unavailable"` means the selected language server could not be
+started, commonly because the required command is not installed. Treat that as
+missing setup, not as a passing semantic check.
 
 ## MCP Tools
 
@@ -422,20 +489,20 @@ Optional JSON config is read from `~/.codex/lsp-client.json` and then
 `<workspace>/.codex/lsp-client.json`; workspace config wins.
 
 Use global config for your personal default and workspace config for large
-repos that need longer language-server warmup:
+repos that need longer language-server warmup. For a Rust-first workspace:
 
 ```json
 {
-  "defaultLanguage": "typescript",
+  "defaultLanguage": "rust",
   "diagnosticsTimeoutMs": 15000,
   "hook": {
     "maxFiles": 5,
     "verbosePending": false
   },
   "languageServers": {
-    "typescript": {
-      "command": "typescript-language-server",
-      "args": ["--stdio"]
+    "rust": {
+      "command": "rust-analyzer",
+      "args": []
     }
   }
 }
@@ -465,7 +532,8 @@ use `timeoutBudgetMs` instead because they have a scan-wide wall-clock budget.
 
 For TypeScript, a workspace-local
 `node_modules/.bin/typescript-language-server` is preferred when present, then
-the configured command or PATH command is used.
+the configured command or PATH command is used. Rust uses the configured
+`rust-analyzer` command or the PATH command.
 
 ## Plugin Layout
 
@@ -488,10 +556,10 @@ For best results, use these rules in global or project instructions:
 
 ```md
 When codex-lsp-bridge MCP tools are available, use them proactively for
-TypeScript/TSX semantic feedback. After editing TS/TSX files, call
-`lsp_diagnostics` for touched files before broader verification. Before
-renames, moves, signature changes, or multi-file semantic refactors, call
-`lsp_definition` and `lsp_references`. Prefer file-position inputs over
+semantic feedback from supported source files. After editing supported source
+files, call `lsp_diagnostics` for touched files before broader verification.
+Before renames, moves, signature changes, or multi-file semantic refactors,
+call `lsp_definition` and `lsp_references`. Prefer file-position inputs over
 symbol-only inputs when the occurrence is known. If LSP is unavailable, stale,
 timed out, or ambiguous, say so and fall back to the narrowest repo-native
 verification command.

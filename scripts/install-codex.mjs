@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -13,6 +14,7 @@ const bridgeCli = path.join(packageRoot, "dist", "index.js");
 const hookScript = path.join(packageRoot, "scripts", "codex-lsp-post-tool-use.mjs");
 const dryRun = process.argv.includes("--dry-run");
 const autoUpdate = process.argv.includes("--auto-update");
+const withRustAnalyzer = process.argv.includes("--with-rust-analyzer") || process.argv.includes("--with-rust");
 const packageSpec = readOption("--package") ?? "codex-lsp-bridge@latest";
 
 ensureBuilt();
@@ -26,6 +28,9 @@ if (dryRun) {
   console.log(configResult);
   console.log(JSON.stringify(hooksResult, null, 2));
   console.log(agentsResult);
+  if (withRustAnalyzer) {
+    console.log("[codex-lsp-bridge] would install rust-analyzer with: rustup component add rust-analyzer");
+  }
   process.exit(0);
 }
 
@@ -33,6 +38,7 @@ fs.mkdirSync(codexHome, { recursive: true });
 fs.writeFileSync(configPath, configResult);
 fs.writeFileSync(hooksPath, `${JSON.stringify(hooksResult, null, 2)}\n`);
 fs.writeFileSync(agentsPath, agentsResult);
+if (withRustAnalyzer) installRustAnalyzer();
 
 console.log(`[codex-lsp-bridge] installed Codex MCP config: ${configPath}`);
 console.log(`[codex-lsp-bridge] installed PostToolUse diagnostics hook: ${hooksPath}`);
@@ -46,6 +52,40 @@ function ensureBuilt() {
   if (!fs.existsSync(hookScript)) {
     throw new Error(`Hook script not found: ${hookScript}`);
   }
+}
+
+function installRustAnalyzer() {
+  if (commandExists("rust-analyzer")) {
+    console.log("[codex-lsp-bridge] rust-analyzer already available.");
+    return;
+  }
+
+  if (!commandExists("rustup")) {
+    throw new Error("Cannot install rust-analyzer because rustup is not available. Install Rust from https://rustup.rs/ or rerun without --with-rust-analyzer.");
+  }
+
+  const result = spawnSync("rustup", ["component", "add", "rust-analyzer"], {
+    stdio: "inherit"
+  });
+  if (result.status !== 0) {
+    throw new Error(`rustup component add rust-analyzer failed with status ${result.status ?? "unknown"}`);
+  }
+}
+
+function commandExists(command) {
+  const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
+  const extensions = process.platform === "win32" ? (process.env.PATHEXT ?? ".EXE;.CMD;.BAT;.COM").split(";") : [""];
+  for (const directory of pathEntries) {
+    for (const extension of extensions) {
+      try {
+        fs.accessSync(path.join(directory, `${command}${extension}`), fs.constants.X_OK);
+        return true;
+      } catch {
+        continue;
+      }
+    }
+  }
+  return false;
 }
 
 function readText(filePath) {

@@ -50,10 +50,15 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
     this.process.stderr.on("data", (chunk: Buffer) => {
       this.emit("stderr", chunk.toString("utf8"));
     });
+    this.process.on("error", (cause) => {
+      const error = new Error(`Failed to start LSP server "${this.config.command}": ${cause.message}`);
+      this.rejectPending(error);
+      this.process = undefined;
+      this.emit("exit", { code: null, signal: null });
+    });
     this.process.on("exit", (code, signal) => {
       const error = new Error(`LSP server exited with code ${code ?? "null"} signal ${signal ?? "null"}`);
-      for (const pending of this.pending.values()) pending.reject(error);
-      this.pending.clear();
+      this.rejectPending(error);
       this.process = undefined;
       this.emit("exit", { code, signal });
     });
@@ -100,6 +105,11 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
     const body = Buffer.from(JSON.stringify(message), "utf8");
     const header = Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`, "utf8");
     this.process.stdin.write(Buffer.concat([header, body]));
+  }
+
+  private rejectPending(error: Error): void {
+    for (const pending of this.pending.values()) pending.reject(error);
+    this.pending.clear();
   }
 
   private readChunk(chunk: Buffer): void {

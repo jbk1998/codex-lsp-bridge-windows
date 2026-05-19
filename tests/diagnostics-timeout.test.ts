@@ -45,4 +45,30 @@ describe("diagnostics timeout policy", () => {
       ])
     });
   });
+
+  it("increases auto timeout for Cargo workspaces", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-timeout-"));
+    await fs.writeFile(path.join(rootPath, "Cargo.toml"), "[workspace]\nmembers = [\"crates/*\"]\n");
+
+    expect(resolveDiagnosticsTimeout(rootPath, "auto")).toMatchObject({
+      timeoutMs: 25000,
+      policy: "auto",
+      reasons: expect.arrayContaining(["monorepo marker +10000ms"])
+    });
+  });
+
+  it("counts Rust source files when sizing auto timeout", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-timeout-"));
+    const srcPath = path.join(rootPath, "src");
+    await fs.mkdir(srcPath);
+    await Promise.all(
+      Array.from({ length: 501 }, (_, index) => fs.writeFile(path.join(srcPath, `mod_${index}.rs`), "fn main() {}\n"))
+    );
+
+    expect(resolveDiagnosticsTimeout(rootPath, "auto")).toMatchObject({
+      timeoutMs: 25000,
+      policy: "auto",
+      reasons: expect.arrayContaining(["source files sampled 500+ +10000ms"])
+    });
+  });
 });

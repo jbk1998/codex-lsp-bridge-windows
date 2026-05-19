@@ -40,6 +40,7 @@ export function summarizeDiagnostics(report: DiagnosticReport | Diagnostic[], li
     status: Array.isArray(report) ? "ok" : report.status,
     timedOut: Array.isArray(report) ? false : report.timedOut,
     stale: Array.isArray(report) ? false : report.stale,
+    unavailableReason: Array.isArray(report) ? undefined : report.unavailableReason,
     sourceRevision: Array.isArray(report) ? undefined : report.sourceRevision,
     total: sorted.length,
     bySeverity,

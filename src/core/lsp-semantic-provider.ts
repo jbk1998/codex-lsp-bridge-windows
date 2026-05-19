@@ -74,7 +74,17 @@ export class LspSemanticProvider implements SemanticProvider {
   }
 
   async diagnostics(uri?: string, options: DiagnosticOptions = {}): Promise<DiagnosticReport> {
-    await this.ensureInitialized();
+    const initialized = await this.ensureInitializedForDiagnostics();
+    if (!initialized.ok) {
+      return {
+        status: "unavailable",
+        timedOut: false,
+        stale: false,
+        unavailableReason: initialized.reason,
+        items: []
+      };
+    }
+
     if (uri) {
       const document = await this.resolveDocument(uri);
       const currentRevision = this.diagnosticsRevisionByUri.get(document.uri) ?? 0;
@@ -99,6 +109,18 @@ export class LspSemanticProvider implements SemanticProvider {
       stale: false,
       items: [...this.diagnosticsByUri.values()].flat()
     };
+  }
+
+  private async ensureInitializedForDiagnostics(): Promise<{ ok: true } | { ok: false; reason: string }> {
+    try {
+      await this.ensureInitialized();
+      return { ok: true };
+    } catch (error) {
+      if (isMissingLanguageServerError(error)) {
+        return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+      }
+      throw error;
+    }
   }
 
   async definition(symbol: string): Promise<Location> {
@@ -391,6 +413,10 @@ function isPublishDiagnosticsParams(value: unknown): value is { uri: string; dia
   if (!value || typeof value !== "object") return false;
   const candidate = value as { uri?: unknown; diagnostics?: unknown };
   return typeof candidate.uri === "string" && Array.isArray(candidate.diagnostics);
+}
+
+function isMissingLanguageServerError(error: unknown): boolean {
+  return error instanceof Error && error.message.startsWith("Failed to start LSP server");
 }
 
 function toLspPosition(position: DocumentPosition): Position {

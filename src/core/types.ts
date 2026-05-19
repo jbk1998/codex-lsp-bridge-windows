@@ -33,12 +33,13 @@ export interface Diagnostic {
   code?: string | number;
 }
 
-export type DiagnosticStatus = "ok" | "timed_out";
+export type DiagnosticStatus = "ok" | "timed_out" | "unavailable";
 
 export interface DiagnosticReport {
   status: DiagnosticStatus;
   timedOut: boolean;
   stale: boolean;
+  unavailableReason?: string;
   sourceRevision?: number;
   items: Diagnostic[];
 }
@@ -76,6 +77,7 @@ export interface DiagnosticSummary {
   status: DiagnosticStatus;
   timedOut: boolean;
   stale: boolean;
+  unavailableReason?: string;
   sourceRevision?: number;
   total: number;
   bySeverity: Record<Severity, number>;
