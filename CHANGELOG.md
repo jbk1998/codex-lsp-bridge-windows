@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+- Add `diagnosticsTimeoutMs: "auto"` for workspace-aware diagnostics timeout selection.
+- Report resolved diagnostics timeout policy and reasons in `doctor` / `lsp_status`.
+- Increase default file diagnostics timeout from 5000 ms to 15000 ms.
+- Add CLI file diagnostics override with `--timeout-ms`.
+
 ## 0.1.2
 
 - Refresh the public README installation flow for npm users.
