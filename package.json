@@ -15,7 +15,8 @@
   "type": "module",
   "bin": {
     "codex-lsp-bridge": "./dist/index.js",
-    "codex-lsp-bridge-install": "./scripts/install-codex.mjs"
+    "codex-lsp-bridge-install": "./scripts/install-codex.mjs",
+    "codex-lsp-bridge-uninstall": "./scripts/uninstall-codex.mjs"
   },
   "files": [
     "dist/index.js",
@@ -25,6 +26,7 @@
     "dist/utils",
     "scripts/codex-lsp-post-tool-use.mjs",
     "scripts/install-codex.mjs",
+    "scripts/uninstall-codex.mjs",
     "README.md",
     "CONTRIBUTING.md",
     "LICENSE",

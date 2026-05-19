@@ -64,7 +64,7 @@ function upsertMcpConfig(config) {
     ""
   ].join("\n");
 
-  const pattern = /\n?\[mcp_servers\.codex-lsp-bridge\]\n(?:[^\n]*\n)*?(?=\n\[|$)/;
+  const pattern = /\n?\[mcp_servers\.codex-lsp-bridge\]\n[\s\S]*?(?=\n\[|$)/;
   const trimmed = config.trimEnd();
   if (pattern.test(trimmed)) {
     return `${trimmed.replace(pattern, `\n${block}`)}\n`;

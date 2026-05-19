@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { CommandService } from "./core/command-service.js";
 import { LspManager } from "./core/lsp-manager.js";
 import { filePathToUri } from "./utils/uri.js";
@@ -7,6 +10,15 @@ import type { SupportedLanguage } from "./adapters/language-config.js";
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  if (args[0] === "install") {
+    runPackageScript("install-codex.mjs", args.slice(1));
+    return;
+  }
+  if (args[0] === "uninstall") {
+    runPackageScript("uninstall-codex.mjs", args.slice(1));
+    return;
+  }
+
   const root = readOption(args, "--root") ?? process.cwd();
   const manager = new LspManager(root);
 
@@ -105,6 +117,8 @@ function requireValue(command: string, value: string | undefined): string {
 
 function printUsage(): void {
   console.error(`Usage:
+  codex-lsp-bridge install [--dry-run]
+  codex-lsp-bridge uninstall [--dry-run]
   codex-lsp-bridge diagnostics [--file path] [--language typescript|rust|python] [--root path]
   codex-lsp-bridge definition <symbol> [--language typescript|rust|python] [--root path]
   codex-lsp-bridge definition --file path --line n --character n [--language typescript|rust|python] [--root path]
@@ -114,6 +128,15 @@ function printUsage(): void {
   codex-lsp-bridge hover <symbol> [--language typescript|rust|python] [--root path]
   codex-lsp-bridge hover --file path --line n --character n [--language typescript|rust|python] [--root path]
   codex-lsp-bridge mcp [--root path] [--language typescript|rust|python]`);
+}
+
+function runPackageScript(scriptName: string, args: string[]): void {
+  const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const scriptPath = path.join(packageRoot, "scripts", scriptName);
+  const result = spawnSync(process.execPath, [scriptPath, ...args], {
+    stdio: "inherit"
+  });
+  process.exitCode = result.status ?? 1;
 }
 
 main().catch((error) => {

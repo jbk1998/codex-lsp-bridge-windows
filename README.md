@@ -46,24 +46,30 @@ npm install -g typescript-language-server typescript
 
 ## Install
 
+One-command setup from npm:
+
+```bash
+npx codex-lsp-bridge@latest install
+```
+
 From a local checkout:
 
 ```bash
 npm install
 npm run build
-npm exec -- codex-lsp-bridge-install
+npm exec -- codex-lsp-bridge install
 ```
 
 From a globally installed package:
 
 ```bash
-codex-lsp-bridge-install
+codex-lsp-bridge install
 ```
 
 Preview the generated Codex config without writing files:
 
 ```bash
-codex-lsp-bridge-install --dry-run
+codex-lsp-bridge install --dry-run
 ```
 
 The installer writes:
@@ -72,6 +78,29 @@ The installer writes:
 - `~/.codex/hooks.json`: `PostToolUse` hook for touched TS/TSX diagnostics
 
 Restart Codex after installing.
+
+## Uninstall
+
+Remove the MCP server registration and automatic diagnostics hook:
+
+```bash
+npx codex-lsp-bridge@latest uninstall
+```
+
+For a local checkout or global install:
+
+```bash
+codex-lsp-bridge uninstall
+```
+
+Preview the removal first:
+
+```bash
+codex-lsp-bridge uninstall --dry-run
+```
+
+The uninstall command removes only the `codex-lsp-bridge` config block and hook
+entry. It leaves unrelated Codex config intact.
 
 ## What Gets Installed
 
