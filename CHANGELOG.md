@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2
+
+- Refresh the public README installation flow for npm users.
+
 ## 0.1.1
 
 - Make `codex-lsp-bridge --help` and `codex-lsp-bridge help` exit successfully.
