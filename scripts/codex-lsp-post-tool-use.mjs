@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = process.cwd();
 const bridgeCli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/index.js");
 const maxFiles = Number(process.env.CODEX_LSP_HOOK_MAX_FILES ?? 5);
+const verbosePending = isEnabled(process.env.CODEX_LSP_HOOK_VERBOSE_PENDING);
 
 const input = await readStdin();
 const event = parseJson(input);
@@ -46,8 +47,10 @@ const total = diagnostics.reduce((sum, item) => sum + (typeof item.total === "nu
 const errorTotal = diagnostics.reduce((sum, item) => sum + (item.bySeverity?.error ?? 0), 0);
 const timedOut = diagnostics.filter((item) => item.timedOut || item.status === "timed_out");
 
-if (timedOut.length > 0 && errorTotal === 0) {
-  console.log(`[codex-lsp-bridge] LSP diagnostics pending for ${timedOut.length} touched TS/TSX file(s).`);
+if (timedOut.length > 0 && total === 0 && diagnostics.every((item) => !item.error)) {
+  if (verbosePending) {
+    console.log(`[codex-lsp-bridge] LSP diagnostics pending for ${timedOut.length} touched TS/TSX file(s).`);
+  }
   process.exit(0);
 }
 
@@ -127,4 +130,8 @@ function isDuplicate(value) {
   if (fs.existsSync(filePath)) return true;
   fs.writeFileSync(filePath, String(Date.now()));
   return false;
+}
+
+function isEnabled(value) {
+  return value === "1" || value === "true" || value === "yes";
 }

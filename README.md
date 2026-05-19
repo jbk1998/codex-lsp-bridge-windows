@@ -194,7 +194,8 @@ unless Codex edits a file or explicitly calls the MCP diagnostics tool.
 Hook output is intentionally quiet:
 
 - clean files print one short line
-- timed-out diagnostics print `LSP diagnostics pending`
+- `timed_out` with no diagnostics is silent by default
+- `CODEX_LSP_HOOK_VERBOSE_PENDING=1` prints `LSP diagnostics pending`
 - warning/hint-only diagnostics print a compact count
 - repeated identical error output is deduplicated
 - `CODEX_LSP_HOOK_MAX_FILES` limits touched-file fanout, default `5`
