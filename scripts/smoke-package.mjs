@@ -21,6 +21,9 @@ try {
   run("npm", ["install", tarballPath], tempRoot);
 
   const binPath = path.join(tempRoot, "node_modules", ".bin", process.platform === "win32" ? "codex-lsp-bridge.cmd" : "codex-lsp-bridge");
+  const usage = run(binPath, ["--help"], tempRoot);
+  assert(usage.stdout.includes("Usage:"), "installed package --help did not print usage");
+
   const help = run(binPath, ["doctor", "--root", packageRoot], tempRoot);
   assert(help.stdout.includes('"distExists": true'), "installed package doctor did not report distExists true");
 

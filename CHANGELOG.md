@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Make `codex-lsp-bridge --help` and `codex-lsp-bridge help` exit successfully.
+- Add package smoke coverage for the published CLI help command.
+
 ## 0.1.0
 
 Initial MVP release.

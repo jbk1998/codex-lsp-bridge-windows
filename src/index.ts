@@ -27,6 +27,10 @@ interface SourceFileListCacheEntry {
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+  if (args.length === 0 || args[0] === "help" || args[0] === "--help" || args[0] === "-h") {
+    printUsage("stdout");
+    return;
+  }
   if (args[0] === "install") {
     runPackageScript("install-codex.mjs", args.slice(1));
     return;
@@ -129,7 +133,7 @@ async function main(): Promise<void> {
       return;
     }
 
-    printUsage();
+    printUsage("stderr");
     process.exitCode = 1;
   } finally {
     await Promise.all([...managers.values()].map((manager) => manager.dispose()));
@@ -173,8 +177,8 @@ function requireValue(command: string, value: string | undefined): string {
   return value;
 }
 
-function printUsage(): void {
-  console.error(`Usage:
+function printUsage(stream: "stdout" | "stderr"): void {
+  const usage = `Usage:
   codex-lsp-bridge install [--dry-run]
   codex-lsp-bridge install [--auto-update] [--package package-spec] [--dry-run]
   codex-lsp-bridge uninstall [--dry-run]
@@ -189,7 +193,12 @@ function printUsage(): void {
   codex-lsp-bridge symbols <query> [--language typescript|rust|python|go] [--root path]
   codex-lsp-bridge hover <symbol> [--language typescript|rust|python|go] [--root path]
   codex-lsp-bridge hover --file path --line n --character n [--language typescript|rust|python|go] [--root path]
-  codex-lsp-bridge mcp [--root path] [--language typescript|rust|python|go]`);
+  codex-lsp-bridge mcp [--root path] [--language typescript|rust|python|go]`;
+  if (stream === "stdout") {
+    console.log(usage);
+    return;
+  }
+  console.error(usage);
 }
 
 function readDirectoryDiagnosticsOptions(args: string[]): DirectoryDiagnosticsOptions {
