@@ -30,6 +30,13 @@ describe("doctor", () => {
       })
     );
     expect(result.build).toEqual(expect.objectContaining({ distExists: expect.any(Boolean), stale: expect.any(Boolean) }));
+    expect(result.diagnostics).toEqual(
+      expect.objectContaining({
+        timeoutMs: expect.any(Number),
+        policy: expect.stringMatching(/^(fixed|auto)$/),
+        reasons: expect.any(Array)
+      })
+    );
     expect(result.recommendations).toEqual(expect.any(Array));
   });
 

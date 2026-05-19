@@ -441,6 +441,19 @@ repos that need longer language-server warmup:
 }
 ```
 
+For large monorepos, let the bridge choose a bounded timeout from lightweight
+workspace hints:
+
+```json
+{
+  "diagnosticsTimeoutMs": "auto"
+}
+```
+
+Auto mode starts at 15000 ms and increases for monorepo markers, TypeScript
+project references, and large sampled source trees. It is capped at 60000 ms.
+`codex-lsp-bridge doctor --root .` reports the resolved timeout and reasons.
+
 File diagnostics can also override the wait per call:
 
 ```bash

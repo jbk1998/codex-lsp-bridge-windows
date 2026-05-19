@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { listLanguageServerConfigs } from "../adapters/language-config.js";
+import { loadConfig } from "./config.js";
+import { resolveDiagnosticsTimeout, type ResolvedDiagnosticsTimeout } from "./diagnostics-timeout.js";
 
 type DoctorLanguageResult = {
   language: string;
@@ -25,12 +27,15 @@ export interface DoctorResult {
     distExists: boolean;
     stale: boolean;
   };
+  diagnostics: ResolvedDiagnosticsTimeout;
   recommendations: string[];
 }
 
 export function runDoctor(rootPath: string): DoctorResult {
   const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  const config = loadConfig(rootPath);
+  const diagnostics = resolveDiagnosticsTimeout(rootPath, config.diagnosticsTimeoutMs);
   const languages: DoctorLanguageResult[] = listLanguageServerConfigs(rootPath).map((config) => {
     const executablePath = findExecutable(config.server.command);
     return {
@@ -53,6 +58,7 @@ export function runDoctor(rootPath: string): DoctorResult {
     languages,
     codex,
     build,
+    diagnostics,
     recommendations: buildRecommendations(languages, codex, build)
   };
 }

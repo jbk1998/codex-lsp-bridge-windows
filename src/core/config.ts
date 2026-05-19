@@ -1,11 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readDiagnosticsTimeoutPolicy, type DiagnosticsTimeoutPolicy } from "./diagnostics-timeout.js";
 import type { SupportedLanguage } from "../adapters/language-config.js";
 
 export interface LspClientConfig {
   defaultLanguage: SupportedLanguage;
-  diagnosticsTimeoutMs: number;
+  diagnosticsTimeoutMs: DiagnosticsTimeoutPolicy;
   hook: {
     maxFiles: number;
     verbosePending: boolean;
@@ -40,7 +41,7 @@ function mergeConfig(...configs: Partial<LspClientConfig>[]): LspClientConfig {
   return configs.reduce<LspClientConfig>(
     (merged, config) => ({
       defaultLanguage: isSupportedLanguage(config.defaultLanguage) ? config.defaultLanguage : merged.defaultLanguage,
-      diagnosticsTimeoutMs: readPositiveNumber(config.diagnosticsTimeoutMs, merged.diagnosticsTimeoutMs),
+      diagnosticsTimeoutMs: readDiagnosticsTimeoutPolicy(config.diagnosticsTimeoutMs, merged.diagnosticsTimeoutMs),
       hook: {
         maxFiles: readPositiveNumber(config.hook?.maxFiles, merged.hook.maxFiles),
         verbosePending: typeof config.hook?.verbosePending === "boolean" ? config.hook.verbosePending : merged.hook.verbosePending

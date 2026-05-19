@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WorkspaceCommandService } from "./core/command-service.js";
 import { loadConfig } from "./core/config.js";
+import { resolveDiagnosticsTimeout } from "./core/diagnostics-timeout.js";
 import { runDoctor } from "./core/doctor.js";
 import { LspManager } from "./core/lsp-manager.js";
 import { filePathToUri } from "./utils/uri.js";
@@ -53,8 +54,9 @@ async function main(): Promise<void> {
     const rootConfig = loadConfig(resolvedRoot);
     let scopedManager = managers.get(resolvedRoot);
     if (!scopedManager) {
+      const diagnosticsTimeout = resolveDiagnosticsTimeout(resolvedRoot, rootConfig.diagnosticsTimeoutMs);
       scopedManager = new LspManager(resolvedRoot, {
-        diagnosticsTimeoutMs: rootConfig.diagnosticsTimeoutMs,
+        diagnosticsTimeoutMs: diagnosticsTimeout.timeoutMs,
         languageServers: rootConfig.languageServers
       });
       managers.set(resolvedRoot, scopedManager);

@@ -45,4 +45,16 @@ describe("config", () => {
       diagnosticsTimeoutMs: 15000
     });
   });
+
+  it("accepts auto diagnostics timeout policy", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
+    homePath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-home-"));
+    process.env.CODEX_HOME = path.join(homePath, ".codex");
+    await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
+    await fs.writeFile(path.join(process.env.CODEX_HOME, "lsp-client.json"), JSON.stringify({ diagnosticsTimeoutMs: "auto" }));
+
+    expect(loadConfig(rootPath)).toMatchObject({
+      diagnosticsTimeoutMs: "auto"
+    });
+  });
 });
