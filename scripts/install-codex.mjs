@@ -11,6 +11,8 @@ const hooksPath = path.join(codexHome, "hooks.json");
 const bridgeCli = path.join(packageRoot, "dist", "index.js");
 const hookScript = path.join(packageRoot, "scripts", "codex-lsp-post-tool-use.mjs");
 const dryRun = process.argv.includes("--dry-run");
+const autoUpdate = process.argv.includes("--auto-update");
+const packageSpec = readOption("--package") ?? "codex-lsp-bridge@latest";
 
 ensureBuilt();
 
@@ -54,15 +56,14 @@ function readJson(filePath) {
 }
 
 function upsertMcpConfig(config) {
-  const block = [
-    "[mcp_servers.codex-lsp-bridge]",
-    'command = "node"',
-    "args = [",
-    `  ${toTomlString(bridgeCli)},`,
-    '  "mcp"',
-    "]",
-    ""
-  ].join("\n");
+  const command = autoUpdate ? "npm" : "node";
+  const args = autoUpdate
+    ? ["exec", "--yes", `--package=${packageSpec}`, "--", "codex-lsp-bridge", "mcp"]
+    : [bridgeCli, "mcp"];
+  const block = ["[mcp_servers.codex-lsp-bridge]", `command = ${toTomlString(command)}`, "args = ["]
+    .concat(args.map((arg) => `  ${toTomlString(arg)},`))
+    .concat("]", "")
+    .join("\n");
 
   const pattern = /\n?\[mcp_servers\.codex-lsp-bridge\]\n[\s\S]*?(?=\n\[|$)/;
   const trimmed = config.trimEnd();
@@ -82,7 +83,9 @@ function upsertPostToolUseHook(config) {
     hooks: [
       {
         type: "command",
-        command: `node ${shellQuote(hookScript)}`,
+        command: autoUpdate
+          ? `npm exec --yes --package=${shellQuote(packageSpec)} -- codex-lsp-bridge post-tool-diagnostics`
+          : `node ${shellQuote(hookScript)}`,
         id: "codex-lsp-bridge:post-tool-diagnostics"
       }
     ]
@@ -103,6 +106,12 @@ function upsertPostToolUseHook(config) {
 
 function toTomlString(value) {
   return JSON.stringify(value);
+}
+
+function readOption(option) {
+  const index = process.argv.indexOf(option);
+  if (index === -1) return undefined;
+  return process.argv[index + 1];
 }
 
 function shellQuote(value) {

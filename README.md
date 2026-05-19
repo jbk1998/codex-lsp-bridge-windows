@@ -52,10 +52,22 @@ One-command setup from npm:
 npx codex-lsp-bridge@latest install
 ```
 
+Auto-updating setup from npm:
+
+```bash
+npx codex-lsp-bridge@latest install --auto-update
+```
+
 From the private GitHub repository before npm publish:
 
 ```bash
 npm exec --package=github:WEED-Jeonseonghun/codex-lsp-bridge -- codex-lsp-bridge install
+```
+
+Auto-updating setup from the private GitHub repository:
+
+```bash
+npm exec --package=github:WEED-Jeonseonghun/codex-lsp-bridge -- codex-lsp-bridge install --auto-update --package github:WEED-Jeonseonghun/codex-lsp-bridge#main
 ```
 
 From a local checkout:
@@ -116,7 +128,7 @@ entry. It leaves unrelated Codex config intact.
 
 ## What Gets Installed
 
-The global MCP config points Codex at the built server:
+By default, the global MCP config points Codex at the built server:
 
 ```toml
 [mcp_servers.codex-lsp-bridge]
@@ -126,6 +138,25 @@ args = [
   "mcp"
 ]
 ```
+
+With `--auto-update`, the global MCP config points Codex at npm instead:
+
+```toml
+[mcp_servers.codex-lsp-bridge]
+command = "npm"
+args = [
+  "exec",
+  "--yes",
+  "--package=codex-lsp-bridge@latest",
+  "--",
+  "codex-lsp-bridge",
+  "mcp"
+]
+```
+
+That mode lets other users receive package updates after restarting Codex,
+without manually reinstalling the MCP config. It depends on npm package
+resolution, so use the default local install mode for active local development.
 
 Without `--root`, the server uses the Codex process working directory as the
 workspace root. That makes one global registration usable from any repository.

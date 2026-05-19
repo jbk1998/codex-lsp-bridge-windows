@@ -18,6 +18,10 @@ async function main(): Promise<void> {
     runPackageScript("uninstall-codex.mjs", args.slice(1));
     return;
   }
+  if (args[0] === "post-tool-diagnostics") {
+    runPackageScript("codex-lsp-post-tool-use.mjs", args.slice(1));
+    return;
+  }
 
   const root = readOption(args, "--root") ?? process.cwd();
   const manager = new LspManager(root);
@@ -118,7 +122,9 @@ function requireValue(command: string, value: string | undefined): string {
 function printUsage(): void {
   console.error(`Usage:
   codex-lsp-bridge install [--dry-run]
+  codex-lsp-bridge install [--auto-update] [--package package-spec] [--dry-run]
   codex-lsp-bridge uninstall [--dry-run]
+  codex-lsp-bridge post-tool-diagnostics
   codex-lsp-bridge diagnostics [--file path] [--language typescript|rust|python] [--root path]
   codex-lsp-bridge definition <symbol> [--language typescript|rust|python] [--root path]
   codex-lsp-bridge definition --file path --line n --character n [--language typescript|rust|python] [--root path]
