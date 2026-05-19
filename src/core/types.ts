@@ -43,6 +43,10 @@ export interface DiagnosticReport {
   items: Diagnostic[];
 }
 
+export interface DiagnosticOptions {
+  timeoutMs?: number;
+}
+
 export interface SymbolMatch extends Location {
   name: string;
   kind?: string;
@@ -57,7 +61,7 @@ export interface HoverInfo {
 }
 
 export interface SemanticProvider {
-  diagnostics(uri?: string): Promise<DiagnosticReport>;
+  diagnostics(uri?: string, options?: DiagnosticOptions): Promise<DiagnosticReport>;
   definition(symbol: string): Promise<Location>;
   definitionAt(position: DocumentPosition): Promise<Location>;
   references(symbol: string): Promise<Location[]>;

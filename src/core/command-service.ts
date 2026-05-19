@@ -1,5 +1,5 @@
 import { summarizeDiagnostics } from "./diagnostics.js";
-import type { DiagnosticSummary, DocumentPosition, HoverInfo, Location, SemanticProvider, SymbolMatch } from "./types.js";
+import type { DiagnosticOptions, DiagnosticSummary, DocumentPosition, HoverInfo, Location, SemanticProvider, SymbolMatch } from "./types.js";
 import { uriToFilePath } from "../utils/uri.js";
 import type { SupportedLanguage } from "../adapters/language-config.js";
 
@@ -11,8 +11,8 @@ export interface SemanticProviderRegistry {
 export class CommandService {
   constructor(private readonly provider: SemanticProvider) {}
 
-  async diagnostics(uri?: string): Promise<DiagnosticSummary> {
-    return summarizeDiagnostics(await this.provider.diagnostics(uri));
+  async diagnostics(uri?: string, options?: DiagnosticOptions): Promise<DiagnosticSummary> {
+    return summarizeDiagnostics(await this.provider.diagnostics(uri, options));
   }
 
   async definition(symbol: string): Promise<Location> {
@@ -57,9 +57,9 @@ export class WorkspaceCommandService {
     private readonly defaultLanguage: SupportedLanguage
   ) {}
 
-  async diagnostics(uri?: string): Promise<DiagnosticSummary> {
+  async diagnostics(uri?: string, options?: DiagnosticOptions): Promise<DiagnosticSummary> {
     const service = uri ? this.forFile(uriToFilePath(uri)) : this.forDefaultLanguage();
-    return service.diagnostics(uri);
+    return service.diagnostics(uri, options);
   }
 
   async definition(symbol: string): Promise<Location> {

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { LspClient, ServerProcessConfig } from "./json-rpc-lsp-client.js";
 import { lspSeverityToText } from "./diagnostics.js";
-import type { Diagnostic, DiagnosticReport, DocumentPosition, HoverInfo, Location, Position, SemanticProvider, SymbolMatch } from "./types.js";
+import type { Diagnostic, DiagnosticOptions, DiagnosticReport, DocumentPosition, HoverInfo, Location, Position, SemanticProvider, SymbolMatch } from "./types.js";
 import { filePathToUri, uriToFilePath } from "../utils/uri.js";
 
 interface LspDiagnostic {
@@ -73,7 +73,7 @@ export class LspSemanticProvider implements SemanticProvider {
     });
   }
 
-  async diagnostics(uri?: string): Promise<DiagnosticReport> {
+  async diagnostics(uri?: string, options: DiagnosticOptions = {}): Promise<DiagnosticReport> {
     await this.ensureInitialized();
     if (uri) {
       const document = await this.resolveDocument(uri);
@@ -81,7 +81,7 @@ export class LspSemanticProvider implements SemanticProvider {
       const openedDocument = await this.openOrUpdateDocument(document.uri);
       let timedOut = false;
       if (openedDocument.changed || !this.diagnosticsByUri.has(document.uri)) {
-        timedOut = !(await this.waitForDiagnostics(document.uri, currentRevision + 1));
+        timedOut = !(await this.waitForDiagnostics(document.uri, currentRevision + 1, options.timeoutMs));
       }
       const sourceRevision = this.diagnosticsRevisionByUri.get(document.uri);
       return {
@@ -302,7 +302,7 @@ export class LspSemanticProvider implements SemanticProvider {
     this.resolveDiagnosticsWaiters(params.uri, revision);
   }
 
-  private waitForDiagnostics(uri: string, minRevision: number): Promise<boolean> {
+  private waitForDiagnostics(uri: string, minRevision: number, timeoutMs = this.options.diagnosticsTimeoutMs ?? defaultDiagnosticsTimeoutMs): Promise<boolean> {
     const currentRevision = this.diagnosticsRevisionByUri.get(uri) ?? 0;
     if (currentRevision >= minRevision) return Promise.resolve(true);
 
@@ -318,7 +318,7 @@ export class LspSemanticProvider implements SemanticProvider {
         if (nextWaiters.length > 0) this.diagnosticsWaitersByUri.set(uri, nextWaiters);
         else this.diagnosticsWaitersByUri.delete(uri);
         resolve(false);
-      }, this.options.diagnosticsTimeoutMs ?? defaultDiagnosticsTimeoutMs);
+      }, timeoutMs);
 
       waiter.timer = timer;
       waiters.push(waiter);

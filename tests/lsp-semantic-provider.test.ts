@@ -147,6 +147,28 @@ describe("LspSemanticProvider", () => {
     });
   });
 
+  it("allows per-call diagnostics timeout overrides", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      const documentUri = (params as { textDocument: { uri: string } }).textDocument.uri;
+      setTimeout(() => {
+        client.emit("notification", "textDocument/publishDiagnostics", {
+          uri: documentUri,
+          diagnostics: []
+        });
+      }, 35);
+    };
+
+    await expect(provider.diagnostics(uri, { timeoutMs: 80 })).resolves.toMatchObject({
+      status: "ok",
+      timedOut: false,
+      items: []
+    });
+  });
+
   it("rejects files outside the workspace root after resolving symlinks", async () => {
     const outsidePath = path.join(await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-outside-")), "outside.ts");
     await fs.writeFile(outsidePath, "export const outside = 1;\n", "utf8");

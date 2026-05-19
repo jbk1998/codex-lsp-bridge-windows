@@ -311,6 +311,23 @@ Available tools:
 | `lsp_hover` | Return hover/type information |
 | `lsp_status` | Return language server, Codex install, and build status |
 
+For file diagnostics in large workspaces, pass `timeoutMs` when the default
+`diagnosticsTimeoutMs` is too short:
+
+```json
+{
+  "name": "lsp_diagnostics",
+  "arguments": {
+    "root": "/path/to/workspace",
+    "file": "/path/to/workspace/src/file.ts",
+    "timeoutMs": 15000
+  }
+}
+```
+
+`timeoutBudgetMs` is only for directory diagnostics. File diagnostics reject it
+so a mistyped timeout option does not silently produce a shorter wait.
+
 Example `tools/call` request:
 
 ```json

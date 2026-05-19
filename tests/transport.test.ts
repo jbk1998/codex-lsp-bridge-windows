@@ -5,8 +5,10 @@ import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMat
 
 class EmptyProvider implements SemanticProvider {
   constructor(private readonly label = "default") {}
+  readonly diagnosticTimeouts: Array<number | undefined> = [];
 
-  diagnostics(): Promise<DiagnosticReport> {
+  diagnostics(_uri?: string, options?: { timeoutMs?: number }): Promise<DiagnosticReport> {
+    this.diagnosticTimeouts.push(options?.timeoutMs);
     return Promise.resolve({
       status: "ok",
       timedOut: false,
@@ -110,6 +112,28 @@ describe("MCP dispatch", () => {
     ).resolves.toMatchObject({
       structuredContent: { ok: true }
     });
+  });
+
+  it("passes timeoutMs to file diagnostics and rejects directory-only timeoutBudgetMs for files", async () => {
+    const provider = new EmptyProvider();
+    const service = new CommandService(provider);
+
+    await expect(
+      dispatch(service, {
+        method: "tools/call",
+        params: { name: "lsp_diagnostics", arguments: { file: "src/index.ts", timeoutMs: 15000 } }
+      })
+    ).resolves.toMatchObject({
+      structuredContent: { total: 0 }
+    });
+    expect(provider.diagnosticTimeouts).toEqual([15000]);
+
+    await expect(
+      dispatch(service, {
+        method: "tools/call",
+        params: { name: "lsp_diagnostics", arguments: { file: "src/index.ts", timeoutBudgetMs: 15000 } }
+      })
+    ).rejects.toThrow("timeoutBudgetMs is only valid for directory diagnostics");
   });
 
   it("allows MCP runtimes to select a scoped workspace service from tool arguments", async () => {

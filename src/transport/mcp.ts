@@ -54,6 +54,7 @@ const tools = [
         root: { type: "string", description: "Optional workspace root for detached worktrees." },
         dir: { type: "string", description: "Optional directory path to diagnose recursively." },
         severity: { type: "string", enum: ["error", "warning", "information", "hint"] },
+        timeoutMs: { type: "number", description: "Maximum wait for file diagnostics publishDiagnostics in milliseconds." },
         maxFiles: { type: "number", description: "Maximum source files to diagnose for directory scans." },
         timeoutBudgetMs: { type: "number", description: "Maximum directory diagnostics wall-clock budget in milliseconds." },
         concurrency: { type: "number", description: "Maximum concurrent file diagnostics for directory scans." }
@@ -253,8 +254,9 @@ async function dispatchLspMethod(service: LspCommandService, method: string | un
     if (typeof params.dir === "string") {
       throw new JsonRpcError(-32602, "directory diagnostics require tools/call runtime support");
     }
-    if (typeof params.file === "string") return service.diagnostics(filePathToUri(params.file));
-    return service.diagnostics(typeof params.uri === "string" ? params.uri : undefined);
+    const options = { timeoutMs: readOptionalPositiveNumber(params, "timeoutMs") };
+    if (typeof params.file === "string") return service.diagnostics(filePathToUri(params.file), options);
+    return service.diagnostics(typeof params.uri === "string" ? params.uri : undefined, options);
   }
   if (method === "lsp.definition") {
     const position = readOptionalPosition(params);
@@ -297,6 +299,9 @@ async function callTool(service: LspCommandService, params: Record<string, unkno
       concurrency: typeof args.concurrency === "number" ? args.concurrency : undefined
     });
   }
+  if (name === "lsp_diagnostics" && args.timeoutBudgetMs !== undefined) {
+    throw new JsonRpcError(-32602, "timeoutBudgetMs is only valid for directory diagnostics; use timeoutMs for file diagnostics");
+  }
   const scopedService = selectService(service, args, runtime);
   if (name === "lsp_diagnostics") return dispatchLspMethod(scopedService, "lsp.diagnostics", args);
   if (name === "lsp_definition") return dispatchLspMethod(scopedService, "lsp.definition", args);
@@ -315,6 +320,15 @@ function selectService(service: LspCommandService, params: Record<string, unknow
 function readStringParam(params: Record<string, unknown>, key: string): string {
   const value = params[key];
   if (typeof value !== "string") throw new JsonRpcError(-32602, `${key} parameter is required`);
+  return value;
+}
+
+function readOptionalPositiveNumber(params: Record<string, unknown>, key: string): number | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new JsonRpcError(-32602, `${key} parameter must be a positive number`);
+  }
   return value;
 }
 

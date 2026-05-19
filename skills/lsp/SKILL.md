@@ -9,6 +9,7 @@ Use the `codex-lsp-bridge` MCP tools as a semantic feedback layer for code work.
 
 - Prefer `lsp_diagnostics` after editing supported source files.
 - During code review, audit, or investigation workflows, call `lsp_diagnostics` for changed supported files or the smallest representative set before final findings.
+- For large TypeScript workspaces, use file diagnostics `timeoutMs` when the default wait is too short. Do not pass `timeoutBudgetMs` for file diagnostics; it is directory-only.
 - Avoid broad directory diagnostics by default. If a directory scan is needed, keep `maxFiles`, `timeoutBudgetMs`, and `concurrency` bounded and report `directory.truncated` or `directory.budgetTimedOut` when present.
 - Treat `directory.sourceFileListCache` as a scan performance hint only. Diagnostic contents are still produced by LSP calls.
 - Prefer file-position inputs for `lsp_definition`, `lsp_references`, and `lsp_hover` when the exact occurrence is known.
