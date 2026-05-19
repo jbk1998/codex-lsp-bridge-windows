@@ -50,7 +50,8 @@ describe("MCP dispatch", () => {
         expect.objectContaining({ name: "lsp_definition" }),
         expect.objectContaining({ name: "lsp_references" }),
         expect.objectContaining({ name: "lsp_symbols" }),
-        expect.objectContaining({ name: "lsp_hover" })
+        expect.objectContaining({ name: "lsp_hover" }),
+        expect.objectContaining({ name: "lsp_status" })
       ])
     });
   });
@@ -85,6 +86,11 @@ describe("MCP dispatch", () => {
       })
     ).resolves.toMatchObject({
       structuredContent: { file: "src/position.ts" }
+    });
+    await expect(
+      dispatch(service, { method: "tools/call", params: { name: "lsp_status", arguments: {} } }, { status: () => ({ ok: true }) })
+    ).resolves.toMatchObject({
+      structuredContent: { ok: true }
     });
   });
 

@@ -12,6 +12,11 @@ export interface LanguageServerConfig {
   workspaceSeedFiles: string[];
 }
 
+export interface LanguageServerOverride {
+  command?: string;
+  args?: string[];
+}
+
 const serverByLanguage: Record<
   SupportedLanguage,
   { languageId: string; command: string; args: string[]; extensions: string[]; workspaceSeedFiles: string[] }
@@ -57,16 +62,21 @@ const serverByLanguage: Record<
   }
 };
 
-export function createLanguageServerConfig(language: SupportedLanguage, rootPath: string): LanguageServerConfig {
+export function createLanguageServerConfig(
+  language: SupportedLanguage,
+  rootPath: string,
+  override: LanguageServerOverride = {}
+): LanguageServerConfig {
   const config = serverByLanguage[language];
+  const command = override.command ?? config.command;
   return {
     language,
     languageId: config.languageId,
     extensions: [...config.extensions],
     workspaceSeedFiles: [...config.workspaceSeedFiles],
     server: {
-      command: resolveServerCommand(rootPath, config.command),
-      args: [...config.args],
+      command: resolveServerCommand(rootPath, command),
+      args: [...(override.args ?? config.args)],
       cwd: path.resolve(rootPath)
     }
   };

@@ -1,0 +1,13 @@
+{
+  "name": "codex-lsp-bridge",
+  "version": "0.1.0",
+  "description": "Read-only LSP semantic diagnostics and navigation tools for Codex.",
+  "mcpServers": {
+    "codex-lsp-bridge": {
+      "command": "codex-lsp-bridge",
+      "args": ["mcp"]
+    }
+  },
+  "skills": ["skills/lsp/SKILL.md"],
+  "hooks": "hooks/hooks.json"
+}

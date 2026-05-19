@@ -212,6 +212,7 @@ Run against the current repository:
 ```bash
 codex-lsp-bridge doctor --root .
 codex-lsp-bridge diagnostics --file src/file.ts --root .
+codex-lsp-bridge diagnostics --dir src --severity error --root .
 codex-lsp-bridge symbols Editor --root .
 codex-lsp-bridge definition Editor --root .
 codex-lsp-bridge references Editor --root .
@@ -270,6 +271,7 @@ Available tools:
 | `lsp_references` | Find references by symbol or file position; prefer position |
 | `lsp_symbols` | Search workspace symbols |
 | `lsp_hover` | Return hover/type information |
+| `lsp_status` | Return language server, Codex install, and build status |
 
 Example `tools/call` request:
 
@@ -286,6 +288,58 @@ Example `tools/call` request:
   }
 }
 ```
+
+Status request:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "tools/call",
+  "params": {
+    "name": "lsp_status",
+    "arguments": {}
+  }
+}
+```
+
+## Configuration
+
+Optional JSON config is read from `~/.codex/lsp-client.json` and then
+`<workspace>/.codex/lsp-client.json`; workspace config wins.
+
+```json
+{
+  "defaultLanguage": "typescript",
+  "diagnosticsTimeoutMs": 1500,
+  "hook": {
+    "maxFiles": 5,
+    "verbosePending": false
+  },
+  "languageServers": {
+    "typescript": {
+      "command": "typescript-language-server",
+      "args": ["--stdio"]
+    }
+  }
+}
+```
+
+For TypeScript, a workspace-local
+`node_modules/.bin/typescript-language-server` is preferred when present, then
+the configured command or PATH command is used.
+
+## Plugin Layout
+
+The package includes plugin-oriented metadata:
+
+- `.codex-plugin/plugin.json`
+- `.mcp.json`
+- `hooks/hooks.json`
+- `skills/lsp/SKILL.md`
+
+These files mirror the one-command installer and make the package easier to
+adapt to Codex plugin distribution flows.
 
 ## Suggested Codex Behavior
 

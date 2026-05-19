@@ -5,6 +5,11 @@ import { filePathToUri } from "../utils/uri.js";
 
 type LspCommandService = CommandService | WorkspaceCommandService;
 
+interface McpRuntime {
+  status?: () => unknown;
+  directoryDiagnostics?: (dir: string, severity?: string) => Promise<unknown>;
+}
+
 interface Request {
   id?: string | number;
   method?: string;
@@ -44,7 +49,9 @@ const tools = [
       type: "object",
       properties: {
         uri: { type: "string", description: "Optional file:// URI to diagnose." },
-        file: { type: "string", description: "Optional file path to diagnose." }
+        file: { type: "string", description: "Optional file path to diagnose." },
+        dir: { type: "string", description: "Optional directory path to diagnose recursively." },
+        severity: { type: "string", enum: ["error", "warning", "information", "hint"] }
       },
       additionalProperties: false
     }
@@ -126,22 +133,41 @@ const tools = [
       },
       additionalProperties: false
     }
+  },
+  {
+    name: "lsp_status",
+    description: "Return codex-lsp-bridge status, language server availability, Codex install state, and build freshness.",
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false
+    },
+    inputSchema: {
+      type: "object",
+      properties: {},
+      additionalProperties: false
+    }
   }
 ];
 
-export async function runStdioMcp(service: LspCommandService): Promise<void> {
+export async function runStdioMcp(service: LspCommandService, runtime: McpRuntime = {}): Promise<void> {
   const rl = createInterface({ input, output });
 
   for await (const line of rl) {
     if (line.trim().length === 0) continue;
-    const response = await handleJsonRpcLine(service, line);
+    const response = await handleJsonRpcLine(service, line, runtime);
     if (response) output.write(`${JSON.stringify(response)}\n`);
   }
 }
 
-export async function handleJsonRpcLine(service: LspCommandService, line: string): Promise<JsonRpcResponse | undefined> {
+export async function handleJsonRpcLine(
+  service: LspCommandService,
+  line: string,
+  runtime: McpRuntime = {}
+): Promise<JsonRpcResponse | undefined> {
   try {
-    return handleRequest(service, JSON.parse(line) as Request);
+    return handleRequest(service, JSON.parse(line) as Request, runtime);
   } catch {
     return {
       jsonrpc: "2.0",
@@ -154,14 +180,18 @@ export async function handleJsonRpcLine(service: LspCommandService, line: string
   }
 }
 
-export async function handleRequest(service: LspCommandService, request: Request): Promise<JsonRpcResponse | undefined> {
+export async function handleRequest(
+  service: LspCommandService,
+  request: Request,
+  runtime: McpRuntime = {}
+): Promise<JsonRpcResponse | undefined> {
   if (request.id === undefined) {
     if (request.method === "notifications/initialized") return undefined;
     return undefined;
   }
 
   try {
-    const result = await dispatch(service, request);
+    const result = await dispatch(service, request, runtime);
     return { jsonrpc: "2.0", id: request.id, result };
   } catch (error) {
     return {
@@ -175,7 +205,7 @@ export async function handleRequest(service: LspCommandService, request: Request
   }
 }
 
-export async function dispatch(service: LspCommandService, request: Request): Promise<unknown> {
+export async function dispatch(service: LspCommandService, request: Request, runtime: McpRuntime = {}): Promise<unknown> {
   const params = request.params ?? {};
 
   if (request.method === "initialize") {
@@ -194,7 +224,7 @@ export async function dispatch(service: LspCommandService, request: Request): Pr
     return { tools };
   }
   if (request.method === "tools/call") {
-    const result = await callTool(service, params);
+    const result = await callTool(service, params, runtime);
     return {
       content: [
         {
@@ -211,6 +241,9 @@ export async function dispatch(service: LspCommandService, request: Request): Pr
 
 async function dispatchLspMethod(service: LspCommandService, method: string | undefined, params: Record<string, unknown>): Promise<unknown> {
   if (method === "lsp.diagnostics") {
+    if (typeof params.dir === "string") {
+      throw new JsonRpcError(-32602, "directory diagnostics require tools/call runtime support");
+    }
     if (typeof params.file === "string") return service.diagnostics(filePathToUri(params.file));
     return service.diagnostics(typeof params.uri === "string" ? params.uri : undefined);
   }
@@ -236,7 +269,7 @@ async function dispatchLspMethod(service: LspCommandService, method: string | un
   throw new JsonRpcError(-32601, `Unsupported method: ${method ?? "undefined"}`);
 }
 
-async function callTool(service: LspCommandService, params: Record<string, unknown>): Promise<unknown> {
+async function callTool(service: LspCommandService, params: Record<string, unknown>, runtime: McpRuntime): Promise<unknown> {
   const name = readStringParam(params, "name");
   const argumentsValue = params.arguments ?? {};
   if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
@@ -244,11 +277,16 @@ async function callTool(service: LspCommandService, params: Record<string, unkno
   }
   const args = argumentsValue as Record<string, unknown>;
 
+  if (name === "lsp_diagnostics" && typeof args.dir === "string") {
+    if (!runtime.directoryDiagnostics) throw new JsonRpcError(-32602, "directory diagnostics are unavailable");
+    return runtime.directoryDiagnostics(args.dir, typeof args.severity === "string" ? args.severity : undefined);
+  }
   if (name === "lsp_diagnostics") return dispatchLspMethod(service, "lsp.diagnostics", args);
   if (name === "lsp_definition") return dispatchLspMethod(service, "lsp.definition", args);
   if (name === "lsp_references") return dispatchLspMethod(service, "lsp.references", args);
   if (name === "lsp_symbols") return dispatchLspMethod(service, "lsp.symbols", args);
   if (name === "lsp_hover") return dispatchLspMethod(service, "lsp.hover", args);
+  if (name === "lsp_status") return runtime.status ? runtime.status() : { status: "unavailable" };
 
   throw new JsonRpcError(-32601, `Unsupported tool: ${name}`);
 }

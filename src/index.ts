@@ -1,8 +1,10 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WorkspaceCommandService } from "./core/command-service.js";
+import { loadConfig } from "./core/config.js";
 import { runDoctor } from "./core/doctor.js";
 import { LspManager } from "./core/lsp-manager.js";
 import { filePathToUri } from "./utils/uri.js";
@@ -24,8 +26,12 @@ async function main(): Promise<void> {
     return;
   }
 
-  const root = readOption(args, "--root") ?? process.cwd();
-  const manager = new LspManager(root);
+  const root = path.resolve(readOption(args, "--root") ?? process.cwd());
+  const config = loadConfig(root);
+  const manager = new LspManager(root, {
+    diagnosticsTimeoutMs: config.diagnosticsTimeoutMs,
+    languageServers: config.languageServers
+  });
 
   try {
     if (args[0] === "doctor") {
@@ -33,11 +39,24 @@ async function main(): Promise<void> {
       return;
     }
 
-    const language = readLanguage(args);
+    const language = readLanguage(args, config.defaultLanguage);
     const service = new WorkspaceCommandService(manager, language);
 
     if (args[0] === "mcp") {
-      await runStdioMcp(service);
+      await runStdioMcp(service, {
+        status: () => runDoctor(root),
+        directoryDiagnostics: async (dir, severity) =>
+          filterDiagnosticSummary(
+            mergeDiagnosticSummaries(
+              await Promise.all(
+                (await collectSourceFiles(resolveDirectoryInsideRoot(root, dir))).map((diagnosticFile) =>
+                  service.diagnostics(filePathToUri(diagnosticFile))
+                )
+              )
+            ),
+            severity
+          )
+      });
       return;
     }
 
@@ -46,6 +65,16 @@ async function main(): Promise<void> {
 
     if (command === "diagnostics") {
       const file = readOption(args, "--file");
+      const dir = readOption(args, "--dir");
+      const severity = readOption(args, "--severity");
+      if (dir) {
+        const summaries = [];
+        for (const diagnosticFile of await collectSourceFiles(resolveDirectoryInsideRoot(root, dir))) {
+          summaries.push(await service.diagnostics(filePathToUri(diagnosticFile)));
+        }
+        console.log(JSON.stringify(filterDiagnosticSummary(mergeDiagnosticSummaries(summaries), severity), null, 2));
+        return;
+      }
       console.log(JSON.stringify(await service.diagnostics(file ? filePathToUri(file) : undefined), null, 2));
       return;
     }
@@ -88,9 +117,9 @@ async function main(): Promise<void> {
   }
 }
 
-function readLanguage(args: string[]): SupportedLanguage {
+function readLanguage(args: string[], fallback: SupportedLanguage): SupportedLanguage {
   const value = readOption(args, "--language");
-  if (!value) return "typescript";
+  if (!value) return fallback;
   if (value === "typescript" || value === "rust" || value === "python" || value === "go") return value;
   throw new Error(`Unsupported language: ${value}`);
 }
@@ -133,6 +162,7 @@ function printUsage(): void {
   codex-lsp-bridge post-tool-diagnostics
   codex-lsp-bridge doctor [--root path]
   codex-lsp-bridge diagnostics [--file path] [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge diagnostics --dir path [--severity error|warning|information|hint] [--root path]
   codex-lsp-bridge definition <symbol> [--language typescript|rust|python|go] [--root path]
   codex-lsp-bridge definition --file path --line n --character n [--language typescript|rust|python|go] [--root path]
   codex-lsp-bridge references <symbol> [--language typescript|rust|python|go] [--root path]
@@ -141,6 +171,66 @@ function printUsage(): void {
   codex-lsp-bridge hover <symbol> [--language typescript|rust|python|go] [--root path]
   codex-lsp-bridge hover --file path --line n --character n [--language typescript|rust|python|go] [--root path]
   codex-lsp-bridge mcp [--root path] [--language typescript|rust|python|go]`);
+}
+
+async function collectSourceFiles(directory: string): Promise<string[]> {
+  const skipped = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules"]);
+  const files: string[] = [];
+  const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory() && !skipped.has(entry.name)) files.push(...(await collectSourceFiles(entryPath)));
+    if (entry.isFile() && /\.(ts|tsx|js|jsx|rs|py|go)$/.test(entry.name)) files.push(entryPath);
+  }
+  return files;
+}
+
+function mergeDiagnosticSummaries(summaries: Array<Awaited<ReturnType<WorkspaceCommandService["diagnostics"]>>>) {
+  const items = summaries.flatMap((summary) => summary.items);
+  const status = summaries.some((summary) => summary.status === "timed_out") ? "timed_out" : "ok";
+  const bySeverity = {
+    error: items.filter((item) => item.severity === "error").length,
+    warning: items.filter((item) => item.severity === "warning").length,
+    information: items.filter((item) => item.severity === "information").length,
+    hint: items.filter((item) => item.severity === "hint").length
+  };
+  return {
+    status,
+    timedOut: summaries.some((summary) => summary.timedOut),
+    stale: summaries.some((summary) => summary.stale),
+    total: items.length,
+    bySeverity,
+    items,
+    summary: items.slice(0, 10).map((item, index) => `${index + 1}. ${item.severity.toUpperCase()} ${item.file}:${item.line}:${item.character} ${item.message}`)
+  };
+}
+
+function filterDiagnosticSummary<T extends { items: Array<{ severity: string }>; total: number; bySeverity: Record<string, number>; summary: string[] }>(
+  summary: T,
+  severity: string | undefined
+): T {
+  if (!severity) return summary;
+  const items = summary.items.filter((item) => item.severity === severity);
+  return {
+    ...summary,
+    total: items.length,
+    bySeverity: {
+      error: items.filter((item) => item.severity === "error").length,
+      warning: items.filter((item) => item.severity === "warning").length,
+      information: items.filter((item) => item.severity === "information").length,
+      hint: items.filter((item) => item.severity === "hint").length
+    },
+    items,
+    summary: items.slice(0, 10).map((item, index) => `${index + 1}. ${item.severity.toUpperCase()}`)
+  };
+}
+
+function resolveDirectoryInsideRoot(root: string, dir: string): string {
+  const directory = path.resolve(root, dir);
+  if (directory !== root && !directory.startsWith(`${root}${path.sep}`)) {
+    throw new Error(`Directory is outside workspace root: ${directory}`);
+  }
+  return directory;
 }
 
 function runPackageScript(scriptName: string, args: string[]): void {
