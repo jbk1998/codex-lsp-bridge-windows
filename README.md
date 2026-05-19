@@ -1,5 +1,9 @@
 # codex-lsp-bridge
 
+[![npm version](https://img.shields.io/npm/v/codex-lsp-bridge.svg)](https://www.npmjs.com/package/codex-lsp-bridge)
+[![CI](https://github.com/shjeon-96/codex-lsp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/shjeon-96/codex-lsp-bridge/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+
 Read-only LSP tools for Codex CLI.
 
 `codex-lsp-bridge` gives Codex semantic signals from your local language
@@ -27,6 +31,20 @@ Typical loop:
 3. Codex sees compact semantic errors before it continues.
 4. If diagnostics are stale or time out, the result says so instead of
    pretending there are no errors.
+
+Example diagnostic signal:
+
+```json
+{
+  "status": "ok",
+  "timedOut": false,
+  "stale": false,
+  "total": 1,
+  "summary": [
+    "src/editor/store.ts:182 error Property 'id' does not exist on type..."
+  ]
+}
+```
 
 ## Install In 30 Seconds
 
