@@ -52,6 +52,12 @@ One-command setup from npm:
 npx codex-lsp-bridge@latest install
 ```
 
+From the private GitHub repository before npm publish:
+
+```bash
+npm exec --package=github:WEED-Jeonseonghun/codex-lsp-bridge -- codex-lsp-bridge install
+```
+
 From a local checkout:
 
 ```bash
@@ -85,6 +91,12 @@ Remove the MCP server registration and automatic diagnostics hook:
 
 ```bash
 npx codex-lsp-bridge@latest uninstall
+```
+
+From the private GitHub repository before npm publish:
+
+```bash
+npm exec --package=github:WEED-Jeonseonghun/codex-lsp-bridge -- codex-lsp-bridge uninstall
 ```
 
 For a local checkout or global install:
