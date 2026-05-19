@@ -15,7 +15,7 @@ export interface LspClientConfig {
 
 const defaults: LspClientConfig = {
   defaultLanguage: "typescript",
-  diagnosticsTimeoutMs: 5000,
+  diagnosticsTimeoutMs: 15000,
   hook: {
     maxFiles: 5,
     verbosePending: false

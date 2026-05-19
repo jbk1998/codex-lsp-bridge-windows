@@ -29,7 +29,7 @@ interface LspHover {
   contents: string | { value: string } | Array<string | { value: string }>;
 }
 
-const defaultDiagnosticsTimeoutMs = 5000;
+const defaultDiagnosticsTimeoutMs = 15000;
 
 export interface LspSemanticProviderOptions {
   rootPath: string;

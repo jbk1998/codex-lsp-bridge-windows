@@ -42,7 +42,7 @@ describe("config", () => {
     rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
 
     expect(loadConfig(rootPath)).toMatchObject({
-      diagnosticsTimeoutMs: 5000
+      diagnosticsTimeoutMs: 15000
     });
   });
 });

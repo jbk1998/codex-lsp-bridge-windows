@@ -77,7 +77,7 @@ From any project:
 
 ```bash
 codex-lsp-bridge doctor --root .
-codex-lsp-bridge diagnostics --file src/file.ts --root .
+codex-lsp-bridge diagnostics --file src/file.ts --timeout-ms 15000 --root .
 ```
 
 In Codex, ask it to check LSP status or diagnostics. After installation and
@@ -307,7 +307,7 @@ Run against the current repository:
 
 ```bash
 codex-lsp-bridge doctor --root .
-codex-lsp-bridge diagnostics --file src/file.ts --root .
+codex-lsp-bridge diagnostics --file src/file.ts --timeout-ms 15000 --root .
 codex-lsp-bridge diagnostics --dir src --severity error --max-files 50 --timeout-budget-ms 15000 --concurrency 2 --root .
 codex-lsp-bridge symbols Editor --root .
 codex-lsp-bridge definition Editor --root .
@@ -421,10 +421,13 @@ Status request:
 Optional JSON config is read from `~/.codex/lsp-client.json` and then
 `<workspace>/.codex/lsp-client.json`; workspace config wins.
 
+Use global config for your personal default and workspace config for large
+repos that need longer language-server warmup:
+
 ```json
 {
   "defaultLanguage": "typescript",
-  "diagnosticsTimeoutMs": 5000,
+  "diagnosticsTimeoutMs": 15000,
   "hook": {
     "maxFiles": 5,
     "verbosePending": false
@@ -437,6 +440,15 @@ Optional JSON config is read from `~/.codex/lsp-client.json` and then
   }
 }
 ```
+
+File diagnostics can also override the wait per call:
+
+```bash
+codex-lsp-bridge diagnostics --file src/file.ts --timeout-ms 30000 --root .
+```
+
+For MCP tool calls, pass `timeoutMs` on `lsp_diagnostics`. Directory diagnostics
+use `timeoutBudgetMs` instead because they have a scan-wide wall-clock budget.
 
 For TypeScript, a workspace-local
 `node_modules/.bin/typescript-language-server` is preferred when present, then

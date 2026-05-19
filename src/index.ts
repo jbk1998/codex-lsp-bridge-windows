@@ -95,10 +95,18 @@ async function main(): Promise<void> {
       const dir = readOption(args, "--dir");
       const severity = readOption(args, "--severity");
       if (dir) {
+        if (readOption(args, "--timeout-ms") !== undefined) {
+          throw new Error("--timeout-ms is only valid for file diagnostics; use --timeout-budget-ms for directory diagnostics");
+        }
         console.log(JSON.stringify(await collectDirectoryDiagnostics(root, dir, language, severity, serviceForRoot, readDirectoryDiagnosticsOptions(args), sourceFileListCache), null, 2));
         return;
       }
-      console.log(JSON.stringify(await service.diagnostics(file ? filePathToUri(file) : undefined), null, 2));
+      if (readOption(args, "--timeout-budget-ms") !== undefined) {
+        throw new Error("--timeout-budget-ms is only valid for directory diagnostics; use --timeout-ms for file diagnostics");
+      }
+      console.log(JSON.stringify(await service.diagnostics(file ? filePathToUri(file) : undefined, {
+        timeoutMs: readOptionalPositiveIntegerOption(args, "--timeout-ms")
+      }), null, 2));
       return;
     }
     if (command === "definition") {
@@ -184,7 +192,7 @@ function printUsage(stream: "stdout" | "stderr"): void {
   codex-lsp-bridge uninstall [--dry-run]
   codex-lsp-bridge post-tool-diagnostics
   codex-lsp-bridge doctor [--root path]
-  codex-lsp-bridge diagnostics [--file path] [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge diagnostics [--file path] [--timeout-ms n] [--language typescript|rust|python|go] [--root path]
   codex-lsp-bridge diagnostics --dir path [--severity error|warning|information|hint] [--max-files n] [--timeout-budget-ms n] [--concurrency n] [--root path]
   codex-lsp-bridge definition <symbol> [--language typescript|rust|python|go] [--root path]
   codex-lsp-bridge definition --file path --line n --character n [--language typescript|rust|python|go] [--root path]
@@ -211,6 +219,13 @@ function readDirectoryDiagnosticsOptions(args: string[]): DirectoryDiagnosticsOp
 
 function readPositiveIntegerOption(args: string[], option: string, fallback: number): number {
   return readPositiveIntegerValue(readNumberOption(args, option), fallback);
+}
+
+function readOptionalPositiveIntegerOption(args: string[], option: string): number | undefined {
+  const value = readNumberOption(args, option);
+  if (value === undefined) return undefined;
+  if (value <= 0) throw new Error(`${option} must be a positive integer`);
+  return value;
 }
 
 function readPositiveIntegerValue(value: number | undefined, fallback: number): number {
