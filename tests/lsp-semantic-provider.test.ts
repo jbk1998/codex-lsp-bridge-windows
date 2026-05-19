@@ -16,6 +16,7 @@ class FakeClient extends EventEmitter implements LspClient {
   referencesResult: unknown[] = [];
   hoverResult: unknown = null;
   stopped = false;
+  onNotify?: (method: string, params?: unknown) => void;
 
   request<T>(method: string, params?: unknown): Promise<T> {
     this.requests.push({ method, params });
@@ -30,6 +31,7 @@ class FakeClient extends EventEmitter implements LspClient {
 
   notify(method: string, params?: unknown): void {
     this.notifications.push({ method, params });
+    this.onNotify?.(method, params);
   }
 
   stop(): Promise<void> {
@@ -61,6 +63,7 @@ describe("LspSemanticProvider", () => {
       languageId: "typescript",
       server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
       workspaceSeedFiles: ["src/editor.ts"],
+      diagnosticsTimeoutMs: 20,
       clientFactory: (_config: ServerProcessConfig) => client
     });
   }
@@ -86,6 +89,42 @@ describe("LspSemanticProvider", () => {
     ]);
     expect(client.requests.filter((request) => request.method === "initialize")).toHaveLength(1);
     expect(client.notifications.some((notification) => notification.method === "textDocument/didOpen")).toBe(true);
+  });
+
+  it("waits for publishDiagnostics and tracks open document changes", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen" && method !== "textDocument/didChange") return;
+      const version =
+        method === "textDocument/didOpen"
+          ? (params as { textDocument: { version: number } }).textDocument.version
+          : (params as { textDocument: { version: number } }).textDocument.version;
+      setTimeout(() => {
+        client.emit("notification", "textDocument/publishDiagnostics", {
+          uri,
+          diagnostics: [
+            {
+              range: { start: { line: version, character: 0 }, end: { line: version, character: 1 } },
+              severity: 2,
+              message: `version ${version}`,
+              source: "ts"
+            }
+          ]
+        });
+      }, 0);
+    };
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject([{ line: 2, message: "version 1" }]);
+    await fs.writeFile(filePath, "export const Editor = 2;\n", "utf8");
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject([{ line: 3, message: "version 2" }]);
+    await expect(provider.definitionAt({ file: filePath, line: 1, character: 14 })).rejects.toThrow(
+      "No source definition found"
+    );
+
+    expect(client.notifications.filter((notification) => notification.method === "textDocument/didOpen")).toHaveLength(1);
+    expect(client.notifications.filter((notification) => notification.method === "textDocument/didChange")).toHaveLength(1);
   });
 
   it("resolves definition, references, and hover through a single exact symbol", async () => {

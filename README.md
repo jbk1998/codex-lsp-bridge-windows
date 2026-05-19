@@ -184,7 +184,8 @@ The hook runs after edit tools and checks touched TS/TSX files:
 ```
 
 The hook is intentionally post-tool, not pre-tool. Diagnostics are useful after
-a file changes, not before.
+a file changes, not before. Read-only review sessions will not trigger the hook
+unless Codex edits a file or explicitly calls the MCP diagnostics tool.
 
 ## CLI Usage
 
@@ -293,6 +294,10 @@ printf '%s\n' \
 - Language servers are started lazily.
 - Diagnostics are compressed into AI-readable summaries while preserving
   structured items.
+- File diagnostics open the document, track the in-memory document version, and
+  wait briefly for `textDocument/publishDiagnostics` before returning. Repeated
+  diagnostics use `didChange` when the file contents changed instead of sending
+  duplicate `didOpen` notifications.
 - TypeScript definition uses source-definition when available, which avoids
   stopping at import aliases in common cases.
 - Symbol-only commands can be ambiguous. File-position commands are more

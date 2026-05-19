@@ -35,12 +35,23 @@ export interface LspSemanticProviderOptions {
   server: ServerProcessConfig;
   clientFactory: (config: ServerProcessConfig) => LspClient;
   workspaceSeedFiles?: string[];
+  diagnosticsTimeoutMs?: number;
 }
 
 export class LspSemanticProvider implements SemanticProvider {
   private initialized = false;
   private workspaceDocumentOpened = false;
   private diagnosticsByUri = new Map<string, Diagnostic[]>();
+  private diagnosticsRevisionByUri = new Map<string, number>();
+  private openedDocumentsByUri = new Map<string, { text: string; version: number }>();
+  private diagnosticsWaitersByUri = new Map<
+    string,
+    Array<{
+      minRevision: number;
+      resolve: () => void;
+      timer: NodeJS.Timeout;
+    }>
+  >();
   private client: LspClient;
 
   constructor(private readonly options: LspSemanticProviderOptions) {
@@ -55,7 +66,11 @@ export class LspSemanticProvider implements SemanticProvider {
   async diagnostics(uri?: string): Promise<Diagnostic[]> {
     await this.ensureInitialized();
     if (uri) {
-      await this.openDocument(uri);
+      const currentRevision = this.diagnosticsRevisionByUri.get(uri) ?? 0;
+      const documentChanged = await this.openOrUpdateDocument(uri);
+      if (documentChanged || !this.diagnosticsByUri.has(uri)) {
+        await this.waitForDiagnostics(uri, currentRevision + 1);
+      }
       return [...(this.diagnosticsByUri.get(uri) ?? [])];
     }
 
@@ -68,7 +83,7 @@ export class LspSemanticProvider implements SemanticProvider {
   }
 
   async definitionAt(position: DocumentPosition): Promise<Location> {
-    await this.openDocument(filePathToUri(position.file));
+    await this.openOrUpdateDocument(filePathToUri(position.file));
     if (this.options.languageId === "typescript") {
       const sourceDefinitions = await this.client.request<LspLocation[] | null>("workspace/executeCommand", {
         command: "_typescript.goToSourceDefinition",
@@ -95,7 +110,7 @@ export class LspSemanticProvider implements SemanticProvider {
   }
 
   async referencesAt(position: DocumentPosition): Promise<Location[]> {
-    await this.openDocument(filePathToUri(position.file));
+    await this.openOrUpdateDocument(filePathToUri(position.file));
     const result = await this.client.request<LspLocation[]>("textDocument/references", {
       textDocument: { uri: filePathToUri(position.file) },
       position: toLspPosition(position),
@@ -122,7 +137,7 @@ export class LspSemanticProvider implements SemanticProvider {
   }
 
   async hoverAt(position: DocumentPosition): Promise<HoverInfo> {
-    await this.openDocument(filePathToUri(position.file));
+    await this.openOrUpdateDocument(filePathToUri(position.file));
     const result = await this.client.request<LspHover | null>("textDocument/hover", {
       textDocument: { uri: filePathToUri(position.file) },
       position: toLspPosition(position)
@@ -170,18 +185,37 @@ export class LspSemanticProvider implements SemanticProvider {
     this.initialized = true;
   }
 
-  private async openDocument(uri: string): Promise<void> {
+  private async openOrUpdateDocument(uri: string): Promise<boolean> {
     await this.ensureInitialized();
     const filePath = uriToFilePath(uri);
     const text = await fs.readFile(filePath, "utf8");
-    this.client.notify("textDocument/didOpen", {
+    const opened = this.openedDocumentsByUri.get(uri);
+
+    if (!opened) {
+      this.openedDocumentsByUri.set(uri, { text, version: 1 });
+      this.client.notify("textDocument/didOpen", {
+        textDocument: {
+          uri,
+          languageId: this.options.languageId,
+          version: 1,
+          text
+        }
+      });
+      return true;
+    }
+
+    if (opened.text === text) return false;
+
+    const version = opened.version + 1;
+    this.openedDocumentsByUri.set(uri, { text, version });
+    this.client.notify("textDocument/didChange", {
       textDocument: {
         uri,
-        languageId: this.options.languageId,
-        version: 1,
-        text
-      }
+        version
+      },
+      contentChanges: [{ text }]
     });
+    return true;
   }
 
   private async ensureWorkspaceDocumentOpened(): Promise<void> {
@@ -192,7 +226,7 @@ export class LspSemanticProvider implements SemanticProvider {
       throw new Error(`No ${this.options.languageId} workspace seed file found under ${this.options.rootPath}`);
     }
 
-    await this.openDocument(filePathToUri(seedFile));
+    await this.openOrUpdateDocument(filePathToUri(seedFile));
     this.workspaceDocumentOpened = true;
   }
 
@@ -218,6 +252,8 @@ export class LspSemanticProvider implements SemanticProvider {
   private captureDiagnostics(params: unknown): void {
     if (!isPublishDiagnosticsParams(params)) return;
 
+    const revision = (this.diagnosticsRevisionByUri.get(params.uri) ?? 0) + 1;
+    this.diagnosticsRevisionByUri.set(params.uri, revision);
     this.diagnosticsByUri.set(
       params.uri,
       params.diagnostics.map((diagnostic) => ({
@@ -230,6 +266,41 @@ export class LspSemanticProvider implements SemanticProvider {
         code: diagnostic.code
       }))
     );
+    this.resolveDiagnosticsWaiters(params.uri, revision);
+  }
+
+  private waitForDiagnostics(uri: string, minRevision: number): Promise<void> {
+    const currentRevision = this.diagnosticsRevisionByUri.get(uri) ?? 0;
+    if (currentRevision >= minRevision) return Promise.resolve();
+
+    return new Promise((resolve) => {
+      const waiters = this.diagnosticsWaitersByUri.get(uri) ?? [];
+      const timer = setTimeout(() => {
+        const nextWaiters = (this.diagnosticsWaitersByUri.get(uri) ?? []).filter((waiter) => waiter.resolve !== resolve);
+        if (nextWaiters.length > 0) this.diagnosticsWaitersByUri.set(uri, nextWaiters);
+        else this.diagnosticsWaitersByUri.delete(uri);
+        resolve();
+      }, this.options.diagnosticsTimeoutMs ?? 1500);
+
+      waiters.push({ minRevision, resolve, timer });
+      this.diagnosticsWaitersByUri.set(uri, waiters);
+    });
+  }
+
+  private resolveDiagnosticsWaiters(uri: string, revision: number): void {
+    const waiters = this.diagnosticsWaitersByUri.get(uri) ?? [];
+    const pending = [];
+    for (const waiter of waiters) {
+      if (revision >= waiter.minRevision) {
+        clearTimeout(waiter.timer);
+        waiter.resolve();
+      } else {
+        pending.push(waiter);
+      }
+    }
+
+    if (pending.length > 0) this.diagnosticsWaitersByUri.set(uri, pending);
+    else this.diagnosticsWaitersByUri.delete(uri);
   }
 
   private toLocation(location: LspLocation): Location {
