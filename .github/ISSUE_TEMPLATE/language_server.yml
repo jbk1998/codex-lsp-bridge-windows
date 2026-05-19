@@ -1,0 +1,44 @@
+name: Language server support
+description: Request or improve support for a language server.
+title: "language: "
+labels: ["feature", "area:language-server"]
+body:
+  - type: input
+    id: language
+    attributes:
+      label: Language
+      placeholder: "TypeScript, Rust, Python, Go, ..."
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: Language server executable
+      placeholder: "typescript-language-server, rust-analyzer, pyright-langserver, gopls"
+    validations:
+      required: true
+  - type: textarea
+    id: install
+    attributes:
+      label: Install command
+      placeholder: "npm install -g ..."
+    validations:
+      required: true
+  - type: textarea
+    id: capabilities
+    attributes:
+      label: Expected LSP capabilities
+      description: Which tools should work first?
+      placeholder: "diagnostics, definition, references, symbols, hover"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Current doctor output
+      render: json
+  - type: textarea
+    id: notes
+    attributes:
+      label: Project layout notes
+      description: Include config file names, workspace markers, or common monorepo patterns for this language.

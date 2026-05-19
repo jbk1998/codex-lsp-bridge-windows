@@ -1,0 +1,54 @@
+- name: bug
+  color: d73a4a
+  description: Something is broken or produces incorrect results.
+- name: feature
+  color: a2eeef
+  description: New capability or product improvement.
+- name: docs
+  color: 0075ca
+  description: Documentation-only change.
+- name: good first issue
+  color: 7057ff
+  description: Small, well-scoped contribution.
+- name: help wanted
+  color: 008672
+  description: Maintainer-approved contribution opportunity.
+- name: needs reproduction
+  color: fbca04
+  description: Needs exact commands, tool call, workspace shape, or doctor output.
+- name: security
+  color: b60205
+  description: Security-sensitive report or fix.
+- name: area:diagnostics
+  color: c5def5
+  description: Diagnostics, stale, timeout, or summary behavior.
+- name: area:mcp
+  color: c5def5
+  description: MCP protocol or tool behavior.
+- name: area:installer
+  color: c5def5
+  description: Install, uninstall, Codex config, or package setup.
+- name: area:hooks
+  color: c5def5
+  description: PostToolUse hook behavior and output.
+- name: area:docs
+  color: c5def5
+  description: README, release docs, marketplace docs, or contribution docs.
+- name: area:language-server
+  color: c5def5
+  description: Language server detection, command config, or adapter support.
+- name: language:typescript
+  color: 3178c6
+  description: TypeScript or JavaScript language-server behavior.
+- name: language:rust
+  color: dea584
+  description: Rust language-server behavior.
+- name: language:python
+  color: 3572a5
+  description: Python language-server behavior.
+- name: language:go
+  color: 00add8
+  description: Go language-server behavior.
+- name: out of scope
+  color: bfdadc
+  description: Does not fit the read-only semantic safety layer scope.

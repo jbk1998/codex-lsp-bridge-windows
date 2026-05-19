@@ -1,0 +1,65 @@
+name: Diagnostics timeout or stale result
+description: Report diagnostics that time out, stay stale, or disagree with your editor.
+title: "diagnostics: "
+labels: ["bug", "area:diagnostics", "needs reproduction"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Diagnostics are the core reliability surface of this project. Please distinguish "no diagnostics" from "timed out" or "stale" in the report.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      placeholder: "lsp_diagnostics returns timed_out for a TypeScript file that VS Code diagnoses immediately."
+    validations:
+      required: true
+  - type: textarea
+    id: tool_call
+    attributes:
+      label: Exact command or MCP tool call
+      render: json
+      placeholder: |
+        {
+          "root": "/path/to/workspace",
+          "file": "/path/to/workspace/src/file.ts",
+          "severity": "error",
+          "timeoutMs": 10000
+        }
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Result
+      description: Paste the full diagnostics response, including status, timedOut, stale, and sourceRevision.
+      render: json
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Doctor output
+      render: json
+    validations:
+      required: true
+  - type: input
+    id: language_server_version
+    attributes:
+      label: Language server version
+      placeholder: "typescript-language-server --version"
+  - type: textarea
+    id: workspace
+    attributes:
+      label: Workspace shape
+      description: Note monorepo/project references/package manager/tsconfig layout if relevant.
+      placeholder: "pnpm monorepo with TS project references..."
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I am reporting the difference between `timed_out`/`stale` and a real empty diagnostics result.
+          required: true
+        - label: I included the exact workspace root and file path shape.
+          required: true

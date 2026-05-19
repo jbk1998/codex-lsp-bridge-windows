@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security report
+    url: https://github.com/shjeon-96/codex-lsp-bridge/security/policy
+    about: Please report workspace escape, arbitrary execution, or secret exposure concerns privately.
