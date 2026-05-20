@@ -34,6 +34,7 @@ export interface Diagnostic {
 }
 
 export type DiagnosticStatus = "ok" | "timed_out" | "unavailable";
+export type DiagnosticConclusion = "diagnostics_clean" | "diagnostics_found" | "inconclusive" | "unavailable";
 
 export interface DiagnosticReport {
   status: DiagnosticStatus;
@@ -75,6 +76,8 @@ export interface SemanticProvider {
 
 export interface DiagnosticSummary {
   status: DiagnosticStatus;
+  conclusion: DiagnosticConclusion;
+  message: string;
   timedOut: boolean;
   stale: boolean;
   unavailableReason?: string;

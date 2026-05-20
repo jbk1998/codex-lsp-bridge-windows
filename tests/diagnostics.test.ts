@@ -21,8 +21,34 @@ describe("diagnostics", () => {
     ]);
 
     expect(summary.total).toBe(2);
+    expect(summary.conclusion).toBe("diagnostics_found");
     expect(summary.bySeverity.error).toBe(1);
     expect(summary.summary[0]).toContain("ERROR src/a.ts:2:1 missing id");
+  });
+
+  it("marks timed out diagnostics as inconclusive instead of clean", () => {
+    expect(
+      summarizeDiagnostics({
+        status: "timed_out",
+        timedOut: true,
+        stale: false,
+        items: []
+      })
+    ).toMatchObject({
+      status: "timed_out",
+      conclusion: "inconclusive",
+      total: 0,
+      message: expect.stringContaining("do not treat this as type-check passed")
+    });
+  });
+
+  it("does not claim a clean LSP diagnostics response is a full type-check", () => {
+    expect(summarizeDiagnostics([])).toMatchObject({
+      status: "ok",
+      conclusion: "diagnostics_clean",
+      total: 0,
+      message: expect.stringContaining("not a full project type-check")
+    });
   });
 
   it("maps LSP diagnostic severities to stable text values", () => {
@@ -44,6 +70,7 @@ describe("diagnostics", () => {
       })
     ).toMatchObject({
       status: "unavailable",
+      conclusion: "unavailable",
       unavailableReason: "Failed to start LSP server",
       total: 0
     });

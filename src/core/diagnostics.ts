@@ -1,4 +1,4 @@
-import type { Diagnostic, DiagnosticReport, DiagnosticSummary, Severity } from "./types.js";
+import type { Diagnostic, DiagnosticConclusion, DiagnosticReport, DiagnosticSummary, DiagnosticStatus, Severity } from "./types.js";
 
 const severityRank: Record<Severity, number> = {
   error: 0,
@@ -38,6 +38,7 @@ export function summarizeDiagnostics(report: DiagnosticReport | Diagnostic[], li
 
   return {
     status: Array.isArray(report) ? "ok" : report.status,
+    ...summarizeConclusion(Array.isArray(report) ? "ok" : report.status, sorted.length),
     timedOut: Array.isArray(report) ? false : report.timedOut,
     stale: Array.isArray(report) ? false : report.stale,
     unavailableReason: Array.isArray(report) ? undefined : report.unavailableReason,
@@ -46,6 +47,31 @@ export function summarizeDiagnostics(report: DiagnosticReport | Diagnostic[], li
     bySeverity,
     items: sorted,
     summary
+  };
+}
+
+export function summarizeConclusion(status: DiagnosticStatus, total: number): { conclusion: DiagnosticConclusion; message: string } {
+  if (status === "timed_out") {
+    return {
+      conclusion: "inconclusive",
+      message: "Diagnostics timed out before fresh LSP results arrived; do not treat this as type-check passed."
+    };
+  }
+  if (status === "unavailable") {
+    return {
+      conclusion: "unavailable",
+      message: "Diagnostics are unavailable; do not treat this as type-check passed."
+    };
+  }
+  if (total > 0) {
+    return {
+      conclusion: "diagnostics_found",
+      message: "LSP diagnostics were returned for this request."
+    };
+  }
+  return {
+    conclusion: "diagnostics_clean",
+    message: "No LSP diagnostics were returned for this request; this is not a full project type-check."
   };
 }
 

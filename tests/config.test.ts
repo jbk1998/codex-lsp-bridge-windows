@@ -40,6 +40,8 @@ describe("config", () => {
 
   it("uses a diagnostics timeout suitable for cold language-server analysis by default", async () => {
     rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
+    homePath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-home-"));
+    process.env.CODEX_HOME = path.join(homePath, ".codex");
 
     expect(loadConfig(rootPath)).toMatchObject({
       diagnosticsTimeoutMs: 15000

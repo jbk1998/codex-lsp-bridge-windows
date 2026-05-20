@@ -76,13 +76,13 @@ const timedOut = diagnostics.filter((item) => item.timedOut || item.status === "
 
 if (timedOut.length > 0 && total === 0 && diagnostics.every((item) => !item.error)) {
   if (verbosePending) {
-    console.log(`[codex-lsp-bridge] LSP diagnostics pending for ${timedOut.length} touched supported source file(s).`);
+    console.log(`[codex-lsp-bridge] LSP diagnostics inconclusive for ${timedOut.length} touched supported source file(s); not type-check passed.`);
   }
   process.exit(0);
 }
 
 if (total === 0 && diagnostics.every((item) => !item.error)) {
-  console.log(`[codex-lsp-bridge] diagnostics clean for ${files.length} touched supported source file(s).`);
+  console.log(`[codex-lsp-bridge] LSP diagnostics clean for ${files.length} touched supported source file(s); not a full project type-check.`);
   process.exit(0);
 }
 

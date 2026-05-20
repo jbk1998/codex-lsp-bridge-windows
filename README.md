@@ -403,6 +403,8 @@ Diagnostics include trust metadata:
 ```json
 {
   "status": "ok",
+  "conclusion": "diagnostics_clean",
+  "message": "No LSP diagnostics were returned for this request; this is not a full project type-check.",
   "timedOut": false,
   "stale": false,
   "sourceRevision": 1
@@ -411,7 +413,12 @@ Diagnostics include trust metadata:
 
 `status: "timed_out"` means the bridge did not receive fresh
 `textDocument/publishDiagnostics` before the timeout. Treat that differently
-from "no diagnostics".
+from "no diagnostics". A timed-out result uses `conclusion: "inconclusive"`
+and must not be treated as type-check passed.
+
+`conclusion: "diagnostics_clean"` means the LSP diagnostics request returned no
+diagnostics. It is not the same as a full project `tsc --noEmit` or equivalent
+type-check passing.
 
 `status: "unavailable"` means the selected language server could not be
 started, commonly because the required command is not installed. Treat that as

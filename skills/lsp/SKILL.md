@@ -15,5 +15,6 @@ Use the `codex-lsp-bridge` MCP tools as a semantic feedback layer for code work.
 - Prefer file-position inputs for `lsp_definition`, `lsp_references`, and `lsp_hover` when the exact occurrence is known.
 - For detached PR worktrees or temp review checkouts, pass the worktree path as `root` when the file path alone does not identify the intended workspace. The root must be a real workspace, such as a path with `.git`, `package.json`, or `tsconfig.json`.
 - Use `lsp_status` before trusting results if language-server availability, Codex hook setup, or build freshness is unclear.
-- Treat `status: "timed_out"` differently from no diagnostics. Say the result is pending or stale instead of claiming the file is clean.
+- Treat `status: "timed_out"` or `conclusion: "inconclusive"` differently from no diagnostics. Say the result is pending/unknown and not type-check passed instead of claiming the file is clean.
+- Treat `conclusion: "diagnostics_clean"` as "no LSP diagnostics returned for this request", not as a full project type-check pass.
 - If LSP is unavailable, ambiguous, or outside the workspace root, fall back to the narrowest repo-native verification command.

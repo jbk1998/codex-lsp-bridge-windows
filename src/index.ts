@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { summarizeConclusion } from "./core/diagnostics.js";
 import { WorkspaceCommandService } from "./core/command-service.js";
 import { loadConfig } from "./core/config.js";
 import { resolveDiagnosticsTimeout } from "./core/diagnostics-timeout.js";
@@ -12,6 +13,7 @@ import { LspManager } from "./core/lsp-manager.js";
 import { filePathToUri } from "./utils/uri.js";
 import { runStdioMcp } from "./transport/mcp.js";
 import type { SupportedLanguage } from "./adapters/language-config.js";
+import type { DiagnosticStatus, DiagnosticSummary } from "./core/types.js";
 
 const defaultDirectoryDiagnosticsOptions = {
   maxFiles: 50,
@@ -281,7 +283,7 @@ async function collectDirectoryDiagnostics(
   const scopedService = serviceForRoot(root, language);
   const startedAt = Date.now();
   const sourceFiles = await readCachedSourceFiles(resolveDirectoryInsideRoot(root, dir), options.maxFiles, sourceFileListCache);
-  const summaries = [];
+  const summaries: DiagnosticSummary[] = [];
   let budgetTimedOut = false;
 
   for (let index = 0; index < sourceFiles.files.length; index += options.concurrency) {
@@ -293,9 +295,11 @@ async function collectDirectoryDiagnostics(
     summaries.push(...(await Promise.all(batch.map((diagnosticFile) => scopedService.diagnostics(filePathToUri(diagnosticFile))))));
   }
   const summary = filterDiagnosticSummary(mergeDiagnosticSummaries(summaries), severity);
+  const status: DiagnosticStatus = budgetTimedOut ? "timed_out" : summary.status;
   return {
     ...summary,
-    status: budgetTimedOut ? "timed_out" : summary.status,
+    status,
+    ...summarizeConclusion(status, summary.total),
     timedOut: budgetTimedOut || summary.timedOut,
     directory: {
       scannedFiles: summaries.length,
@@ -330,9 +334,9 @@ async function readCachedSourceFiles(
   return { ...collected, cached: false };
 }
 
-function mergeDiagnosticSummaries(summaries: Array<Awaited<ReturnType<WorkspaceCommandService["diagnostics"]>>>) {
+function mergeDiagnosticSummaries(summaries: Array<Awaited<ReturnType<WorkspaceCommandService["diagnostics"]>>>): DiagnosticSummary {
   const items = summaries.flatMap((summary) => summary.items);
-  const status = summaries.some((summary) => summary.status === "timed_out") ? "timed_out" : "ok";
+  const status: DiagnosticStatus = summaries.some((summary) => summary.status === "timed_out") ? "timed_out" : "ok";
   const unavailableReason = summaries.find((summary) => summary.status === "unavailable")?.unavailableReason;
   const bySeverity = {
     error: items.filter((item) => item.severity === "error").length,
@@ -342,6 +346,7 @@ function mergeDiagnosticSummaries(summaries: Array<Awaited<ReturnType<WorkspaceC
   };
   return {
     status: status === "timed_out" ? "timed_out" : unavailableReason ? "unavailable" : "ok",
+    ...summarizeConclusion(status === "timed_out" ? "timed_out" : unavailableReason ? "unavailable" : "ok", items.length),
     timedOut: summaries.some((summary) => summary.timedOut),
     stale: summaries.some((summary) => summary.stale),
     ...(unavailableReason ? { unavailableReason } : {}),
@@ -352,7 +357,7 @@ function mergeDiagnosticSummaries(summaries: Array<Awaited<ReturnType<WorkspaceC
   };
 }
 
-function filterDiagnosticSummary<T extends { items: Array<{ severity: string }>; total: number; bySeverity: Record<string, number>; summary: string[] }>(
+function filterDiagnosticSummary<T extends { status: DiagnosticStatus; timedOut: boolean; items: Array<{ severity: string }>; total: number; bySeverity: Record<string, number>; summary: string[] }>(
   summary: T,
   severity: string | undefined
 ): T {
@@ -361,6 +366,7 @@ function filterDiagnosticSummary<T extends { items: Array<{ severity: string }>;
   return {
     ...summary,
     total: items.length,
+    ...summarizeConclusion(summary.status, items.length),
     bySeverity: {
       error: items.filter((item) => item.severity === "error").length,
       warning: items.filter((item) => item.severity === "warning").length,
