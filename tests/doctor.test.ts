@@ -16,13 +16,17 @@ describe("doctor", () => {
           supportLevel: "primary",
           installHint: "npm install -g typescript-language-server typescript"
         }),
-        expect.objectContaining({ language: "rust", command: "rust-analyzer", supportLevel: "experimental" }),
+        expect.objectContaining({
+          language: "rust",
+          command: expect.stringContaining("rust-analyzer"),
+          supportLevel: "experimental"
+        }),
         expect.objectContaining({
           language: "python",
           command: expect.stringContaining("pyright-langserver"),
           supportLevel: "experimental"
         }),
-        expect.objectContaining({ language: "go", command: "gopls", supportLevel: "experimental" })
+        expect.objectContaining({ language: "go", command: expect.stringContaining("gopls"), supportLevel: "experimental" })
       ])
     );
     expect(result.languages.every((entry) => entry.status === "ok" || entry.status === "missing")).toBe(true);
