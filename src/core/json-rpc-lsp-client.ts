@@ -1,9 +1,11 @@
 import { EventEmitter } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 
-interface JsonRpcMessage {
+export interface JsonRpcMessage {
   jsonrpc: "2.0";
-  id?: number;
+  id?: number | string;
   method?: string;
   params?: unknown;
   result?: unknown;
@@ -14,6 +16,12 @@ export interface ServerProcessConfig {
   command: string;
   args: string[];
   cwd: string;
+}
+
+export interface PreparedSpawnCommand {
+  command: string;
+  args: string[];
+  windowsVerbatimArguments?: boolean;
 }
 
 export interface LspClient {
@@ -41,9 +49,11 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   start(): void {
     if (this.process) return;
 
-    this.process = spawn(this.config.command, this.config.args, {
+    const prepared = prepareSpawnCommand(this.config);
+    this.process = spawn(prepared.command, prepared.args, {
       cwd: this.config.cwd,
-      stdio: "pipe"
+      stdio: "pipe",
+      windowsVerbatimArguments: prepared.windowsVerbatimArguments
     });
 
     this.process.stdout.on("data", (chunk: Buffer) => this.readChunk(chunk));
@@ -86,13 +96,15 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   }
 
   async stop(): Promise<void> {
-    if (!this.process) return;
+    const process = this.process;
+    if (!process) return;
 
     try {
       await this.request("shutdown");
       this.notify("exit");
+      await waitForExit(process, 1500);
     } finally {
-      this.process.kill();
+      if (process.exitCode === null && !process.killed) process.kill();
       this.process = undefined;
     }
   }
@@ -139,14 +151,19 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   private handleMessage(message: JsonRpcMessage): void {
     if (typeof message.id === "number") {
       const pending = this.pending.get(message.id);
-      if (!pending) return;
-
-      this.pending.delete(message.id);
-      if (message.error) {
-        pending.reject(new Error(message.error.message));
-      } else {
-        pending.resolve(message.result);
+      if (pending) {
+        this.pending.delete(message.id);
+        if (message.error) {
+          pending.reject(new Error(message.error.message));
+        } else {
+          pending.resolve(message.result);
+        }
+        return;
       }
+    }
+
+    if (message.id !== undefined && message.method) {
+      this.respondToServerRequest(message);
       return;
     }
 
@@ -154,4 +171,99 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
       this.emit("notification", message.method, message.params);
     }
   }
+
+  private respondToServerRequest(message: JsonRpcMessage): void {
+    this.write(createServerRequestResponse(message));
+  }
+}
+
+export function createServerRequestResponse(message: JsonRpcMessage): JsonRpcMessage {
+  if (message.method === "workspace/configuration") {
+    const items = isWorkspaceConfigurationParams(message.params) ? message.params.items : [];
+    return { jsonrpc: "2.0", id: message.id, result: items.map(() => ({})) };
+  }
+
+  if (message.method === "workspace/applyEdit") {
+    return {
+      jsonrpc: "2.0",
+      id: message.id,
+      result: {
+        applied: false,
+        failureReason: "codex-lsp-bridge is read-only"
+      }
+    };
+  }
+
+  return { jsonrpc: "2.0", id: message.id, result: null };
+}
+
+export function prepareSpawnCommand(config: ServerProcessConfig, platform: NodeJS.Platform = process.platform): PreparedSpawnCommand {
+  if (isNodeEntrypoint(config.command)) {
+    return { command: process.execPath, args: [config.command, ...config.args] };
+  }
+
+  if (platform === "win32" && isWindowsShellShim(config.command)) {
+    const npmEntrypoint = resolveNpmShimEntrypoint(config.command);
+    if (npmEntrypoint) {
+      return { command: process.execPath, args: [npmEntrypoint, ...config.args] };
+    }
+
+    return {
+      command: process.env.ComSpec ?? "cmd.exe",
+      args: ["/d", "/s", "/c", quoteCmdCommand([config.command, ...config.args])],
+      windowsVerbatimArguments: true
+    };
+  }
+
+  return { command: config.command, args: config.args };
+}
+
+function isNodeEntrypoint(command: string): boolean {
+  return [".js", ".cjs", ".mjs"].includes(path.extname(command).toLowerCase());
+}
+
+function isWindowsShellShim(command: string): boolean {
+  const extension = path.extname(command).toLowerCase();
+  return extension === ".cmd" || extension === ".bat";
+}
+
+function resolveNpmShimEntrypoint(command: string): string | undefined {
+  let contents: string;
+  try {
+    contents = fs.readFileSync(command, "utf8");
+  } catch {
+    return undefined;
+  }
+
+  const match = /"%dp0%\\([^"]+\.(?:js|cjs|mjs))"/i.exec(contents);
+  if (!match) return undefined;
+  const entrypoint = path.join(path.dirname(command), match[1]);
+  return fs.existsSync(entrypoint) ? entrypoint : undefined;
+}
+
+function quoteCmdArgument(value: string): string {
+  if (/["&|<>^%]/.test(value)) {
+    throw new Error(`Unsafe shell metacharacter in Windows command argument: ${value}`);
+  }
+  return `"${value}"`;
+}
+
+function quoteCmdCommand(values: string[]): string {
+  return `"${values.map(quoteCmdArgument).join(" ")}"`;
+}
+
+function isWorkspaceConfigurationParams(value: unknown): value is { items: unknown[] } {
+  if (!value || typeof value !== "object") return false;
+  return Array.isArray((value as { items?: unknown }).items);
+}
+
+function waitForExit(process: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<void> {
+  if (process.exitCode !== null) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, timeoutMs);
+    process.once("exit", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }

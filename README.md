@@ -1,30 +1,41 @@
 # codex-lsp-bridge
 
 [![npm version](https://img.shields.io/npm/v/codex-lsp-bridge.svg)](https://www.npmjs.com/package/codex-lsp-bridge)
-[![CI](https://github.com/shjeon-96/codex-lsp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/shjeon-96/codex-lsp-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/jbk1998/codex-lsp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/jbk1998/codex-lsp-bridge/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
-Read-only LSP tools for Codex CLI, with TypeScript as the primary path and
-experimental Rust support through `rust-analyzer`.
+Read-only language-server tools for Codex. This bridge lets Codex ask the same
+local LSPs your editor uses for diagnostics, definitions, references, workspace
+symbols, and hover/type information, without giving Codex write access through
+the language server.
 
-`codex-lsp-bridge` gives Codex semantic signals from your local language
-servers — diagnostics, definitions, references, symbols, hover, and status —
-without granting write access or escaping the workspace root.
+This fork focuses on making the bridge practical on Windows and useful for real
+Codex coding sessions:
 
-It is meant to be a semantic safety layer for AI coding workflows across
-supported languages:
+- TypeScript/JavaScript diagnostics through `typescript-language-server`
+- Python diagnostics through `pyright-langserver`
+- Reliable Windows npm shim handling for `.cmd` language-server launchers
+- Root-scoped CLI and MCP calls for detached worktrees and out-of-repo calls
+- Clear metadata when diagnostics are clean, stale, timed out, or unavailable
 
-- understand type and semantic diagnostics after edits
-- navigate definitions and references without guessing from grep alone
-- inspect hover/type information at known file positions
-- keep review and refactor loops read-only by default
+The goal is not to replace full project checks like `tsc --noEmit`, `pyright`,
+`ruff`, or test suites. The goal is to give Codex fast semantic feedback while
+it is editing, reviewing, and refactoring code.
 
 ## Why Use It
 
-AI coding agents are good at text search, but semantic mistakes still happen:
-wrong imports, missed references, stale type assumptions, and edits made before
-diagnostics are known. `codex-lsp-bridge` gives Codex a read-only semantic
-feedback layer from the same language servers your editor uses.
+Codex is strong at text search and patching, but many coding mistakes are
+semantic:
+
+- an import resolves in the editor but not in the target project
+- a refactor updates the definition but misses a referenced call site
+- a function accepts a narrower type than the surrounding code assumes
+- a Python optional value is used as if it is always present
+- a TypeScript file looks syntactically fine but publishes a semantic error
+
+`codex-lsp-bridge` gives Codex a read-only semantic feedback layer so those
+mistakes can be caught during the agent loop instead of only at the final build
+or test step.
 
 Typical loop:
 
@@ -49,12 +60,36 @@ Example diagnostic signal:
 }
 ```
 
+## What This Fork Does Well
+
+- **Windows startup reliability.** npm language-server launchers on Windows are
+  usually `.cmd` shims. This fork resolves local `node_modules/.bin`, `PATH`,
+  and `PATHEXT`, rewrites common npm shims to direct Node entrypoints, and uses
+  a safe `cmd.exe` wrapper only when needed.
+- **TypeScript diagnostics.** The bridge can surface syntax and semantic
+  diagnostics such as `TS1109` and `TS2322` from `typescript-language-server`.
+- **Pyright diagnostics.** Python projects can get opened-file Pyright
+  diagnostics through the same MCP interface.
+- **Root-aware calls.** CLI and MCP callers can pass `--root` / `root` with a
+  relative file path, which is important when Codex runs from a parent folder,
+  a temp checkout, or a detached worktree.
+- **Safe read-only posture.** Server-to-client edit requests are declined; the
+  language server can inform Codex, but it cannot mutate the repository.
+- **Honest status.** Missing servers, stale diagnostics, and timeouts are
+  reported explicitly instead of being treated as a clean type check.
+
 ## Install In 30 Seconds
 
 Install a language server for your project. For TypeScript:
 
 ```bash
 npm install -g typescript-language-server typescript
+```
+
+For Python:
+
+```bash
+npm install -g pyright
 ```
 
 For Rust:
@@ -68,6 +103,14 @@ Install and register the Codex integration:
 ```bash
 npm install -g codex-lsp-bridge
 codex-lsp-bridge install --auto-update
+codex-lsp-bridge doctor --root .
+```
+
+To install this fork before the changes land in the upstream npm package:
+
+```bash
+npm install -g github:jbk1998/codex-lsp-bridge
+codex-lsp-bridge install
 codex-lsp-bridge doctor --root .
 ```
 
@@ -98,6 +141,11 @@ codex-lsp-bridge doctor --root .
 codex-lsp-bridge diagnostics --file src/file.ts --timeout-ms 15000 --root .
 ```
 
+On Windows, the bridge resolves local `node_modules/.bin` shims, `PATH` +
+`PATHEXT` commands, and npm `.cmd` launchers before starting the language
+server. If you run diagnostics from outside a project, pass `--root` and a
+relative `--file`; the file is resolved under that root.
+
 In Codex, ask it to check LSP status or diagnostics. After installation and
 restart, Codex can call:
 
@@ -119,6 +167,10 @@ restart, Codex can call:
 - Rust workspace detection through `Cargo.toml` and `.rs` hook coverage.
 - Workspace-root boundaries with realpath checks, including symlink escape
   protection.
+
+Diagnostics are LSP diagnostics for opened files, not a replacement for full
+project validation commands such as `tsc --noEmit`, `ruff`, or `pyright` CLI
+runs.
 
 ## Status
 

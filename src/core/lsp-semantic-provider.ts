@@ -3,7 +3,7 @@ import path from "node:path";
 import type { LspClient, ServerProcessConfig } from "./json-rpc-lsp-client.js";
 import { lspSeverityToText } from "./diagnostics.js";
 import type { Diagnostic, DiagnosticOptions, DiagnosticReport, DocumentPosition, HoverInfo, Location, Position, SemanticProvider, SymbolMatch } from "./types.js";
-import { filePathToUri, uriToFilePath } from "../utils/uri.js";
+import { canonicalizeFileUri, filePathToUri, uriToFilePath } from "../utils/uri.js";
 
 interface LspDiagnostic {
   range: { start: Position; end: Position };
@@ -307,12 +307,13 @@ export class LspSemanticProvider implements SemanticProvider {
   private captureDiagnostics(params: unknown): void {
     if (!isPublishDiagnosticsParams(params)) return;
 
-    const revision = (this.diagnosticsRevisionByUri.get(params.uri) ?? 0) + 1;
-    this.diagnosticsRevisionByUri.set(params.uri, revision);
+    const uri = canonicalizeFileUri(params.uri);
+    const revision = (this.diagnosticsRevisionByUri.get(uri) ?? 0) + 1;
+    this.diagnosticsRevisionByUri.set(uri, revision);
     this.diagnosticsByUri.set(
-      params.uri,
+      uri,
       params.diagnostics.map((diagnostic) => ({
-        file: uriToFilePath(params.uri),
+        file: uriToFilePath(uri),
         line: diagnostic.range.start.line + 1,
         character: diagnostic.range.start.character + 1,
         severity: lspSeverityToText(diagnostic.severity),
@@ -321,7 +322,7 @@ export class LspSemanticProvider implements SemanticProvider {
         code: diagnostic.code
       }))
     );
-    this.resolveDiagnosticsWaiters(params.uri, revision);
+    this.resolveDiagnosticsWaiters(uri, revision);
   }
 
   private waitForDiagnostics(uri: string, minRevision: number, timeoutMs = this.options.diagnosticsTimeoutMs ?? defaultDiagnosticsTimeoutMs): Promise<boolean> {

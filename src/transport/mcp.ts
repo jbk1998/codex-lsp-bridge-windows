@@ -1,5 +1,6 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import path from "node:path";
 import type { CommandService, WorkspaceCommandService } from "../core/command-service.js";
 import { filePathToUri } from "../utils/uri.js";
 
@@ -250,31 +251,32 @@ export async function dispatch(service: LspCommandService, request: Request, run
 }
 
 async function dispatchLspMethod(service: LspCommandService, method: string | undefined, params: Record<string, unknown>): Promise<unknown> {
+  const normalizedParams = normalizeFileParams(params);
   if (method === "lsp.diagnostics") {
-    if (typeof params.dir === "string") {
+    if (typeof normalizedParams.dir === "string") {
       throw new JsonRpcError(-32602, "directory diagnostics require tools/call runtime support");
     }
-    const options = { timeoutMs: readOptionalPositiveNumber(params, "timeoutMs") };
-    if (typeof params.file === "string") return service.diagnostics(filePathToUri(params.file), options);
-    return service.diagnostics(typeof params.uri === "string" ? params.uri : undefined, options);
+    const options = { timeoutMs: readOptionalPositiveNumber(normalizedParams, "timeoutMs") };
+    if (typeof normalizedParams.file === "string") return service.diagnostics(filePathToUri(normalizedParams.file), options);
+    return service.diagnostics(typeof normalizedParams.uri === "string" ? normalizedParams.uri : undefined, options);
   }
   if (method === "lsp.definition") {
-    const position = readOptionalPosition(params);
+    const position = readOptionalPosition(normalizedParams);
     if (position) return service.definitionAt(position);
-    return service.definition(readStringParam(params, "symbol"));
+    return service.definition(readStringParam(normalizedParams, "symbol"));
   }
   if (method === "lsp.references") {
-    const position = readOptionalPosition(params);
+    const position = readOptionalPosition(normalizedParams);
     if (position) return service.referencesAt(position);
-    return service.references(readStringParam(params, "symbol"));
+    return service.references(readStringParam(normalizedParams, "symbol"));
   }
   if (method === "lsp.symbols") {
-    return service.symbols(readStringParam(params, "query"));
+    return service.symbols(readStringParam(normalizedParams, "query"));
   }
   if (method === "lsp.hover") {
-    const position = readOptionalPosition(params);
+    const position = readOptionalPosition(normalizedParams);
     if (position) return service.hoverAt(position);
-    return service.hover(readStringParam(params, "symbol"));
+    return service.hover(readStringParam(normalizedParams, "symbol"));
   }
 
   throw new JsonRpcError(-32601, `Unsupported method: ${method ?? "undefined"}`);
@@ -342,4 +344,22 @@ function readOptionalPosition(params: Record<string, unknown>): { file: string; 
     line: params.line,
     character: params.character
   };
+}
+
+function normalizeFileParams(params: Record<string, unknown>): Record<string, unknown> {
+  if (typeof params.root !== "string" || typeof params.file !== "string") return params;
+  return {
+    ...params,
+    file: resolveFileInsideRoot(params.root, params.file)
+  };
+}
+
+function resolveFileInsideRoot(root: string, file: string): string {
+  const resolvedRoot = path.resolve(root);
+  const filePath = path.isAbsolute(file) ? path.resolve(file) : path.resolve(resolvedRoot, file);
+  const relative = path.relative(resolvedRoot, filePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new JsonRpcError(-32602, `File is outside workspace root: ${filePath}`);
+  }
+  return filePath;
 }

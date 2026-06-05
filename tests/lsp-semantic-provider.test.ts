@@ -99,6 +99,35 @@ describe("LspSemanticProvider", () => {
     expect(client.notifications.some((notification) => notification.method === "textDocument/didOpen")).toBe(true);
   });
 
+  it("matches diagnostics published with a lower-case encoded Windows drive URI", async () => {
+    if (process.platform !== "win32") return;
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      const documentUri = (params as { textDocument: { uri: string } }).textDocument.uri;
+      const lowerDriveUri = documentUri.replace(/^file:\/\/\/([A-Z]):/, (_match, drive: string) => `file:///${drive.toLowerCase()}%3A`);
+      client.emit("notification", "textDocument/publishDiagnostics", {
+        uri: lowerDriveUri,
+        diagnostics: [
+          {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } },
+            severity: 1,
+            message: "drive key mismatch",
+            source: "ts"
+          }
+        ]
+      });
+    };
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+      status: "ok",
+      timedOut: false,
+      items: [{ message: "drive key mismatch" }]
+    });
+  });
+
   it("waits for publishDiagnostics and tracks open document changes", async () => {
     const provider = createProvider();
     const uri = filePathToUri(filePath);

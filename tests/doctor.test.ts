@@ -17,7 +17,11 @@ describe("doctor", () => {
           installHint: "npm install -g typescript-language-server typescript"
         }),
         expect.objectContaining({ language: "rust", command: "rust-analyzer", supportLevel: "experimental" }),
-        expect.objectContaining({ language: "python", command: "pyright-langserver", supportLevel: "experimental" }),
+        expect.objectContaining({
+          language: "python",
+          command: expect.stringContaining("pyright-langserver"),
+          supportLevel: "experimental"
+        }),
         expect.objectContaining({ language: "go", command: "gopls", supportLevel: "experimental" })
       ])
     );

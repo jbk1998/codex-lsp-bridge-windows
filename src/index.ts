@@ -108,7 +108,7 @@ async function main(): Promise<void> {
       if (readOption(args, "--timeout-budget-ms") !== undefined) {
         throw new Error("--timeout-budget-ms is only valid for directory diagnostics; use --timeout-ms for file diagnostics");
       }
-      console.log(JSON.stringify(await service.diagnostics(file ? filePathToUri(file) : undefined, {
+      console.log(JSON.stringify(await service.diagnostics(file ? filePathToUri(resolveFileInsideRoot(root, file)) : undefined, {
         timeoutMs: readOptionalPositiveIntegerOption(args, "--timeout-ms")
       }), null, 2));
       return;
@@ -173,7 +173,8 @@ function readPosition(args: string[]): { file: string; line: number; character: 
   if (!file || line === undefined || character === undefined) {
     throw new Error("--file, --line, and --character must be provided together");
   }
-  return { file, line, character };
+  const root = path.resolve(readOption(args, "--root") ?? process.cwd());
+  return { file: resolveFileInsideRoot(root, file), line, character };
 }
 
 function readNumberOption(args: string[], option: string): number | undefined {
@@ -385,6 +386,15 @@ function resolveDirectoryInsideRoot(root: string, dir: string): string {
     throw new Error(`Directory is outside workspace root: ${directory}`);
   }
   return directory;
+}
+
+function resolveFileInsideRoot(root: string, file: string): string {
+  const filePath = path.isAbsolute(file) ? path.resolve(file) : path.resolve(root, file);
+  const relative = path.relative(root, filePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`File is outside workspace root: ${filePath}`);
+  }
+  return filePath;
 }
 
 function resolveRequestedRootSync(fallbackRoot: string, params: Record<string, unknown>): string {

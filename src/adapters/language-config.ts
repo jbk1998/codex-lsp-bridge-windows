@@ -94,11 +94,42 @@ export function createLanguageServerConfig(
   };
 }
 
-function resolveServerCommand(rootPath: string, command: string): string {
+export function resolveServerCommand(
+  rootPath: string,
+  command: string,
+  options: { platform?: NodeJS.Platform; env?: NodeJS.ProcessEnv } = {}
+): string {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
   const localCommand = path.join(rootPath, "node_modules", ".bin", command);
+  if (platform === "win32") {
+    for (const extension of windowsExecutableExtensions(env)) {
+      const candidate = `${localCommand}${extension}`;
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    const pathCommand = findCommandOnPath(command, env);
+    if (pathCommand) return pathCommand;
+  }
   if (fs.existsSync(localCommand)) return localCommand;
-  if (process.platform === "win32" && fs.existsSync(`${localCommand}.cmd`)) return `${localCommand}.cmd`;
   return command;
+}
+
+function findCommandOnPath(command: string, env: NodeJS.ProcessEnv): string | undefined {
+  if (path.isAbsolute(command) || command.includes(path.sep) || command.includes(path.posix.sep)) return undefined;
+
+  const pathValue = env.PATH ?? env.Path ?? env.path ?? "";
+  for (const directory of pathValue.split(path.delimiter).filter(Boolean)) {
+    for (const extension of windowsExecutableExtensions(env)) {
+      const candidate = path.join(directory, `${command}${extension}`);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+function windowsExecutableExtensions(env: NodeJS.ProcessEnv): string[] {
+  const configured = (env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+  return [...configured.map((extension) => extension.toLowerCase()), ""];
 }
 
 export function listLanguageServerConfigs(rootPath: string): LanguageServerConfig[] {

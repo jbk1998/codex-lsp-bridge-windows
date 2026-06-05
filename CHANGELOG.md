@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Fix Windows language-server startup for npm shims, PATH/PATHEXT resolution, and direct Node entrypoints.
+- Canonicalize Windows file URI keys so lower-case drive diagnostics match opened documents.
+- Resolve CLI and MCP relative file arguments against the selected workspace root.
+- Respond safely to common server-to-client LSP requests while preserving read-only behavior.
+
 ## 0.3.3
 
 - Publish the `--with-rust-analyzer` installer option in the CLI package.

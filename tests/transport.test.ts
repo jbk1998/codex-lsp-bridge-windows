@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import path from "node:path";
 import { dispatch, handleJsonRpcLine, handleRequest } from "../src/transport/mcp.js";
 import { CommandService } from "../src/core/command-service.js";
 import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
@@ -6,8 +7,11 @@ import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMat
 class EmptyProvider implements SemanticProvider {
   constructor(private readonly label = "default") {}
   readonly diagnosticTimeouts: Array<number | undefined> = [];
+  readonly diagnosticUris: Array<string | undefined> = [];
+  readonly positions: Array<{ file: string; line: number; character: number }> = [];
 
-  diagnostics(_uri?: string, options?: { timeoutMs?: number }): Promise<DiagnosticReport> {
+  diagnostics(uri?: string, options?: { timeoutMs?: number }): Promise<DiagnosticReport> {
+    this.diagnosticUris.push(uri);
     this.diagnosticTimeouts.push(options?.timeoutMs);
     return Promise.resolve({
       status: "ok",
@@ -30,13 +34,15 @@ class EmptyProvider implements SemanticProvider {
   definition(): Promise<Location> {
     return Promise.resolve({ file: "src/a.ts", line: 1, character: 1 });
   }
-  definitionAt(): Promise<Location> {
+  definitionAt(position: { file: string; line: number; character: number }): Promise<Location> {
+    this.positions.push(position);
     return Promise.resolve({ file: "src/position.ts", line: 2, character: 3 });
   }
   references(): Promise<Location[]> {
     return Promise.resolve([]);
   }
-  referencesAt(): Promise<Location[]> {
+  referencesAt(position: { file: string; line: number; character: number }): Promise<Location[]> {
+    this.positions.push(position);
     return Promise.resolve([{ file: "src/position.ts", line: 2, character: 3 }]);
   }
   symbols(): Promise<SymbolMatch[]> {
@@ -45,7 +51,8 @@ class EmptyProvider implements SemanticProvider {
   hover(): Promise<HoverInfo> {
     return Promise.resolve({ file: "src/a.ts", line: 1, character: 1, contents: "hover" });
   }
-  hoverAt(): Promise<HoverInfo> {
+  hoverAt(position: { file: string; line: number; character: number }): Promise<HoverInfo> {
+    this.positions.push(position);
     return Promise.resolve({ file: "src/position.ts", line: 2, character: 3, contents: "position hover" });
   }
   dispose(): Promise<void> {
@@ -165,6 +172,80 @@ describe("MCP dispatch", () => {
       }
     });
     expect(seenParams).toEqual([{ file: "/tmp/pr-review/src/a.ts", root: "/tmp/pr-review" }]);
+  });
+
+  it("resolves MCP relative files against the selected root", async () => {
+    const defaultService = new CommandService(new EmptyProvider());
+    const provider = new EmptyProvider("detached");
+    const scopedService = new CommandService(provider);
+    const root = path.resolve("C:\\tmp\\pr-review");
+
+    await expect(
+      dispatch(
+        defaultService,
+        {
+          method: "tools/call",
+          params: {
+            name: "lsp_diagnostics",
+            arguments: { file: "src/a.ts", root }
+          }
+        },
+        {
+          serviceForParams: () => scopedService
+        }
+      )
+    ).resolves.toMatchObject({
+      structuredContent: {
+        total: 1
+      }
+    });
+
+    expect(provider.diagnosticUris[0]).toContain("src/a.ts");
+  });
+
+  it("resolves MCP position files against the selected root", async () => {
+    const defaultService = new CommandService(new EmptyProvider());
+    const provider = new EmptyProvider("detached");
+    const scopedService = new CommandService(provider);
+    const root = path.resolve("C:\\tmp\\pr-review");
+
+    await expect(
+      dispatch(
+        defaultService,
+        {
+          method: "tools/call",
+          params: {
+            name: "lsp_hover",
+            arguments: { file: "src/a.ts", root, line: 1, character: 1 }
+          }
+        },
+        {
+          serviceForParams: () => scopedService
+        }
+      )
+    ).resolves.toMatchObject({
+      structuredContent: { contents: "position hover" }
+    });
+
+    expect(provider.positions[0]).toMatchObject({
+      file: path.join(root, "src", "a.ts"),
+      line: 1,
+      character: 1
+    });
+  });
+
+  it("fails closed when MCP relative files escape the selected root", async () => {
+    const service = new CommandService(new EmptyProvider());
+
+    await expect(
+      dispatch(service, {
+        method: "tools/call",
+        params: {
+          name: "lsp_diagnostics",
+          arguments: { file: "..\\outside.ts", root: "C:\\tmp\\pr-review" }
+        }
+      })
+    ).rejects.toThrow("outside workspace root");
   });
 
   it("keeps the default MCP service when no root argument is provided", async () => {

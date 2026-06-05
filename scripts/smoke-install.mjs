@@ -16,7 +16,7 @@ const hooks = read("hooks.json");
 const agents = read("AGENTS.md");
 
 assert(config.includes("[mcp_servers.codex-lsp-bridge]"), "install did not write MCP config");
-assert(config.includes("dist/index.js"), "install did not point MCP config at local dist");
+assert(config.replaceAll("\\", "/").replace(/\/+/g, "/").includes("dist/index.js"), "install did not point MCP config at local dist");
 assert(hooks.includes("codex-lsp-bridge:post-tool-diagnostics"), "install did not write PostToolUse hook");
 assert(agents.includes("BEGIN codex-lsp-bridge"), "install did not write AGENTS instructions");
 

@@ -50,7 +50,8 @@ for (const file of requiredLocalFiles) {
   assert(fs.existsSync(path.join(packageRoot, file)), `Missing local package input: ${file}`);
 }
 
-const pack = spawnSync("npm", ["pack", "--dry-run", "--json"], {
+const npmCommand = resolveNpmCommand();
+const pack = spawnSync(npmCommand.command, [...npmCommand.args, "pack", "--dry-run", "--json"], {
   cwd: packageRoot,
   env: {
     ...process.env,
@@ -60,7 +61,7 @@ const pack = spawnSync("npm", ["pack", "--dry-run", "--json"], {
 });
 
 if (pack.status !== 0) {
-  process.stderr.write(pack.stderr);
+  process.stderr.write(pack.stderr ?? pack.error?.message ?? "npm pack failed without stderr");
   process.exit(pack.status ?? 1);
 }
 
@@ -83,4 +84,17 @@ function assert(condition, message) {
 
 function osTmp() {
   return process.env.TMPDIR || process.env.TEMP || process.env.TMP || "/tmp";
+}
+
+function resolveNpmCommand() {
+  if (process.env.npm_execpath && fs.existsSync(process.env.npm_execpath)) {
+    return { command: process.execPath, args: [process.env.npm_execpath] };
+  }
+
+  const bundledNpm = path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+  if (fs.existsSync(bundledNpm)) {
+    return { command: process.execPath, args: [bundledNpm] };
+  }
+
+  return { command: process.platform === "win32" ? "npm.cmd" : "npm", args: [] };
 }
