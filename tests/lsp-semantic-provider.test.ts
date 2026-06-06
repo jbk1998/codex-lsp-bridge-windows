@@ -177,6 +177,44 @@ describe("LspSemanticProvider", () => {
     });
   });
 
+  it("marks changed-document diagnostics as stale when only a prior revision is available", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      const documentUri = (params as { textDocument: { uri: string } }).textDocument.uri;
+      client.emit("notification", "textDocument/publishDiagnostics", {
+        uri: documentUri,
+        diagnostics: [
+          {
+            range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+            severity: 1,
+            message: "prior revision",
+            source: "ts"
+          }
+        ]
+      });
+    };
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+      status: "ok",
+      timedOut: false,
+      stale: false,
+      sourceRevision: 1,
+      items: [{ message: "prior revision" }]
+    });
+
+    await fs.writeFile(filePath, "export const Editor = 2;\n", "utf8");
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+      status: "timed_out",
+      timedOut: true,
+      stale: true,
+      sourceRevision: 1,
+      items: [{ message: "prior revision" }]
+    });
+  });
+
   it("allows per-call diagnostics timeout overrides", async () => {
     const provider = createProvider();
     const uri = filePathToUri(filePath);

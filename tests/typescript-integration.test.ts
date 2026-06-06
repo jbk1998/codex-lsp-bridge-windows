@@ -46,7 +46,7 @@ describe.skipIf(!hasTypeScriptLanguageServer)("TypeScript language server integr
       });
     } finally {
       await provider.dispose();
-      await fs.rm(rootPath, { recursive: true, force: true });
+      await removeFixtureRoot(rootPath);
     }
   }, 15000);
 
@@ -79,7 +79,7 @@ describe.skipIf(!hasTypeScriptLanguageServer)("TypeScript language server integr
       });
     } finally {
       await provider.dispose();
-      await fs.rm(rootPath, { recursive: true, force: true });
+      await removeFixtureRoot(rootPath);
     }
   }, 15000);
 });
@@ -114,10 +114,26 @@ describe.skipIf(!hasPyrightLanguageServer)("Pyright language server integration"
       });
     } finally {
       await provider.dispose();
-      await fs.rm(rootPath, { recursive: true, force: true });
+      await removeFixtureRoot(rootPath);
     }
   }, 20000);
 });
+
+async function removeFixtureRoot(rootPath: string): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await fs.rm(rootPath, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!isBusyError(error) || attempt === 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+}
+
+function isBusyError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "EBUSY";
+}
 
 async function commandExists(command: string): Promise<boolean> {
   const pathEntries = (process.env.PATH ?? "").split(path.delimiter).filter(Boolean);
