@@ -1,7 +1,7 @@
 ---
 title: Overhaul PostToolUse Diagnostics Latency
 type: perf
-status: active
+status: completed
 date: 2026-06-06
 ---
 

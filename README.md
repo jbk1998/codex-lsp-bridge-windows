@@ -164,6 +164,8 @@ restart, Codex can call:
 - Position-based lookup for precise navigation when file/line/character is
   known.
 - Quiet PostToolUse diagnostics for touched supported source files.
+- Fast hook routing with exact-state cache hits, warm MCP IPC when available,
+  and batched subprocess fallback.
 - Rust workspace detection through `Cargo.toml` and `.rs` hook coverage.
 - Workspace-root boundaries with realpath checks, including symlink escape
   protection.
@@ -393,6 +395,21 @@ If the touched file's language server is not installed, the hook skips that file
 quietly by default so a contributor without optional language tooling is not
 blocked.
 
+The hook resolves the workspace root before filtering files. It then routes
+diagnostics through the fastest safe path:
+
+1. Reuse an exact diagnostics-result cache entry when the normalized file set,
+   file content hashes, project fingerprint, and bridge version still match.
+2. Ask the already-running MCP process over a project-scoped local IPC endpoint
+   when a matching endpoint is available.
+3. Fall back to subprocess diagnostics batched by language group. Mixed
+   TypeScript, Python, Rust, and Go touched-file sets are split before fallback.
+
+IPC failures such as missing endpoints, timeouts, malformed responses, and
+operational diagnostics errors fall back to subprocess diagnostics. Trust
+boundary failures such as root-hash or secret mismatches are rejected instead of
+silently falling back.
+
 Rust files use the same hook path as TypeScript files. A touched `.rs` file
 calls `codex-lsp-bridge diagnostics --file <file> --root <workspace>`, which
 auto-detects Rust from the extension and starts `rust-analyzer` lazily. Missing
@@ -408,6 +425,17 @@ Hook output is intentionally quiet:
 - warning/hint-only diagnostics print a compact count
 - repeated identical error output is deduplicated
 - `CODEX_LSP_HOOK_MAX_FILES` limits touched-file fanout, default `5`
+- `CODEX_LSP_HOOK_DISABLE_CACHE=1` disables exact-state diagnostics caching
+- `CODEX_LSP_HOOK_DISABLE_IPC=1` disables warm MCP IPC and uses subprocess
+  fallback
+- `CODEX_LSP_HOOK_IPC_TIMEOUT_MS=<ms>` tunes the warm IPC response budget,
+  default `200`
+
+You can measure local hook latency from a checkout:
+
+```bash
+node scripts/measure-hook-latency.mjs --file src/file.ts --runs 5
+```
 
 The installer also adds a managed `codex-lsp-bridge` section to
 `~/.codex/AGENTS.md`. That section is what makes review, audit, and
@@ -421,6 +449,7 @@ Run against the current repository:
 ```bash
 codex-lsp-bridge doctor --root .
 codex-lsp-bridge diagnostics --file src/file.ts --timeout-ms 15000 --root .
+codex-lsp-bridge diagnostics --file src/a.ts --file src/b.ts --root .
 codex-lsp-bridge diagnostics --dir src --severity error --max-files 50 --timeout-budget-ms 15000 --concurrency 2 --root .
 codex-lsp-bridge symbols Editor --root .
 codex-lsp-bridge definition Editor --root .
@@ -660,8 +689,18 @@ printf '%s\n' \
   the directory budget expired or at least one file diagnostic timed out;
   `directory.budgetTimedOut` only describes the directory scan budget.
 - Directory scans keep a short in-process source-file-list cache for repeated
-  MCP calls against the same directory and limit. Diagnostic results themselves
-  are not cached, so edited file feedback still comes from the language server.
+  MCP calls against the same directory and limit. MCP diagnostic results are
+  not cached.
+- PostToolUse hook diagnostic results use a separate conservative cache only
+  for exact repeated file states. The cache key includes the normalized root,
+  bridge version, touched file content hashes, and common project/config
+  fingerprints such as `package.json`, lockfiles, `tsconfig.json`,
+  `pyproject.toml`, `Cargo.toml`, and `go.mod`. Cache read/write failures rerun
+  diagnostics.
+- While the MCP server is running, it also exposes a diagnostics-only local IPC
+  endpoint named from the normalized workspace-root hash. IPC requests include
+  a schema version, root hash, and per-process secret; non-diagnostics requests
+  are rejected.
 - Language servers are started lazily.
 - Diagnostics are compressed into AI-readable summaries while preserving
   structured items.
