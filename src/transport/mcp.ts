@@ -1,12 +1,17 @@
 import { createInterface } from "node:readline/promises";
 import { stdin as input, stdout as output } from "node:process";
+import fs from "node:fs/promises";
+import net from "node:net";
 import path from "node:path";
 import type { CommandService, WorkspaceCommandService } from "../core/command-service.js";
+import { mergeBatchDiagnosticSummaries } from "../core/diagnostics-batch.js";
+import type { DiagnosticSummary } from "../core/types.js";
+import { createDiagnosticsIpcMetadata, diagnosticsIpcMetadataPath, diagnosticsIpcProtocolVersion, hashRoot } from "./ipc.js";
 import { filePathToUri } from "../utils/uri.js";
 
 type LspCommandService = CommandService | WorkspaceCommandService;
 
-interface McpRuntime {
+export interface McpRuntime {
   status?: () => unknown;
   directoryDiagnostics?: (request: { dir: string; severity?: string; root?: string; maxFiles?: number; timeoutBudgetMs?: number; concurrency?: number }) => Promise<unknown>;
   serviceForParams?: (params: Record<string, unknown>) => LspCommandService;
@@ -16,6 +21,15 @@ interface Request {
   id?: string | number;
   method?: string;
   params?: Record<string, unknown>;
+}
+
+interface DiagnosticsIpcRequest {
+  protocolVersion?: number;
+  rootHash?: string;
+  secret?: string;
+  files?: unknown;
+  root?: unknown;
+  timeoutMs?: unknown;
 }
 
 interface JsonRpcResponse {
@@ -172,6 +186,48 @@ export async function runStdioMcp(service: LspCommandService, runtime: McpRuntim
   }
 }
 
+export async function startDiagnosticsIpcServer(
+  service: LspCommandService,
+  root: string,
+  runtime: McpRuntime = {}
+): Promise<{ close: () => Promise<void>; endpoint: string }> {
+  const metadata = createDiagnosticsIpcMetadata(root);
+  const metadataPath = diagnosticsIpcMetadataPath(root);
+  const server = net.createServer((socket) => {
+    let buffer = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let newlineIndex = buffer.indexOf("\n");
+      while (newlineIndex !== -1) {
+        const line = buffer.slice(0, newlineIndex);
+        buffer = buffer.slice(newlineIndex + 1);
+        void handleDiagnosticsIpcLine(service, root, runtime, metadata.secret, line).then((response) => {
+          socket.write(`${JSON.stringify(response)}\n`);
+        });
+        newlineIndex = buffer.indexOf("\n");
+      }
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(metadata.endpoint, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  await fs.writeFile(metadataPath, JSON.stringify(metadata), "utf8");
+
+  return {
+    endpoint: metadata.endpoint,
+    close: async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await fs.rm(metadataPath, { force: true });
+    }
+  };
+}
+
 export async function handleJsonRpcLine(
   service: LspCommandService,
   line: string,
@@ -313,6 +369,67 @@ async function callTool(service: LspCommandService, params: Record<string, unkno
   if (name === "lsp_status") return runtime.status ? runtime.status() : { status: "unavailable" };
 
   throw new JsonRpcError(-32601, `Unsupported tool: ${name}`);
+}
+
+async function handleDiagnosticsIpcLine(
+  service: LspCommandService,
+  root: string,
+  runtime: McpRuntime,
+  secret: string,
+  line: string
+): Promise<{ ok: true; result: unknown } | { ok: false; error: { kind: "security" | "request" | "operational"; message: string } }> {
+  try {
+    const request = JSON.parse(line) as DiagnosticsIpcRequest;
+    validateDiagnosticsIpcRequest(request, root, secret);
+    const files = request.files as string[];
+    const summaries: DiagnosticSummary[] = [];
+    for (const file of files) {
+      const response = await dispatch(
+        service,
+        {
+          method: "tools/call",
+          params: {
+            name: "lsp_diagnostics",
+            arguments: {
+              file,
+              root,
+              ...(typeof request.timeoutMs === "number" ? { timeoutMs: request.timeoutMs } : {})
+            }
+          }
+        },
+        runtime
+      );
+      const content = response as { structuredContent?: DiagnosticSummary };
+      if (!content.structuredContent) throw new Error("diagnostics response missing structuredContent");
+      summaries.push(content.structuredContent);
+    }
+    return {
+      ok: true,
+      result: mergeBatchDiagnosticSummaries(files, summaries)
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      error: {
+        kind: message.startsWith("IPC security:") ? "security" : message.startsWith("IPC request:") ? "request" : "operational",
+        message
+      }
+    };
+  }
+}
+
+function validateDiagnosticsIpcRequest(request: DiagnosticsIpcRequest, root: string, secret: string): void {
+  if (request.protocolVersion !== diagnosticsIpcProtocolVersion) throw new Error("IPC security: protocol version mismatch");
+  if (request.rootHash !== hashRoot(root)) throw new Error("IPC security: root hash mismatch");
+  if (request.secret !== secret) throw new Error("IPC security: secret mismatch");
+  if (!Array.isArray(request.files) || !request.files.every((file) => typeof file === "string")) {
+    throw new Error("IPC request: files must be a string array");
+  }
+  if (request.root !== undefined && request.root !== root) throw new Error("IPC security: root mismatch");
+  if (request.timeoutMs !== undefined && (typeof request.timeoutMs !== "number" || !Number.isFinite(request.timeoutMs) || request.timeoutMs <= 0)) {
+    throw new Error("IPC request: timeoutMs must be a positive number");
+  }
 }
 
 function selectService(service: LspCommandService, params: Record<string, unknown>, runtime: McpRuntime): LspCommandService {

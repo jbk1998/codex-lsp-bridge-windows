@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { mergeBatchDiagnosticSummaries } from "./core/diagnostics-batch.js";
 import { summarizeConclusion } from "./core/diagnostics.js";
 import { WorkspaceCommandService } from "./core/command-service.js";
 import { loadConfig } from "./core/config.js";
@@ -11,7 +12,7 @@ import { resolveDiagnosticsTimeout } from "./core/diagnostics-timeout.js";
 import { runDoctor } from "./core/doctor.js";
 import { LspManager } from "./core/lsp-manager.js";
 import { filePathToUri } from "./utils/uri.js";
-import { runStdioMcp } from "./transport/mcp.js";
+import { runStdioMcp, startDiagnosticsIpcServer, type McpRuntime } from "./transport/mcp.js";
 import type { SupportedLanguage } from "./adapters/language-config.js";
 import type { DiagnosticStatus, DiagnosticSummary } from "./core/types.js";
 
@@ -76,7 +77,7 @@ async function main(): Promise<void> {
     const service = serviceForRoot(root, language);
 
     if (args[0] === "mcp") {
-      await runStdioMcp(service, {
+      const runtime: McpRuntime = {
         status: () => runDoctor(root),
         serviceForParams: (params) => serviceForRoot(resolveRequestedRootSync(root, params), language),
         directoryDiagnostics: async ({ dir, severity, root: requestedRoot, maxFiles, timeoutBudgetMs, concurrency }) => {
@@ -87,7 +88,15 @@ async function main(): Promise<void> {
             concurrency: readPositiveIntegerValue(concurrency, defaultDirectoryDiagnosticsOptions.concurrency)
           }, sourceFileListCache);
         }
-      });
+      };
+      const ipcServer = await startDiagnosticsIpcServer(service, root, runtime);
+      const removeSignalHandlers = installIpcShutdownHandlers(ipcServer.close);
+      try {
+        await runStdioMcp(service, runtime);
+      } finally {
+        removeSignalHandlers();
+        await ipcServer.close();
+      }
       return;
     }
 
@@ -357,23 +366,11 @@ async function collectFilesDiagnostics(
   options: { timeoutMs?: number }
 ) {
   const summaries: DiagnosticSummary[] = [];
+  const resolvedFiles = files.map((file) => resolveFileInsideRoot(root, file));
   for (const file of files) {
     summaries.push(await service.diagnostics(filePathToUri(resolveFileInsideRoot(root, file)), options));
   }
-  const summary = mergeDiagnosticSummaries(summaries);
-  return {
-    ...summary,
-    files: files.map((file, index) => ({
-      file: resolveFileInsideRoot(root, file),
-      status: summaries[index].status,
-      timedOut: summaries[index].timedOut,
-      stale: summaries[index].stale,
-      total: summaries[index].total,
-      bySeverity: summaries[index].bySeverity,
-      ...(summaries[index].unavailableReason ? { unavailableReason: summaries[index].unavailableReason } : {})
-    })),
-    missingServers: summarizeMissingServers(summaries)
-  };
+  return mergeBatchDiagnosticSummaries(resolvedFiles, summaries);
 }
 
 async function readCachedSourceFiles(
@@ -440,15 +437,6 @@ function filterDiagnosticSummary<T extends { status: DiagnosticStatus; timedOut:
   };
 }
 
-function summarizeMissingServers(summaries: DiagnosticSummary[]): Array<{ reason: string; count: number }> {
-  const counts = new Map<string, number>();
-  for (const summary of summaries) {
-    if (!summary.unavailableReason) continue;
-    counts.set(summary.unavailableReason, (counts.get(summary.unavailableReason) ?? 0) + 1);
-  }
-  return [...counts.entries()].map(([reason, count]) => ({ reason, count }));
-}
-
 function resolveDirectoryInsideRoot(root: string, dir: string): string {
   const directory = path.resolve(root, dir);
   const relative = path.relative(root, directory);
@@ -496,6 +484,20 @@ function runPackageScript(scriptName: string, args: string[]): void {
     stdio: "inherit"
   });
   process.exitCode = result.status ?? 1;
+}
+
+function installIpcShutdownHandlers(close: () => Promise<void>): () => void {
+  const handler = (signal: NodeJS.Signals) => {
+    void close().finally(() => {
+      process.kill(process.pid, signal);
+    });
+  };
+  process.once("SIGINT", handler);
+  process.once("SIGTERM", handler);
+  return () => {
+    process.off("SIGINT", handler);
+    process.off("SIGTERM", handler);
+  };
 }
 
 main().catch((error) => {

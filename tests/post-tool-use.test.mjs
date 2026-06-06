@@ -4,8 +4,10 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   collectTouchedFiles,
+  diagnosticsIpcMetadataPath,
   findWorkspaceRoot,
   groupFilesByLanguage,
+  hashRoot,
   resolveTouchedFiles,
   runPostToolUseDiagnostics
 } from "../scripts/codex-lsp-post-tool-use-core.mjs";
@@ -90,7 +92,7 @@ describe("post-tool-use diagnostics hook", () => {
     await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
     await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export {}\n");
 
-    const result = runPostToolUseDiagnostics({
+    const result = await runPostToolUseDiagnostics({
       input: JSON.stringify({ file_path: "src/index.ts" }),
       cwd: rootPath,
       env: { CODEX_LSP_HOOK_VERBOSE_PENDING: "1", PATH: "" },
@@ -117,7 +119,7 @@ describe("post-tool-use diagnostics hook", () => {
     await makeExecutable(path.join(binPath, "typescript-language-server.cmd"));
 
     const calls = [];
-    const result = runPostToolUseDiagnostics({
+    const result = await runPostToolUseDiagnostics({
       input: JSON.stringify({ files: ["src/index.ts", "src/other.ts"] }),
       cwd: rootPath,
       env: { PATH: binPath },
@@ -151,6 +153,92 @@ describe("post-tool-use diagnostics hook", () => {
       stdout: "[codex-lsp-bridge] LSP diagnostics clean for 2 touched supported source file(s); not a full project type-check.\n"
     });
   });
+
+  it("uses IPC diagnostics before subprocess fallback when metadata is valid", async () => {
+    rootPath = await makeWorkspace();
+    await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
+    await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export {}\n");
+    await writeIpcMetadata(rootPath);
+
+    let ipcRequest;
+    const result = await runPostToolUseDiagnostics({
+      input: JSON.stringify({ file_path: "src/index.ts" }),
+      cwd: rootPath,
+      env: {},
+      bridgeCli: "dist/index.js",
+      spawnSyncImpl: () => {
+        throw new Error("subprocess fallback should not run when IPC succeeds");
+      },
+      sendIpcRequestImpl: async (endpoint, request, timeoutMs) => {
+        ipcRequest = { endpoint, request, timeoutMs };
+        return {
+          ok: true,
+          result: { status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }
+        };
+      }
+    });
+
+    expect(ipcRequest.endpoint).toBe("ipc-endpoint");
+    expect(ipcRequest.request.files).toEqual([path.join(rootPath, "src", "index.ts")]);
+    expect(ipcRequest.timeoutMs).toBe(200);
+    expect(result.stdout).toBe("[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n");
+  });
+
+  it("falls back to subprocess diagnostics when IPC is unavailable", async () => {
+    rootPath = await makeWorkspace();
+    const binPath = path.join(rootPath, "fake-bin");
+    await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
+    await fs.mkdir(binPath);
+    await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export {}\n");
+    await makeExecutable(path.join(binPath, "typescript-language-server"));
+    await makeExecutable(path.join(binPath, "typescript-language-server.cmd"));
+    await writeIpcMetadata(rootPath);
+
+    const calls = [];
+    const result = await runPostToolUseDiagnostics({
+      input: JSON.stringify({ file_path: "src/index.ts" }),
+      cwd: rootPath,
+      env: { PATH: binPath },
+      bridgeCli: "dist/index.js",
+      processExecPath: "node",
+      sendIpcRequestImpl: async () => undefined,
+      spawnSyncImpl: (command, args, options) => {
+        calls.push({ command, args });
+        return {
+          status: 0,
+          stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
+          stderr: ""
+        };
+      }
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args).toContain("diagnostics");
+    expect(result.stdout).toBe("[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n");
+  });
+
+  it("fails closed when IPC rejects the trust boundary", async () => {
+    rootPath = await makeWorkspace();
+    await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
+    await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export {}\n");
+    await writeIpcMetadata(rootPath);
+
+    const result = await runPostToolUseDiagnostics({
+      input: JSON.stringify({ file_path: "src/index.ts" }),
+      cwd: rootPath,
+      env: {},
+      bridgeCli: "dist/index.js",
+      spawnSyncImpl: () => {
+        throw new Error("subprocess fallback should not run when IPC rejects the trust boundary");
+      },
+      sendIpcRequestImpl: async () => ({ ok: false, error: { kind: "security", message: "IPC security: secret mismatch" } })
+    });
+
+    expect(result).toEqual({
+      exitCode: 1,
+      stdout: "[codex-lsp-bridge] IPC diagnostics rejected: IPC security: secret mismatch\n"
+    });
+  });
 });
 
 async function makeWorkspace() {
@@ -162,4 +250,19 @@ async function makeWorkspace() {
 async function makeExecutable(filePath) {
   await fs.writeFile(filePath, "echo ok\n");
   await fs.chmod(filePath, 0o755);
+}
+
+async function writeIpcMetadata(root) {
+  await fs.writeFile(
+    diagnosticsIpcMetadataPath(root),
+    JSON.stringify({
+      protocolVersion: 1,
+      root,
+      rootHash: hashRoot(root),
+      endpoint: "ipc-endpoint",
+      secret: "secret",
+      pid: process.pid
+    }),
+    "utf8"
+  );
 }

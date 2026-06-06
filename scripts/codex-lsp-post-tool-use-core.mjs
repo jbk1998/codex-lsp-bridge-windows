@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -26,14 +27,18 @@ export const languagesByExtension = {
   ".go": "go"
 };
 
-export function runPostToolUseDiagnostics({
+const diagnosticsIpcProtocolVersion = 1;
+const defaultIpcTimeoutMs = 200;
+
+export async function runPostToolUseDiagnostics({
   input,
   cwd = process.cwd(),
   env = process.env,
   bridgeCli,
   fsImpl = fs,
   spawnSyncImpl = spawnSync,
-  processExecPath = process.execPath
+  processExecPath = process.execPath,
+  sendIpcRequestImpl = sendIpcRequest
 }) {
   const repoRoot = findWorkspaceRoot(cwd, env, fsImpl);
   const maxFiles = Number(env.CODEX_LSP_HOOK_MAX_FILES ?? 5);
@@ -47,6 +52,22 @@ export function runPostToolUseDiagnostics({
 
   if (files.length === 0) {
     return { exitCode: 0, stdout: "" };
+  }
+
+  const ipcResult = await tryIpcDiagnostics(files, {
+    repoRoot,
+    env,
+    fsImpl,
+    sendIpcRequestImpl
+  });
+  if (ipcResult?.kind === "success") {
+    return formatDiagnosticsOutput([ipcResult.diagnostics], files, repoRoot, verbosePending, fsImpl);
+  }
+  if (ipcResult?.kind === "security") {
+    return {
+      exitCode: 1,
+      stdout: `[codex-lsp-bridge] IPC diagnostics rejected: ${ipcResult.message}\n`
+    };
   }
 
   const diagnostics = [];
@@ -83,6 +104,18 @@ export function runPostToolUseDiagnostics({
     diagnostics.push(JSON.parse(result.stdout));
   }
 
+  return formatDiagnosticsOutput(diagnostics, files, repoRoot, verbosePending, fsImpl, skippedServers);
+}
+
+export function diagnosticsIpcMetadataPath(root) {
+  return path.join(os.tmpdir(), `codex-lsp-bridge-ipc-${hashRoot(root)}.json`);
+}
+
+export function hashRoot(root) {
+  return crypto.createHash("sha256").update(path.resolve(root)).digest("hex").slice(0, 32);
+}
+
+function formatDiagnosticsOutput(diagnostics, files, repoRoot, verbosePending, fsImpl, skippedServers = new Map()) {
   if (diagnostics.length === 0) {
     if (verbosePending && skippedServers.size > 0) {
       const skipped = [...skippedServers.entries()]
@@ -129,6 +162,66 @@ export function runPostToolUseDiagnostics({
     exitCode: 0,
     stdout: `[codex-lsp-bridge] diagnostics after tool use:\n${JSON.stringify(diagnostics, null, 2)}\n`
   };
+}
+
+async function tryIpcDiagnostics(files, { repoRoot, env, fsImpl, sendIpcRequestImpl }) {
+  if (isEnabled(env.CODEX_LSP_HOOK_DISABLE_IPC)) return undefined;
+  const metadataPath = diagnosticsIpcMetadataPath(repoRoot);
+  if (!fsImpl.existsSync(metadataPath)) return undefined;
+
+  try {
+    const metadata = JSON.parse(fsImpl.readFileSync(metadataPath, "utf8"));
+    if (!metadata || typeof metadata !== "object") return undefined;
+    if (metadata.protocolVersion !== diagnosticsIpcProtocolVersion) return undefined;
+    if (metadata.rootHash !== hashRoot(repoRoot)) {
+      return { kind: "security", message: "root hash mismatch" };
+    }
+    if (typeof metadata.endpoint !== "string" || typeof metadata.secret !== "string") return undefined;
+    const timeoutMs = readPositiveInteger(env.CODEX_LSP_HOOK_IPC_TIMEOUT_MS, defaultIpcTimeoutMs);
+    const response = await sendIpcRequestImpl(metadata.endpoint, {
+      protocolVersion: diagnosticsIpcProtocolVersion,
+      rootHash: metadata.rootHash,
+      secret: metadata.secret,
+      root: repoRoot,
+      files
+    }, timeoutMs);
+    if (!response || typeof response !== "object") return undefined;
+    if (response.ok === true) return { kind: "success", diagnostics: response.result };
+    if (response.error?.kind === "security") return { kind: "security", message: response.error.message };
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function sendIpcRequest(endpoint, request, timeoutMs) {
+  return new Promise((resolve) => {
+    const socket = net.createConnection(endpoint);
+    let buffer = "";
+    let done = false;
+
+    const finish = (value) => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve(value);
+    };
+
+    socket.setEncoding("utf8");
+    socket.setTimeout(timeoutMs, () => finish(undefined));
+    socket.on("error", () => finish(undefined));
+    socket.on("connect", () => socket.write(`${JSON.stringify(request)}\n`));
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      const newlineIndex = buffer.indexOf("\n");
+      if (newlineIndex === -1) return;
+      try {
+        finish(JSON.parse(buffer.slice(0, newlineIndex)));
+      } catch {
+        finish(undefined);
+      }
+    });
+  });
 }
 
 export function findWorkspaceRoot(cwd, env = process.env, fsImpl = fs) {
@@ -238,6 +331,11 @@ function isDuplicate(value, repoRoot, fsImpl) {
   if (fsImpl.existsSync(filePath)) return true;
   fsImpl.writeFileSync(filePath, String(Date.now()));
   return false;
+}
+
+function readPositiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function commandExists(command, repoRoot, env, fsImpl) {

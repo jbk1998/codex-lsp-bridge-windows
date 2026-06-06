@@ -5,7 +5,7 @@ import { runPostToolUseDiagnostics } from "./codex-lsp-post-tool-use-core.mjs";
 
 const input = await readStdin();
 const bridgeCli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/index.js");
-const result = runPostToolUseDiagnostics({ input, bridgeCli });
+const result = await runPostToolUseDiagnostics({ input, bridgeCli });
 
 if (result.stdout) process.stdout.write(result.stdout);
 process.exitCode = result.exitCode;
