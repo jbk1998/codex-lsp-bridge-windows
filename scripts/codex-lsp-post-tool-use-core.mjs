@@ -29,6 +29,21 @@ export const languagesByExtension = {
 
 const diagnosticsIpcProtocolVersion = 1;
 const defaultIpcTimeoutMs = 200;
+const cacheSchemaVersion = 1;
+const projectFingerprintFiles = [
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "tsconfig.json",
+  "jsconfig.json",
+  "pyproject.toml",
+  "requirements.txt",
+  "Cargo.toml",
+  "Cargo.lock",
+  "go.mod",
+  "go.sum"
+];
 
 export async function runPostToolUseDiagnostics({
   input,
@@ -54,6 +69,12 @@ export async function runPostToolUseDiagnostics({
     return { exitCode: 0, stdout: "" };
   }
 
+  const cacheKey = createDiagnosticsCacheKey(files, repoRoot, fsImpl);
+  const cachedDiagnostics = readCachedDiagnostics(cacheKey, repoRoot, env, fsImpl);
+  if (cachedDiagnostics) {
+    return formatDiagnosticsOutput([cachedDiagnostics], files, repoRoot, verbosePending, fsImpl);
+  }
+
   const ipcResult = await tryIpcDiagnostics(files, {
     repoRoot,
     env,
@@ -61,6 +82,7 @@ export async function runPostToolUseDiagnostics({
     sendIpcRequestImpl
   });
   if (ipcResult?.kind === "success") {
+    writeCachedDiagnostics(cacheKey, ipcResult.diagnostics, repoRoot, env, fsImpl);
     return formatDiagnosticsOutput([ipcResult.diagnostics], files, repoRoot, verbosePending, fsImpl);
   }
   if (ipcResult?.kind === "security") {
@@ -104,11 +126,18 @@ export async function runPostToolUseDiagnostics({
     diagnostics.push(JSON.parse(result.stdout));
   }
 
+  if (diagnostics.length > 0 && diagnostics.every((item) => !item.error)) {
+    writeCachedDiagnostics(cacheKey, mergeDiagnosticsForCache(diagnostics), repoRoot, env, fsImpl);
+  }
   return formatDiagnosticsOutput(diagnostics, files, repoRoot, verbosePending, fsImpl, skippedServers);
 }
 
 export function diagnosticsIpcMetadataPath(root) {
   return path.join(os.tmpdir(), `codex-lsp-bridge-ipc-${hashRoot(root)}.json`);
+}
+
+export function diagnosticsCachePath(root) {
+  return path.join(os.tmpdir(), `codex-lsp-bridge-diagnostics-cache-${hashRoot(root)}.json`);
 }
 
 export function hashRoot(root) {
@@ -161,6 +190,96 @@ function formatDiagnosticsOutput(diagnostics, files, repoRoot, verbosePending, f
   return {
     exitCode: 0,
     stdout: `[codex-lsp-bridge] diagnostics after tool use:\n${JSON.stringify(diagnostics, null, 2)}\n`
+  };
+}
+
+function createDiagnosticsCacheKey(files, repoRoot, fsImpl) {
+  return crypto.createHash("sha256").update(JSON.stringify({
+    schemaVersion: cacheSchemaVersion,
+    rootHash: hashRoot(repoRoot),
+    bridgeVersion: readBridgeVersion(repoRoot, fsImpl),
+    files: files.map((file) => fingerprintFile(file, fsImpl)),
+    project: projectFingerprintFiles.map((file) => fingerprintOptionalFile(path.join(repoRoot, file), file, fsImpl))
+  })).digest("hex");
+}
+
+function readCachedDiagnostics(cacheKey, repoRoot, env, fsImpl) {
+  if (isEnabled(env.CODEX_LSP_HOOK_DISABLE_CACHE)) return undefined;
+  try {
+    const cachePath = diagnosticsCachePath(repoRoot);
+    if (!fsImpl.existsSync(cachePath)) return undefined;
+    const cache = JSON.parse(fsImpl.readFileSync(cachePath, "utf8"));
+    if (cache?.schemaVersion !== cacheSchemaVersion || cache?.key !== cacheKey) return undefined;
+    return cache.diagnostics;
+  } catch {
+    return undefined;
+  }
+}
+
+function writeCachedDiagnostics(cacheKey, diagnostics, repoRoot, env, fsImpl) {
+  if (isEnabled(env.CODEX_LSP_HOOK_DISABLE_CACHE)) return;
+  try {
+    const cachePath = diagnosticsCachePath(repoRoot);
+    const tempPath = `${cachePath}.${process.pid}.tmp`;
+    fsImpl.writeFileSync(tempPath, JSON.stringify({
+      schemaVersion: cacheSchemaVersion,
+      key: cacheKey,
+      diagnostics,
+      createdAt: Date.now()
+    }));
+    fsImpl.renameSync(tempPath, cachePath);
+  } catch {
+    // Cache is an optimization only. Diagnostics rerun on cache failures.
+  }
+}
+
+function mergeDiagnosticsForCache(diagnostics) {
+  if (diagnostics.length === 1) return diagnostics[0];
+  const total = diagnostics.reduce((sum, item) => sum + (typeof item.total === "number" ? item.total : 0), 0);
+  const bySeverity = {};
+  for (const item of diagnostics) {
+    for (const [severity, count] of Object.entries(item.bySeverity ?? {})) {
+      bySeverity[severity] = (bySeverity[severity] ?? 0) + count;
+    }
+  }
+  const timedOut = diagnostics.some((item) => item.timedOut || item.status === "timed_out");
+  const stale = diagnostics.some((item) => item.stale);
+  return {
+    status: timedOut ? "timed_out" : stale ? "stale" : "ok",
+    timedOut,
+    stale,
+    total,
+    bySeverity,
+    items: diagnostics.flatMap((item) => item.items ?? []),
+    files: diagnostics.flatMap((item) => item.files ?? (item.file ? [item.file] : []))
+  };
+}
+
+function readBridgeVersion(repoRoot, fsImpl) {
+  try {
+    const packageJson = JSON.parse(fsImpl.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+    return typeof packageJson.version === "string" ? packageJson.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function fingerprintFile(file, fsImpl) {
+  const stat = fsImpl.statSync(file);
+  return {
+    file: path.resolve(file),
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    sha256: crypto.createHash("sha256").update(fsImpl.readFileSync(file)).digest("hex")
+  };
+}
+
+function fingerprintOptionalFile(filePath, label, fsImpl) {
+  if (!fsImpl.existsSync(filePath)) return { file: label, exists: false };
+  return {
+    file: label,
+    exists: true,
+    ...fingerprintFile(filePath, fsImpl)
   };
 }
 

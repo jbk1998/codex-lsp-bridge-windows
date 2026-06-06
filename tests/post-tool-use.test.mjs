@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   collectTouchedFiles,
+  diagnosticsCachePath,
   diagnosticsIpcMetadataPath,
   findWorkspaceRoot,
   groupFilesByLanguage,
@@ -17,6 +18,7 @@ describe("post-tool-use diagnostics hook", () => {
   let outsidePath = "";
 
   afterEach(async () => {
+    if (rootPath) await fs.rm(diagnosticsCachePath(rootPath), { force: true });
     if (rootPath) await fs.rm(rootPath, { recursive: true, force: true });
     if (outsidePath) await fs.rm(outsidePath, { recursive: true, force: true });
     rootPath = "";
@@ -238,6 +240,137 @@ describe("post-tool-use diagnostics hook", () => {
       exitCode: 1,
       stdout: "[codex-lsp-bridge] IPC diagnostics rejected: IPC security: secret mismatch\n"
     });
+  });
+
+  it("reuses cached diagnostics for an unchanged exact file state", async () => {
+    rootPath = await makeWorkspace();
+    const binPath = path.join(rootPath, "fake-bin");
+    await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
+    await fs.mkdir(binPath);
+    await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export {}\n");
+    await makeExecutable(path.join(binPath, "typescript-language-server"));
+    await makeExecutable(path.join(binPath, "typescript-language-server.cmd"));
+
+    let calls = 0;
+    const run = () => runPostToolUseDiagnostics({
+      input: JSON.stringify({ file_path: "src/index.ts" }),
+      cwd: rootPath,
+      env: { PATH: binPath, CODEX_LSP_HOOK_DISABLE_IPC: "1" },
+      bridgeCli: "dist/index.js",
+      processExecPath: "node",
+      spawnSyncImpl: () => {
+        calls += 1;
+        return {
+          status: 0,
+          stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
+          stderr: ""
+        };
+      }
+    });
+
+    await run();
+    const second = await run();
+
+    expect(calls).toBe(1);
+    expect(second.stdout).toBe("[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n");
+  });
+
+  it("invalidates cached diagnostics when file content changes", async () => {
+    rootPath = await makeWorkspace();
+    const binPath = path.join(rootPath, "fake-bin");
+    await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
+    await fs.mkdir(binPath);
+    await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export const a = 1;\n");
+    await makeExecutable(path.join(binPath, "typescript-language-server"));
+    await makeExecutable(path.join(binPath, "typescript-language-server.cmd"));
+
+    let calls = 0;
+    const run = () => runPostToolUseDiagnostics({
+      input: JSON.stringify({ file_path: "src/index.ts" }),
+      cwd: rootPath,
+      env: { PATH: binPath, CODEX_LSP_HOOK_DISABLE_IPC: "1" },
+      bridgeCli: "dist/index.js",
+      processExecPath: "node",
+      spawnSyncImpl: () => {
+        calls += 1;
+        return {
+          status: 0,
+          stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
+          stderr: ""
+        };
+      }
+    });
+
+    await run();
+    await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export const a = 2;\n");
+    await run();
+
+    expect(calls).toBe(2);
+  });
+
+  it("invalidates cached diagnostics when project config changes", async () => {
+    rootPath = await makeWorkspace();
+    const binPath = path.join(rootPath, "fake-bin");
+    await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
+    await fs.mkdir(binPath);
+    await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export {}\n");
+    await fs.writeFile(path.join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: true } }));
+    await makeExecutable(path.join(binPath, "typescript-language-server"));
+    await makeExecutable(path.join(binPath, "typescript-language-server.cmd"));
+
+    let calls = 0;
+    const run = () => runPostToolUseDiagnostics({
+      input: JSON.stringify({ file_path: "src/index.ts" }),
+      cwd: rootPath,
+      env: { PATH: binPath, CODEX_LSP_HOOK_DISABLE_IPC: "1" },
+      bridgeCli: "dist/index.js",
+      processExecPath: "node",
+      spawnSyncImpl: () => {
+        calls += 1;
+        return {
+          status: 0,
+          stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
+          stderr: ""
+        };
+      }
+    });
+
+    await run();
+    await fs.writeFile(path.join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: false } }));
+    await run();
+
+    expect(calls).toBe(2);
+  });
+
+  it("fails open when the diagnostics cache cannot be read", async () => {
+    rootPath = await makeWorkspace();
+    const binPath = path.join(rootPath, "fake-bin");
+    await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
+    await fs.mkdir(binPath);
+    await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export {}\n");
+    await fs.writeFile(diagnosticsCachePath(rootPath), "{bad json");
+    await makeExecutable(path.join(binPath, "typescript-language-server"));
+    await makeExecutable(path.join(binPath, "typescript-language-server.cmd"));
+
+    let calls = 0;
+    const result = await runPostToolUseDiagnostics({
+      input: JSON.stringify({ file_path: "src/index.ts" }),
+      cwd: rootPath,
+      env: { PATH: binPath, CODEX_LSP_HOOK_DISABLE_IPC: "1" },
+      bridgeCli: "dist/index.js",
+      processExecPath: "node",
+      spawnSyncImpl: () => {
+        calls += 1;
+        return {
+          status: 0,
+          stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
+          stderr: ""
+        };
+      }
+    });
+
+    expect(calls).toBe(1);
+    expect(result.stdout).toBe("[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n");
   });
 });
 
