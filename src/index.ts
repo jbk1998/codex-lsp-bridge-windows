@@ -95,9 +95,13 @@ async function main(): Promise<void> {
     const value = args.find((arg) => !arg.startsWith("--") && arg !== command);
 
     if (command === "diagnostics") {
-      const file = readOption(args, "--file");
+      const files = readFileOptions(args);
+      const file = files[0];
       const dir = readOption(args, "--dir");
       const severity = readOption(args, "--severity");
+      if (dir && files.length > 0) {
+        throw new Error("--file/--files cannot be combined with --dir");
+      }
       if (dir) {
         if (readOption(args, "--timeout-ms") !== undefined) {
           throw new Error("--timeout-ms is only valid for file diagnostics; use --timeout-budget-ms for directory diagnostics");
@@ -107,6 +111,12 @@ async function main(): Promise<void> {
       }
       if (readOption(args, "--timeout-budget-ms") !== undefined) {
         throw new Error("--timeout-budget-ms is only valid for directory diagnostics; use --timeout-ms for file diagnostics");
+      }
+      if (files.length > 1) {
+        console.log(JSON.stringify(await collectFilesDiagnostics(root, files, service, {
+          timeoutMs: readOptionalPositiveIntegerOption(args, "--timeout-ms")
+        }), null, 2));
+        return;
       }
       console.log(JSON.stringify(await service.diagnostics(file ? filePathToUri(resolveFileInsideRoot(root, file)) : undefined, {
         timeoutMs: readOptionalPositiveIntegerOption(args, "--timeout-ms")
@@ -163,6 +173,31 @@ function readOption(args: string[], option: string): string | undefined {
   const index = args.indexOf(option);
   if (index === -1) return undefined;
   return args[index + 1];
+}
+
+function readFileOptions(args: string[]): string[] {
+  const files: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--file") {
+      const value = args[index + 1];
+      if (value !== undefined) files.push(value);
+      index += 1;
+      continue;
+    }
+    if (arg === "--files") {
+      for (let valueIndex = index + 1; valueIndex < args.length; valueIndex += 1) {
+        const value = args[valueIndex];
+        if (value.startsWith("--")) {
+          index = valueIndex - 1;
+          break;
+        }
+        files.push(value);
+        index = valueIndex;
+      }
+    }
+  }
+  return files;
 }
 
 function readPosition(args: string[]): { file: string; line: number; character: number } | undefined {
@@ -315,6 +350,32 @@ async function collectDirectoryDiagnostics(
   };
 }
 
+async function collectFilesDiagnostics(
+  root: string,
+  files: string[],
+  service: WorkspaceCommandService,
+  options: { timeoutMs?: number }
+) {
+  const summaries: DiagnosticSummary[] = [];
+  for (const file of files) {
+    summaries.push(await service.diagnostics(filePathToUri(resolveFileInsideRoot(root, file)), options));
+  }
+  const summary = mergeDiagnosticSummaries(summaries);
+  return {
+    ...summary,
+    files: files.map((file, index) => ({
+      file: resolveFileInsideRoot(root, file),
+      status: summaries[index].status,
+      timedOut: summaries[index].timedOut,
+      stale: summaries[index].stale,
+      total: summaries[index].total,
+      bySeverity: summaries[index].bySeverity,
+      ...(summaries[index].unavailableReason ? { unavailableReason: summaries[index].unavailableReason } : {})
+    })),
+    missingServers: summarizeMissingServers(summaries)
+  };
+}
+
 async function readCachedSourceFiles(
   directory: string,
   maxFiles: number,
@@ -377,6 +438,15 @@ function filterDiagnosticSummary<T extends { status: DiagnosticStatus; timedOut:
     items,
     summary: items.slice(0, 10).map((item, index) => `${index + 1}. ${item.severity.toUpperCase()}`)
   };
+}
+
+function summarizeMissingServers(summaries: DiagnosticSummary[]): Array<{ reason: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const summary of summaries) {
+    if (!summary.unavailableReason) continue;
+    counts.set(summary.unavailableReason, (counts.get(summary.unavailableReason) ?? 0) + 1);
+  }
+  return [...counts.entries()].map(([reason, count]) => ({ reason, count }));
 }
 
 function resolveDirectoryInsideRoot(root: string, dir: string): string {
