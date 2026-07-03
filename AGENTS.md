@@ -34,7 +34,7 @@ GitHub CI runs `npm ci` and `npm run ci:verify` on Ubuntu, macOS, and Windows wi
 
 ## Supported Languages
 
-- TypeScript/JavaScript: primary support through `typescript-language-server`.
+- TypeScript/JavaScript: primary support through `typescript-language-server` for `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, and `.cjs`.
 - Python: experimental support through `pyright-langserver`.
 - Rust: experimental support through `rust-analyzer`.
 - Go: experimental support through `gopls`.
