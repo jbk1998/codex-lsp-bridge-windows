@@ -27,7 +27,7 @@ const serverByLanguage: Record<
     languageId: "typescript",
     command: "typescript-language-server",
     args: ["--stdio"],
-    extensions: [".ts", ".tsx", ".js", ".jsx"],
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"],
     workspaceSeedFiles: [
       "src/index.ts",
       "src/index.tsx",

@@ -49,19 +49,27 @@ describe("post-tool-use diagnostics hook", () => {
     outsidePath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-outside-"));
     await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
     await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export {}\n");
+    await fs.writeFile(path.join(rootPath, "src", "runner.mjs"), "export {}\n");
+    await fs.writeFile(path.join(rootPath, "src", "config.cjs"), "module.exports = {}\n");
     await fs.writeFile(path.join(rootPath, "src", "notes.md"), "# notes\n");
     await fs.writeFile(path.join(outsidePath, "outside.ts"), "export {}\n");
 
     const files = resolveTouchedFiles(
       {
         file_path: "src/index.ts",
+        module: "src/runner.mjs",
+        commonjs: "src/config.cjs",
         other: path.join(outsidePath, "outside.ts"),
         notes: "src/notes.md"
       },
       { repoRoot: rootPath, maxFiles: 5 }
     );
 
-    expect(files).toEqual([path.join(rootPath, "src", "index.ts")]);
+    expect(files).toEqual([
+      path.join(rootPath, "src", "index.ts"),
+      path.join(rootPath, "src", "runner.mjs"),
+      path.join(rootPath, "src", "config.cjs")
+    ]);
   });
 
   it("caps touched files before diagnostics", async () => {
@@ -81,8 +89,8 @@ describe("post-tool-use diagnostics hook", () => {
   });
 
   it("groups touched files by bridge language", () => {
-    expect([...groupFilesByLanguage(["a.ts", "b.js", "main.py", "lib.rs", "main.go"])]).toEqual([
-      ["typescript", ["a.ts", "b.js"]],
+    expect([...groupFilesByLanguage(["a.ts", "b.js", "cli.mjs", "config.cjs", "main.py", "lib.rs", "main.go"])]).toEqual([
+      ["typescript", ["a.ts", "b.js", "cli.mjs", "config.cjs"]],
       ["python", ["main.py"]],
       ["rust", ["lib.rs"]],
       ["go", ["main.go"]]

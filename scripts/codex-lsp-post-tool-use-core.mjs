@@ -5,13 +5,15 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
-export const supportedSourceFilePattern = /\.(ts|tsx|js|jsx|rs|py|go)$/;
+export const supportedSourceFilePattern = /\.(ts|tsx|js|jsx|mjs|cjs|rs|py|go)$/;
 
 export const languageServersByExtension = {
   ".ts": "typescript-language-server",
   ".tsx": "typescript-language-server",
   ".js": "typescript-language-server",
   ".jsx": "typescript-language-server",
+  ".mjs": "typescript-language-server",
+  ".cjs": "typescript-language-server",
   ".rs": "rust-analyzer",
   ".py": "pyright-langserver",
   ".go": "gopls"
@@ -22,6 +24,8 @@ export const languagesByExtension = {
   ".tsx": "typescript",
   ".js": "typescript",
   ".jsx": "typescript",
+  ".mjs": "typescript",
+  ".cjs": "typescript",
   ".rs": "rust",
   ".py": "python",
   ".go": "go"

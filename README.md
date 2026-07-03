@@ -194,7 +194,7 @@ The MVP is intentionally narrow and ready for local always-on use.
 
 | Language | Support | Required command | Hook coverage | Install hint |
 | --- | --- | --- | --- | --- |
-| TypeScript / JavaScript | Primary | `typescript-language-server` | `.ts`, `.tsx`, `.js`, `.jsx` | `npm install -g typescript-language-server typescript` |
+| TypeScript / JavaScript | Primary | `typescript-language-server` | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs` | `npm install -g typescript-language-server typescript` |
 | Rust | Experimental | `rust-analyzer` | `.rs` | `rustup component add rust-analyzer` |
 | Python | Experimental | `pyright-langserver` | `.py` | `npm install -g pyright` |
 | Go | Experimental | `gopls` | `.go` | `go install golang.org/x/tools/gopls@latest` |

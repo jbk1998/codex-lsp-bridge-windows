@@ -7,6 +7,8 @@ describe("LspManager", () => {
 
     expect(manager.forLanguage("typescript")).toBe(manager.forLanguage("typescript"));
     expect(manager.forFile("src/app.ts")).toBe(manager.forLanguage("typescript"));
+    expect(manager.forFile("scripts/cli.mjs")).toBe(manager.forLanguage("typescript"));
+    expect(manager.forFile("scripts/config.cjs")).toBe(manager.forLanguage("typescript"));
     expect(manager.forFile("src/main.rs")).toBe(manager.forLanguage("rust"));
     expect(manager.forFile("cmd/server/main.go")).toBe(manager.forLanguage("go"));
   });
