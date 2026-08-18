@@ -1,0 +1,68 @@
+# Changelog
+
+## Unreleased
+
+- Document the staged process and lifecycle contract: direct native bridge
+  runtime launch, explicit diagnostics with the automatic hook disabled during
+  baseline, bounded in-process reuse, opt-in local measurement, positive and
+  negative process attribution, and explicit `INCONCLUSIVE` handling. These
+  are rollout requirements, not a claim that every installer path already
+  enforces them.
+- Auto-detect the nearest recognized workspace for absolute MCP file, URI, and directory targets outside the startup workspace.
+- Recognize Codex skills, Python, Go, Deno, instruction-rooted projects, and explicit `.lsp-root` sentinels as workspace roots.
+- Fix Windows language-server startup for npm shims, PATH/PATHEXT resolution, and direct Node entrypoints.
+- Canonicalize Windows file URI keys through file-path round trips so encoded drives and profile-path characters match opened documents.
+- Resolve CLI and MCP relative file arguments against the selected workspace root.
+- Respond safely to common server-to-client LSP requests while preserving read-only behavior.
+- Diagnose standalone `.mjs` files as TypeScript/JavaScript sources and apply bundled `@types/node` to inferred projects when available.
+- Keep inferred-project defaults conservative so legacy files are not broad `checkJs` scope without an explicit project policy.
+- Stabilize successive `publishDiagnostics` notifications and return source-revision, stale, timeout, and configuration metadata together.
+
+## 0.3.3
+
+- Publish the `--with-rust-analyzer` installer option in the CLI package.
+
+## 0.3.2
+
+- Add `codex-lsp-bridge install --with-rust-analyzer` to install `rust-analyzer` through `rustup` during Codex setup.
+
+## 0.3.1
+
+- Return `status: "unavailable"` diagnostics instead of throwing when a language server command is missing.
+- Document `rust-toolchain.toml` as the preferred per-project way to request `rust-analyzer`.
+
+## 0.3.0
+
+- Extend automatic PostToolUse diagnostics and timeout sizing to Rust source files.
+- Skip PostToolUse diagnostics quietly when an optional language server is not installed.
+- Return a normal request error instead of crashing when a language server command is missing.
+- Recognize `Cargo.toml` as an explicit MCP workspace root.
+
+## 0.2.0
+
+- Add `diagnosticsTimeoutMs: "auto"` for workspace-aware diagnostics timeout selection.
+- Report resolved diagnostics timeout policy and reasons in `doctor` / `lsp_status`.
+- Increase default file diagnostics timeout from 5000 ms to 15000 ms.
+- Add CLI file diagnostics override with `--timeout-ms`.
+
+## 0.1.2
+
+- Refresh the public README installation flow for npm users.
+
+## 0.1.1
+
+- Make `codex-lsp-bridge --help` and `codex-lsp-bridge help` exit successfully.
+- Add package smoke coverage for the published CLI help command.
+
+## 0.1.0
+
+Initial MVP release.
+
+- Read-only MCP tools for diagnostics, definitions, references, symbols, hover, and status.
+- Workspace-root file boundary with realpath checks and explicit `root` support for detached worktrees.
+- Diagnostics trust metadata: `status`, `timedOut`, `stale`, and `sourceRevision`.
+- Open document lifecycle support with `didOpen`, `didChange`, `didClose`, and restart re-sync.
+- Quiet PostToolUse diagnostics hook with clean timeout suppression and duplicate error dedupe.
+- Bounded directory diagnostics with `maxFiles`, `timeoutBudgetMs`, `concurrency`, and directory metadata.
+- TypeScript primary support, with Rust, Python, and Go adapters marked experimental.
+- Codex installer/uninstaller, plugin metadata, hooks, skill, CI, package verification, and install smoke tests.

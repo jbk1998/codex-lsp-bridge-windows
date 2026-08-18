@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|apply_patch|functions.apply_patch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "codex-lsp-bridge post-tool-diagnostics",
+            "id": "codex-lsp-bridge:post-tool-diagnostics"
+          }
+        ]
+      }
+    ]
+  }
+}

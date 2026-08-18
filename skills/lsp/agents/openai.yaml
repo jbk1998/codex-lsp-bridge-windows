@@ -1,0 +1,4 @@
+interface:
+  display_name: "LSP"
+  short_description: "Use Codex LSP tools for semantic navigation and diagnostics."
+  default_prompt: "Use LSP diagnostics and navigation for this code task."

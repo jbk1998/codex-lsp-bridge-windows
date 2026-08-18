@@ -1,0 +1,101 @@
+# Process and Lifecycle Contract
+
+This document is the concise operational reference for the staged LSP bridge
+process-reuse work. The full debate, requirements, and acceptance examples are
+in [the 2026-08-18 plan](./2026-08-18-lsp-bridge-process-reuse-debate-and-plan.md).
+
+## Status
+
+This is the target contract for the staged rollout. It is not evidence that
+every installer, plugin, or generated Codex configuration path already enforces
+it. The rollout is complete only when the acceptance checks below pass.
+
+## User-facing behavior
+
+- Explicit MCP LSP tools remain available when automatic `PostToolUse`
+  diagnostics are disabled.
+- Codex users do not select, attach to, or manage bridge or language-server
+  processes.
+- The bridge reports unavailable, stale, timed-out, or ambiguous results as
+  such. None of these states is a clean type-check result.
+- The bridge keeps state within a live MCP process: one manager per workspace
+  root and one provider per language. The contract does not promise reuse across
+  separate MCP connections.
+
+## Runtime launch rules
+
+- The bridge runtime uses an approved native `node.exe` directly. Generated MCP,
+  updater, and hook launch commands must resolve that executable rather than a
+  bare `node`, `node.cmd`, another command shim, or `node_repl.exe`.
+- The runtime rule applies to the bridge's own launcher. A configured language
+  server may still use a supported `.cmd` or `.bat` wrapper when that server
+  requires it.
+- `node_repl.exe` is Codex Code Mode infrastructure, not the bridge runtime.
+  Its process load must not be attributed to the bridge.
+- If the native launcher is missing, stale, or not executable, the Codex
+  launcher or configuration-validation path must provide an actionable error.
+
+## Lifecycle rules
+
+- Language servers start lazily and are reused safely for repeated requests in
+  the same live MCP process.
+- Concurrent first requests for one root and language settle on one manager,
+  one provider, and one steady-state language-server child.
+- Provider recovery reinitializes the service and reopens documents required by
+  the current request before returning a dependent result.
+- Shutdown stops new work, disposes bridge-owned state, and confirms within a
+  bounded timeout that no bridge-owned child remains. A timeout is a visible
+  failure, not silent success.
+- Idle suspension, a persistent broker, cross-connection reuse, and shared
+  persistent state remain deferred until measurement justifies a separate
+  scope decision.
+
+## Measurement rules
+
+Baseline measurement is opt-in and local. The diagnostic harness is inactive
+outside measurement runs, creates no resident service or persistent shared
+state, and records only allowlisted process and lifecycle metrics. It must not
+capture source contents, document text, credentials, or unrelated process data.
+
+The baseline includes:
+
+- a representative explicit-LSP workload with automatic diagnostics disabled;
+- a negative attribution control with Code Mode activity and no bridge activity;
+- a positive attribution control with bridge activity and `node_repl.exe`
+  activity at the same time;
+- bridge launches, connection duration, child lifetime, cold-start and request
+  latency, CPU, memory, restarts, and recovery failures.
+
+If process ownership or workload representativeness cannot be established, the
+run is `INCONCLUSIVE`. It must be repeated or extended, and it cannot support
+a bridge-load or machine-load improvement claim.
+
+The four permitted baseline outcomes are:
+
+1. Retain the baseline.
+2. Repeat or extend measurement because evidence is inconclusive.
+3. Evaluate conditional idle suspension if material idle LSP memory is proven.
+4. Evaluate a narrow broker only if frequent MCP reconnections and costly cold
+   starts remain after the baseline.
+
+Automatic diagnostics remain disabled throughout the baseline. Any future hook
+reactivation proposal must demonstrate user benefit and reduce one edit event to
+at most one bridge CLI invocation.
+
+## Acceptance checklist
+
+Before calling the staged rollout complete, verify:
+
+- direct native runtime launch in local, generated, updater, plugin, and hook
+  configurations;
+- explicit diagnostics with automatic diagnostics disabled;
+- supported language-server `.cmd` and `.bat` compatibility;
+- root and language reuse, isolation, recovery, concurrency, and bounded clean
+  shutdown;
+- negative and positive process-attribution controls;
+- privacy, rollback, and `INCONCLUSIVE` handling;
+- no load-improvement claim without representative workload and valid
+  attribution.
+
+See [RELEASE.md](./RELEASE.md) for the release gate and
+[CONTRIBUTING.md](../CONTRIBUTING.md) for contributor expectations.

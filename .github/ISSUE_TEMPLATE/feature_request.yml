@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest a new read-only semantic capability or product improvement.
+title: "feat: "
+labels: ["feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What Codex workflow becomes safer or clearer with this change?
+      placeholder: "Codex cannot tell whether references in a changed file are complete..."
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the smallest useful version.
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Product surface
+      options:
+        - MCP tool
+        - CLI command
+        - Installer or uninstall flow
+        - Hook behavior
+        - Documentation
+        - Language server adapter
+        - Other
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope fit
+      options:
+        - label: This can be read-only.
+          required: true
+        - label: This does not require workspace access outside the configured root.
+          required: true
+        - label: This does not rely on silent fallback behavior.
+          required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: If this is a write/refactor/automation request, explain why a read-only version is not enough.
