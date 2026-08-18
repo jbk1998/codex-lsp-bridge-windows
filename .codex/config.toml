@@ -1,0 +1,3 @@
+[mcp_servers.codex-lsp-bridge]
+command = "codex-lsp-bridge"
+args = ["mcp"]
