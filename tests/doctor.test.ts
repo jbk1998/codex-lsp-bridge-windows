@@ -73,7 +73,7 @@ describe("doctor", () => {
           `command = ${JSON.stringify(process.execPath)}`,
           'args = ["dist/index.js", "mcp"]',
           ""
-        ].join("\n")
+        ].join("\r\n")
       );
       fs.writeFileSync(
         path.join(codexHome, "hooks.json"),

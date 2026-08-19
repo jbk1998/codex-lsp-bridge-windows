@@ -697,6 +697,31 @@ describe("LspSemanticProvider", () => {
     await expect(provider.definition("Editor")).rejects.toThrow("Symbol is ambiguous");
   });
 
+  it("cancels pending diagnostics waiters during disposal", async () => {
+    const provider = new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
+      workspaceSeedFiles: ["src/editor.ts"],
+      workspaceSeedExtensions: [".ts", ".tsx"],
+      diagnosticsTimeoutMs: 5000,
+      diagnosticsStabilityMs: 5,
+      clientFactory: (_config: ServerProcessConfig) => client
+    });
+    const uri = filePathToUri(filePath);
+    client.onNotify = (method) => {
+      if (method === "textDocument/didOpen") setTimeout(() => void provider.dispose(), 0);
+    };
+
+    const startedAt = Date.now();
+    await expect(provider.diagnostics(uri, { timeoutMs: 5000 })).resolves.toMatchObject({
+      status: "timed_out",
+      timedOut: true
+    });
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    await provider.dispose();
+  });
+
   it("disposes the backing client", async () => {
     const provider = createProvider();
 

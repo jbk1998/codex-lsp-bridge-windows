@@ -135,8 +135,14 @@ async function terminateChild(
     return { clean: false, reasonCode: "identity_mismatch" };
   }
   // Descendant authorization is checked before any signal is sent. There is
-  // intentionally no recursive kill-tree fallback for wrappers.
+  // intentionally no recursive kill-tree fallback for wrappers. On Windows a
+  // .cmd/.bat wrapper is not an owned process group, even when a point-in-time
+  // descendant snapshot happens to be empty. Refuse generic child.kill() for
+  // that boundary until a handle-backed or Job Object terminator is available.
   if (options.wrapper) {
+    if (process.platform === "win32") {
+      return { clean: false, reasonCode: "descendant_unverified" };
+    }
     try {
       const verifyDescendants = options.verifyDescendants ?? ((pid: number) => verifyNoDescendants(pid, options.descendantProvider));
       if (!(await verifyDescendants(child.pid))) {
@@ -221,14 +227,15 @@ function readLinuxProcessIdentity(pid: number): ProcessIdentity | undefined {
   return startTime ? { pid, creationToken: `linux:${startTime}` } : undefined;
 }
 
+export function buildWindowsProcessIdentityCommand(pid: number): string {
+  return [
+    `$target = Get-Process -Id ${String(pid)} -ErrorAction Stop`,
+    "$target.StartTime.ToUniversalTime().Ticks"
+  ].join("; ");
+}
+
 function readWindowsProcessIdentity(pid: number): ProcessIdentity | undefined {
-  const command = [
-    "$target = Get-CimInstance Win32_Process -Filter 'ProcessId =",
-    String(pid),
-    "' -ErrorAction Stop",
-    "if ($null -eq $target) { exit 3 }",
-    "$target.CreationDate.ToUniversalTime().Ticks"
-  ].join(" ");
+  const command = buildWindowsProcessIdentityCommand(pid);
   const output = execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],

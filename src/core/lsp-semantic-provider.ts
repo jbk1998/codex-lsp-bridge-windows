@@ -7,6 +7,7 @@ import type { Diagnostic, DiagnosticOptions, DiagnosticReport, DocumentPosition,
 import { canonicalizeFileUri, filePathToUri, uriToFilePath } from "../utils/uri.js";
 import { canonicalizeTargetPathSync, canonicalizeWorkspaceRootSync, isPathInsideWorkspaceRootSync } from "./workspace-root.js";
 import { DocumentRegistry } from "./document-registry.js";
+import { DiagnosticsWaiterController } from "./diagnostics-waiters.js";
 
 interface LspDiagnostic {
   range: { start: Position; end: Position };
@@ -78,21 +79,18 @@ export class LspSemanticProvider implements SemanticProvider {
   private diagnosticsCandidatesByUri = new Map<string, DiagnosticsCandidate>();
   private readonly documentRegistry = new DocumentRegistry();
   private configurationIssues: string[] = [];
-  private diagnosticsWaitersByUri = new Map<
-    string,
-    Array<{
-      minRevision: number;
-      resolve: (fresh: boolean) => void;
-      timer: NodeJS.Timeout;
-      settleTimer?: NodeJS.Timeout;
-      settleRevision?: number;
-    }>
-  >();
+  private readonly diagnosticsWaiters: DiagnosticsWaiterController;
   private readonly rootRealPathPromise: Promise<string>;
   private client: LspClient;
 
   constructor(private readonly options: LspSemanticProviderOptions) {
     this.rootRealPathPromise = fs.realpath(options.rootPath).then(() => canonicalizeWorkspaceRootSync(options.rootPath)).catch(() => canonicalizeWorkspaceRootSync(options.rootPath));
+    this.diagnosticsWaiters = new DiagnosticsWaiterController({
+      stabilityMs: options.diagnosticsStabilityMs ?? defaultDiagnosticsStabilityMs,
+      getRevision: (uri) => this.diagnosticsRevisionByUri.get(uri) ?? 0,
+      getDocumentVersion: (uri) => this.documentRegistry.get(uri)?.version,
+      getPublishedSourceRevision: (uri) => this.diagnosticsSourceRevisionByUri.get(uri)
+    });
     this.client = this.createClient();
   }
 
@@ -118,7 +116,7 @@ export class LspSemanticProvider implements SemanticProvider {
     this.pendingSourceRevisionByUri.clear();
     this.cancelDiagnosticsCandidates();
     this.configurationIssues = [];
-    this.cancelDiagnosticsWaiters();
+    this.diagnosticsWaiters.cancel();
   }
 
   async diagnostics(uri?: string, options: DiagnosticOptions = {}): Promise<DiagnosticReport> {
@@ -149,7 +147,11 @@ export class LspSemanticProvider implements SemanticProvider {
         // this call can register a waiter. The current revision is therefore the
         // baseline; the source-revision check still prevents an old notification
         // from being accepted for a changed document.
-        timedOut = !(await this.waitForDiagnostics(document.uri, currentRevision, options.timeoutMs));
+        timedOut = !(await this.diagnosticsWaiters.wait(
+          document.uri,
+          currentRevision,
+          options.timeoutMs ?? this.options.diagnosticsTimeoutMs ?? defaultDiagnosticsTimeoutMs
+        ));
       }
       const sourceRevision = openedDocument.sourceRevision;
       const stale = timedOut || this.diagnosticsSourceRevisionByUri.get(document.uri) !== sourceRevision;
@@ -275,6 +277,7 @@ export class LspSemanticProvider implements SemanticProvider {
     }
     this.documentRegistry.clear();
     this.cancelDiagnosticsCandidates();
+    this.diagnosticsWaiters.cancel();
     this.disposePromise = this.client.stop(deadline);
     return this.disposePromise;
   }
@@ -546,45 +549,7 @@ export class LspSemanticProvider implements SemanticProvider {
         this.options.diagnosticsStabilityMs ?? defaultDiagnosticsStabilityMs
       );
     }
-    this.scheduleDiagnosticsWaiters(uri, revision);
-  }
-
-  private waitForDiagnostics(uri: string, minRevision: number, timeoutMs = this.options.diagnosticsTimeoutMs ?? defaultDiagnosticsTimeoutMs): Promise<boolean> {
-    const currentRevision = this.diagnosticsRevisionByUri.get(uri) ?? 0;
-    const documentVersion = this.documentRegistry.get(uri)?.version;
-    if (
-      documentVersion !== undefined &&
-      this.diagnosticsSourceRevisionByUri.get(uri) === documentVersion &&
-      currentRevision >= minRevision
-    ) {
-      return Promise.resolve(true);
-    }
-    return new Promise((resolve) => {
-      const waiters = this.diagnosticsWaitersByUri.get(uri) ?? [];
-      const waiter: {
-        minRevision: number;
-        resolve: (fresh: boolean) => void;
-        timer: NodeJS.Timeout;
-        settleTimer?: NodeJS.Timeout;
-        settleRevision?: number;
-      } = {
-        minRevision,
-        resolve: (fresh: boolean) => resolve(fresh),
-        timer: undefined as unknown as NodeJS.Timeout
-      };
-      const timer = setTimeout(() => {
-        if (waiter.settleTimer) clearTimeout(waiter.settleTimer);
-        const nextWaiters = (this.diagnosticsWaitersByUri.get(uri) ?? []).filter((candidate) => candidate !== waiter);
-        if (nextWaiters.length > 0) this.diagnosticsWaitersByUri.set(uri, nextWaiters);
-        else this.diagnosticsWaitersByUri.delete(uri);
-        resolve(false);
-      }, timeoutMs);
-
-      waiter.timer = timer;
-      waiters.push(waiter);
-      this.diagnosticsWaitersByUri.set(uri, waiters);
-      this.scheduleDiagnosticsWaiters(uri, currentRevision);
-    });
+    this.diagnosticsWaiters.schedule(uri, revision);
   }
 
   private async resolveDocument(uri: string): Promise<{ uri: string; filePath: string }> {
@@ -619,48 +584,6 @@ export class LspSemanticProvider implements SemanticProvider {
     };
   }
 
-  private scheduleDiagnosticsWaiters(uri: string, revision: number): void {
-    const waiters = this.diagnosticsWaitersByUri.get(uri) ?? [];
-    for (const waiter of waiters) {
-      if (revision < waiter.minRevision) continue;
-      if (waiter.settleRevision === revision && waiter.settleTimer) continue;
-      if (waiter.settleTimer) clearTimeout(waiter.settleTimer);
-      waiter.settleRevision = revision;
-      waiter.settleTimer = setTimeout(() => {
-        const latestRevision = this.diagnosticsRevisionByUri.get(uri) ?? 0;
-        if (latestRevision !== revision || latestRevision < waiter.minRevision) {
-          waiter.settleTimer = undefined;
-          waiter.settleRevision = undefined;
-          this.scheduleDiagnosticsWaiters(uri, latestRevision);
-          return;
-        }
-
-        if (this.diagnosticsSourceRevisionByUri.get(uri) !== this.documentRegistry.get(uri)?.version) {
-          waiter.settleTimer = undefined;
-          waiter.settleRevision = undefined;
-          return;
-        }
-
-        clearTimeout(waiter.timer);
-        const nextWaiters = (this.diagnosticsWaitersByUri.get(uri) ?? []).filter((candidate) => candidate !== waiter);
-        if (nextWaiters.length > 0) this.diagnosticsWaitersByUri.set(uri, nextWaiters);
-        else this.diagnosticsWaitersByUri.delete(uri);
-        waiter.resolve(true);
-      }, this.options.diagnosticsStabilityMs ?? defaultDiagnosticsStabilityMs);
-    }
-  }
-
-  private cancelDiagnosticsWaiters(): void {
-    for (const waiters of this.diagnosticsWaitersByUri.values()) {
-      for (const waiter of waiters) {
-        clearTimeout(waiter.timer);
-        if (waiter.settleTimer) clearTimeout(waiter.settleTimer);
-        waiter.resolve(false);
-      }
-    }
-    this.diagnosticsWaitersByUri.clear();
-  }
-
   private commitDiagnosticsCandidate(uri: string, candidate: DiagnosticsCandidate): void {
     if (this.diagnosticsCandidatesByUri.get(uri) !== candidate) return;
 
@@ -679,7 +602,7 @@ export class LspSemanticProvider implements SemanticProvider {
 
     this.diagnosticsSourceRevisionByUri.set(uri, candidate.sourceRevision);
     this.pendingSourceRevisionByUri.delete(uri);
-    this.scheduleDiagnosticsWaiters(uri, candidate.revision);
+    this.diagnosticsWaiters.schedule(uri, candidate.revision);
   }
 
   private invalidateDiagnosticsCandidate(uri: string): void {

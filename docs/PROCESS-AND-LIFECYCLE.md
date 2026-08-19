@@ -47,6 +47,10 @@ repository fixtures do not establish production load improvement.
 - Shutdown stops new work, disposes bridge-owned state, and confirms within a
   bounded timeout that no bridge-owned child remains. A timeout is a visible
   failure, not silent success.
+- On Windows, a language-server `.cmd` or `.bat` wrapper is not treated as an
+  owned process group from a parent-PID snapshot. Without a handle-backed or
+  Job Object boundary, wrapper teardown fails closed with a non-clean result;
+  the bridge never recursively kills an unproven descendant tree.
 - Idle suspension, a persistent broker, cross-connection reuse, and shared
   persistent state remain deferred until measurement justifies a separate
   scope decision.

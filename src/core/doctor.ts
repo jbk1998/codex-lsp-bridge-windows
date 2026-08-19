@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { listLanguageServerConfigs } from "../adapters/language-config.js";
 import { loadConfig } from "./config.js";
 import { resolveDiagnosticsTimeout, type ResolvedDiagnosticsTimeout } from "./diagnostics-timeout.js";
-import { NativeNodeRuntimeError, validateNativeNodeRuntime } from "./native-node-runtime.js";
+import { NativeNodeRuntimeError, validateNativeNodeLaunchRecord, validateNativeNodeRuntime } from "./native-node-runtime.js";
 
 type DoctorLanguageResult = {
   language: string;
@@ -115,17 +115,34 @@ function inspectCurrentLauncher(): DoctorResult["codex"]["launcher"] {
 }
 
 function inspectExplicitMcpConfig(config: string): boolean {
-  const section = config.match(/(?:^|\n)\[mcp_servers\.codex-lsp-bridge\]\n([\s\S]*?)(?=\n\[|$)/)?.[1] ?? "";
+  const normalized = config.replace(/\r\n?/g, "\n");
+  const section = normalized.match(/(?:^|\n)\[mcp_servers\.codex-lsp-bridge\]\n([\s\S]*?)(?=\n\[|$)/)?.[1] ?? "";
   const command = section.match(/^command\s*=\s*("(?:\\.|[^"\\])*")\s*$/m)?.[1];
-  if (!command) return false;
+  const args = section.match(/^args\s*=\s*\[([\s\S]*?)\]\s*$/m)?.[1];
+  if (!command || args === undefined) return false;
   try {
     const value = JSON.parse(command);
     if (typeof value !== "string") return false;
-    validateNativeNodeRuntime(value);
+    const parsedArgs = parseTomlStringArray(args);
+    validateNativeNodeLaunchRecord({ version: 1, runtime: "native-node", command: value, args: parsedArgs });
     return true;
   } catch {
     return false;
   }
+}
+
+function parseTomlStringArray(content: string): string[] {
+  const values: string[] = [];
+  let remaining = content.trim();
+  while (remaining.length > 0) {
+    const match = remaining.match(/^("(?:\\.|[^"\\])*")\s*(,|$)/);
+    if (!match) throw new Error("invalid TOML string array");
+    const value = JSON.parse(match[1]);
+    if (typeof value !== "string") throw new Error("invalid TOML string array value");
+    values.push(value);
+    remaining = remaining.slice(match[0].length).trim();
+  }
+  return values;
 }
 
 function inspectHookState(content: string): DoctorResult["codex"]["hookState"] {

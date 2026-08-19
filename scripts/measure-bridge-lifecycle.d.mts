@@ -24,16 +24,18 @@ export interface MeasurementReceipt {
 export interface MeasurementBridge {
   pid: number;
   run?: () => Promise<Record<string, number | null>>;
-  close?: () => void | Promise<void>;
+  close?: () => void | Promise<void | Record<string, number | null>>;
   waitForExit?: (timeoutMs?: number) => Promise<boolean>;
   forceClose?: (expectedIdentity: unknown, inspector: unknown) => boolean | Promise<boolean>;
+  metrics?: () => Record<string, number | null> | Promise<Record<string, number | null>>;
 }
 
 export interface MaterializedBridge extends MeasurementBridge {
   run: () => Promise<Record<string, number | null>>;
-  close: () => void | Promise<void>;
+  close: () => void | Promise<void | Record<string, number | null>>;
   waitForExit: (timeoutMs?: number) => Promise<boolean>;
   forceClose: (expectedIdentity: unknown, inspector: unknown) => boolean | Promise<boolean>;
+  metrics: () => Record<string, number | null> | Promise<Record<string, number | null>>;
 }
 
 export interface MeasurementOptions {

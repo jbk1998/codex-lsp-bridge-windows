@@ -114,7 +114,8 @@ export async function runMeasurement(options = {}) {
   } finally {
     if (bridge) {
       try {
-        await bridge.close?.();
+        const closeMetrics = await bridge.close?.();
+        if (closeMetrics && typeof closeMetrics === "object") runMetrics = { ...runMetrics, ...closeMetrics };
         const exited = (await bridge.waitForExit?.(options.timeoutMs ?? 5000)) ?? true;
         if (!exited) {
           const identityBeforeForceClose = await inspectBridge(processInspector, bridge, "force_close");
@@ -127,6 +128,8 @@ export async function runMeasurement(options = {}) {
           const exitedAfterForce = (await bridge.waitForExit?.(250)) ?? false;
           if (!exitedAfterForce) cleanupUncertain = true;
         }
+        const finalMetrics = await bridge.metrics?.();
+        if (finalMetrics && typeof finalMetrics === "object") runMetrics = { ...runMetrics, ...finalMetrics };
       } catch {
         cleanupUncertain = true;
       }
@@ -150,6 +153,7 @@ export async function runMeasurement(options = {}) {
   const bridgeOwnedCpuMs = finiteOrNull(bridgeSampleAfter?.cpuMs);
   const bridgeOwnedMemoryBytes = finiteOrNull(bridgeSampleAfter?.memoryBytes);
   if (bridgeOwnedCpuMs === null || bridgeOwnedMemoryBytes === null) reasonCodes.push("metrics_unavailable");
+  if (bridge && finiteOrNull(runMetrics.childLifetimeMs) === null) reasonCodes.push("metrics_unavailable");
   if (cleanupUncertain) reasonCodes.push("cleanup_uncertain");
 
   const ownedChild = observableOwnedChild(bridgeSampleAfter) ?? observableOwnedChild(bridgeSampleBefore);
@@ -212,6 +216,9 @@ export function validateReceipt(receipt) {
     throw new Error("measurement receipt reason codes are invalid");
   }
   if (![...r21Outcomes, "INCONCLUSIVE"].includes(receipt.outcome)) throw new Error("measurement receipt outcome is invalid");
+  if (receipt.outcome !== "INCONCLUSIVE" && receipt.childLifetimeMs === null) {
+    throw new Error("measurement receipt is missing required child lifetime evidence");
+  }
   return receipt;
 }
 
@@ -266,6 +273,8 @@ async function importNativeNodeRuntime() {
 
 export async function launchMaterializedBridge(record, context) {
   const validatedRecord = await revalidateLaunchRecord(record);
+  const clock = context.clock ?? performance;
+  const childStartedAt = monotonicNow(clock);
   const child = spawn(validatedRecord.command, validatedRecord.args, {
     cwd: context.root,
     stdio: ["pipe", "pipe", "pipe"],
@@ -275,6 +284,7 @@ export async function launchMaterializedBridge(record, context) {
   let outputBuffer = "";
   let exited = false;
   let exitCode = null;
+  let childLifetimeMs = null;
   const onData = (chunk) => {
     outputBuffer += chunk.toString("utf8");
     let newlineIndex = outputBuffer.indexOf("\n");
@@ -301,6 +311,7 @@ export async function launchMaterializedBridge(record, context) {
   child.on("exit", (code) => {
     exited = true;
     exitCode = code;
+    childLifetimeMs = roundMetric(monotonicNow(clock) - childStartedAt);
     for (const pending of pendingResponses.values()) pending(undefined);
     pendingResponses.clear();
   });
@@ -324,22 +335,22 @@ export async function launchMaterializedBridge(record, context) {
   return {
     pid: child.pid,
     async run() {
-      const connectionStarted = monotonicNow(context.clock);
-      const initializationStarted = monotonicNow(context.clock);
+      const connectionStarted = monotonicNow(clock);
+      const initializationStarted = monotonicNow(clock);
       await request(1, "initialize");
-      const initializationDurationMs = monotonicNow(context.clock) - initializationStarted;
+      const initializationDurationMs = monotonicNow(clock) - initializationStarted;
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
-      const requestStarted = monotonicNow(context.clock);
+      const requestStarted = monotonicNow(clock);
       const toolArguments = context.operationClass === "diagnostics"
         ? { file: context.diagnosticsTarget, root: context.root }
         : {};
       const toolName = context.operationClass === "diagnostics" ? "lsp_diagnostics" : "lsp_status";
       await request(2, "tools/call", { name: toolName, arguments: toolArguments });
       return {
-        connectionDurationMs: monotonicNow(context.clock) - connectionStarted,
+        connectionDurationMs: monotonicNow(clock) - connectionStarted,
         initializationDurationMs,
-        requestLatencyMs: monotonicNow(context.clock) - requestStarted,
-        childLifetimeMs: null,
+        requestLatencyMs: monotonicNow(clock) - requestStarted,
+        childLifetimeMs,
         restartCount: 0,
         recoveryFailures: 0,
         exitCode
@@ -347,6 +358,7 @@ export async function launchMaterializedBridge(record, context) {
     },
     close() {
       if (!exited) child.stdin.end();
+      return { childLifetimeMs };
     },
     waitForExit(timeoutMs) {
       if (exited) return Promise.resolve(true);
@@ -368,6 +380,9 @@ export async function launchMaterializedBridge(record, context) {
       }
       if (!current || current.identityObserved !== true || !sameIdentity(expectedIdentity, current.identity)) return false;
       return child.kill();
+    },
+    metrics() {
+      return { childLifetimeMs };
     }
   };
 }

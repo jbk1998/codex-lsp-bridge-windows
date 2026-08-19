@@ -1,6 +1,10 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import { createProcessOwnership, type ProcessIdentityProvider } from "../src/core/process-ownership.js";
+import {
+  createProcessOwnership,
+  buildWindowsProcessIdentityCommand,
+  type ProcessIdentityProvider
+} from "../src/core/process-ownership.js";
 
 class FakeChild extends EventEmitter {
   pid = 1234;
@@ -87,11 +91,25 @@ describe("process ownership", () => {
       identityProvider: identityProvider(),
       verifyDescendants: () => true
     });
+    if (process.platform === "win32") {
+      await expect(ownership.terminate(Date.now() + 100)).resolves.toEqual({
+        clean: false,
+        reasonCode: "descendant_unverified"
+      });
+      expect(child.killCalls).toBe(0);
+      return;
+    }
     const resultPromise = ownership.terminate(Date.now() + 100);
     child.exit();
 
     await expect(resultPromise).resolves.toEqual({ clean: true, reasonCode: "owned_child_exit" });
     expect(child.killCalls).toBe(1);
+  });
+
+  it("builds a syntactically separated native Windows process identity query", () => {
+    expect(buildWindowsProcessIdentityCommand(1234)).toBe(
+      "$target = Get-Process -Id 1234 -ErrorAction Stop; $target.StartTime.ToUniversalTime().Ticks"
+    );
   });
 
   it("refuses a wrapper when safe descendant enumeration finds a child", async () => {

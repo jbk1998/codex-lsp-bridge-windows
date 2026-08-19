@@ -41,33 +41,34 @@ const existingConfig = readText(configPath);
 const existingHooks = readText(hooksPath);
 const existingAgents = readText(agentsPath);
 const hookState = inspectHookState(existingHooks);
-const updatePlan = autoUpdate
-  ? dryRun
-    ? { entrypointPath: path.join(codexHome, "codex-lsp-bridge", "bridge-entrypoint.mjs") }
-    : stagePackageUpdate(packageSpec)
-  : undefined;
-const bridgeTarget = updatePlan?.entrypointPath ?? bridgeCli;
-const launchRecord = createNativeNodeLaunchRecord(bridgeTarget, ["mcp"], runtimeValidation.executablePath);
-const configResult = upsertMcpConfig(existingConfig, launchRecord);
-const agentsResult = upsertAgentInstructions(existingAgents);
-
-if (dryRun) {
-  console.log(`[codex-lsp-bridge] dry run for ${codexHome}`);
-  console.log(configResult);
-  console.log(JSON.stringify({ hookState, managedHookChanged: false }, null, 2));
-  console.log(agentsResult);
-  if (autoUpdate) {
-    console.log(`[codex-lsp-bridge] would resolve package during explicit update: ${packageSpec}`);
-  }
-  if (withRustAnalyzer) {
-    console.log("[codex-lsp-bridge] would install rust-analyzer with: rustup component add rust-analyzer");
-  }
-  cleanupStagedUpdate(updatePlan);
-  process.exit(0);
-}
-
+let updatePlan;
 let activatedUpdate;
 try {
+  updatePlan = autoUpdate
+    ? dryRun
+      ? { entrypointPath: path.join(codexHome, "codex-lsp-bridge", "bridge-entrypoint.mjs") }
+      : stagePackageUpdate(packageSpec)
+    : undefined;
+  const bridgeTarget = updatePlan?.entrypointPath ?? bridgeCli;
+  const launchRecord = createNativeNodeLaunchRecord(bridgeTarget, ["mcp"], runtimeValidation.executablePath);
+  const configResult = upsertMcpConfig(existingConfig, launchRecord);
+  const agentsResult = upsertAgentInstructions(existingAgents);
+
+  if (dryRun) {
+    console.log(`[codex-lsp-bridge] dry run for ${codexHome}`);
+    console.log(configResult);
+    console.log(JSON.stringify({ hookState, managedHookChanged: false }, null, 2));
+    console.log(agentsResult);
+    if (autoUpdate) {
+      console.log(`[codex-lsp-bridge] would resolve package during explicit update: ${packageSpec}`);
+    }
+    if (withRustAnalyzer) {
+      console.log("[codex-lsp-bridge] would install rust-analyzer with: rustup component add rust-analyzer");
+    }
+    cleanupStagedUpdate(updatePlan);
+    process.exit(0);
+  }
+
   if (withRustAnalyzer) installRustAnalyzer();
   revalidateNativeNodeRuntime(runtimeValidation);
   activatedUpdate = activateStagedUpdate(updatePlan);
@@ -189,6 +190,11 @@ function activateStagedUpdate(plan) {
     const previousRootIdentity = captureFileIdentity(plan.finalRoot);
     fs.renameSync(plan.finalRoot, plan.backupRoot);
     plan.backupRootIdentity = previousRootIdentity;
+    plan.backupMarkerPath = path.join(plan.backupRoot, path.basename(plan.ownershipMarkerPath));
+    if (pathExists(plan.backupMarkerPath)) {
+      plan.backupMarkerIdentity = captureFileIdentity(plan.backupMarkerPath);
+      plan.backupMarkerContent = fs.readFileSync(plan.backupMarkerPath, "utf8");
+    }
   }
   try {
     assertSafePathAncestry(plan.stagingRoot);
@@ -198,7 +204,7 @@ function activateStagedUpdate(plan) {
     plan.activeRootIdentity = captureFileIdentity(plan.finalRoot);
     plan.activeMarkerPath = path.join(plan.finalRoot, path.basename(plan.ownershipMarkerPath));
     plan.activeMarkerIdentity = captureFileIdentity(plan.activeMarkerPath);
-    assertOwnedPackageTree(plan, plan.finalRoot, plan.activeRootIdentity, plan.activeMarkerIdentity);
+    assertOwnedPackageTree(plan, plan.finalRoot, plan.activeRootIdentity, plan.activeMarkerIdentity, plan.ownershipMarkerContent);
     return plan;
   } catch (error) {
     if (!plan.active && pathExists(plan.backupRoot) && !pathExists(plan.finalRoot)) {
@@ -212,17 +218,17 @@ function activateStagedUpdate(plan) {
 
 function commitStagedUpdate(plan) {
   if (!plan?.active) return;
-  assertOwnedPackageTree(plan, plan.finalRoot, plan.activeRootIdentity, plan.activeMarkerIdentity);
+  assertOwnedPackageTree(plan, plan.finalRoot, plan.activeRootIdentity, plan.activeMarkerIdentity, plan.ownershipMarkerContent);
   if (!pathExists(plan.backupRoot)) return;
   if (!plan.backupRootIdentity || !sameFileIdentity(captureFileIdentity(plan.backupRoot), plan.backupRootIdentity)) {
     console.warn(`[codex-lsp-bridge] preserved unproven package backup: ${plan.backupRoot}`);
     return;
   }
-  if (!isInstallerOwnedPackageTree(plan, plan.backupRoot, plan.backupRootIdentity)) {
+  if (!isInstallerOwnedPackageTree(plan, plan.backupRoot, plan.backupRootIdentity, plan.backupMarkerIdentity, plan.backupMarkerContent)) {
     console.warn(`[codex-lsp-bridge] preserved unproven package backup: ${plan.backupRoot}`);
     return;
   }
-  if (!removeOwnedPackageTree({ root: plan.backupRoot, rootIdentity: plan.backupRootIdentity })) {
+  if (!removeOwnedPackageTree({ root: plan.backupRoot, rootIdentity: plan.backupRootIdentity, markerPath: plan.backupMarkerPath, markerIdentity: plan.backupMarkerIdentity, markerContent: plan.backupMarkerContent })) {
     console.warn(`[codex-lsp-bridge] preserved unproven package backup: ${plan.backupRoot}`);
   }
 }
@@ -232,7 +238,7 @@ function rollbackStagedUpdate(plan) {
   let rollbackComplete = true;
   try {
     if (plan.active) {
-      if (!isInstallerOwnedPackageTree(plan, plan.finalRoot, plan.activeRootIdentity)) {
+      if (!isInstallerOwnedPackageTree(plan, plan.finalRoot, plan.activeRootIdentity, plan.activeMarkerIdentity, plan.ownershipMarkerContent)) {
         rollbackComplete = false;
       } else {
         const activeRemoved = removeOwnedPackageTree({ root: plan.finalRoot, rootIdentity: plan.activeRootIdentity, markerPath: plan.activeMarkerPath, markerIdentity: plan.activeMarkerIdentity, markerContent: plan.ownershipMarkerContent });
@@ -434,7 +440,7 @@ function runWindowsFilePrimitive(operation, sourcePath, targetPath, backupPath) 
   }
 }
 
-function isInstallerOwnedPackageTree(plan, root, expectedRootIdentity, expectedMarkerIdentity) {
+function isInstallerOwnedPackageTree(plan, root, expectedRootIdentity, expectedMarkerIdentity, expectedMarkerContent) {
   try {
     assertSafePathAncestry(root);
     const rootIdentity = captureFileIdentity(root);
@@ -443,14 +449,14 @@ function isInstallerOwnedPackageTree(plan, root, expectedRootIdentity, expectedM
     const markerIdentity = captureFileIdentity(markerPath);
     if (expectedMarkerIdentity && !sameFileIdentity(markerIdentity, expectedMarkerIdentity)) return false;
     const marker = fs.readFileSync(markerPath, "utf8");
-    return marker.startsWith('{"tool":"codex-lsp-bridge","version":1,"token":"') && marker.endsWith('"}\n');
+    return expectedMarkerContent !== undefined && marker === expectedMarkerContent;
   } catch {
     return false;
   }
 }
 
-function assertOwnedPackageTree(plan, root, expectedRootIdentity, expectedMarkerIdentity) {
-  if (!isInstallerOwnedPackageTree(plan, root, expectedRootIdentity, expectedMarkerIdentity)) {
+function assertOwnedPackageTree(plan, root, expectedRootIdentity, expectedMarkerIdentity, expectedMarkerContent = plan.ownershipMarkerContent) {
+  if (!isInstallerOwnedPackageTree(plan, root, expectedRootIdentity, expectedMarkerIdentity, expectedMarkerContent)) {
     throw new Error(`installer-owned package tree proof failed: ${root}`);
   }
 }
@@ -462,8 +468,7 @@ function removeOwnedPackageTree({ root, rootIdentity, markerPath, markerIdentity
   const actualRootIdentity = rootIdentity ?? stagingRootIdentity;
   const actualMarkerIdentity = markerIdentity ?? stagingMarkerIdentity;
   const plan = { ownershipMarkerPath: actualMarkerPath ?? path.join(actualRoot, ".codex-lsp-bridge-installer-owned") };
-  if (!isInstallerOwnedPackageTree(plan, actualRoot, actualRootIdentity, actualMarkerIdentity)) return false;
-  if (actualMarkerContent && fs.readFileSync(actualMarkerPath ?? path.join(actualRoot, path.basename(plan.ownershipMarkerPath)), "utf8") !== actualMarkerContent) return false;
+  if (!isInstallerOwnedPackageTree(plan, actualRoot, actualRootIdentity, actualMarkerIdentity, actualMarkerContent)) return false;
   assertSafePathAncestry(actualRoot);
   fs.rmSync(actualRoot, { recursive: true, force: true });
   return !pathExists(actualRoot);

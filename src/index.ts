@@ -21,7 +21,8 @@ import {
   canonicalizeWorkspaceRootSync,
   resolveExplicitWorkspaceRootSync,
   resolveRequestedRootSync,
-  workspaceRootIdentitySync
+  workspaceRootIdentitySync,
+  workspaceRootInstanceIdentitySync
 } from "./core/workspace-root.js";
 import { supportedExtensionsForLanguage } from "./adapters/language-config.js";
 import { filePathToUri } from "./utils/uri.js";
@@ -40,6 +41,11 @@ interface SourceFileListCacheEntry {
   createdAt: number;
   files: string[];
   truncated: boolean;
+}
+
+interface ManagerEntry {
+  instanceIdentity: string;
+  manager: LspManager;
 }
 
 async function main(): Promise<void> {
@@ -64,12 +70,16 @@ async function main(): Promise<void> {
 
   const root = path.resolve(readOption(args, "--root") ?? process.cwd());
   const config = loadConfig(root);
-  const managers = new Map<string, LspManager>();
+  const managers = new Map<string, ManagerEntry>();
+  const retiredManagers = new Set<LspManager>();
   const sourceFileListCache = new Map<string, SourceFileListCacheEntry>();
   let mcpOwnsDisposal = false;
   const disposeManagers = async (deadline: DisposalDeadline): Promise<ProcessTerminationResult | void> => {
     const settled = await Promise.allSettled(
-      [...managers.values()].map((manager) => Promise.resolve().then(() => manager.dispose(deadline)))
+      [...new Set([
+        ...[...managers.values()].map((entry) => entry.manager),
+        ...retiredManagers
+      ])].map((manager) => Promise.resolve().then(() => manager.dispose(deadline)))
     );
     const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
     return aggregateTerminationResults(
@@ -80,15 +90,21 @@ async function main(): Promise<void> {
   const serviceForRoot = (serviceRoot: string, languageOverride?: SupportedLanguage) => {
     const resolvedRoot = canonicalizeWorkspaceRootSync(serviceRoot);
     const rootIdentity = workspaceRootIdentitySync(resolvedRoot);
+    const instanceIdentity = workspaceRootInstanceIdentitySync(resolvedRoot);
     const rootConfig = loadConfig(resolvedRoot);
-    let scopedManager = managers.get(rootIdentity);
+    const existingEntry = managers.get(rootIdentity);
+    let scopedManager = existingEntry?.instanceIdentity === instanceIdentity ? existingEntry.manager : undefined;
     if (!scopedManager) {
+      if (existingEntry) {
+        retiredManagers.add(existingEntry.manager);
+        sourceFileListCache.clear();
+      }
       const diagnosticsTimeout = resolveDiagnosticsTimeout(resolvedRoot, rootConfig.diagnosticsTimeoutMs);
       scopedManager = new LspManager(resolvedRoot, {
         diagnosticsTimeoutMs: diagnosticsTimeout.timeoutMs,
         languageServers: rootConfig.languageServers
       });
-      managers.set(rootIdentity, scopedManager);
+      managers.set(rootIdentity, { instanceIdentity, manager: scopedManager });
     }
     return new WorkspaceCommandService(scopedManager, languageOverride ?? rootConfig.defaultLanguage);
   };

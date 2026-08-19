@@ -148,6 +148,7 @@ describe("repository-local lifecycle measurement harness", () => {
       await bridge.run();
       bridge.close();
       await expect(bridge.waitForExit(2000)).resolves.toBe(true);
+      expect((await bridge.metrics()).childLifetimeMs).not.toBeNull();
       const requests = (await fs.readFile(requestLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
       expect(requests.map((request) => request.method)).toEqual(["initialize", "notifications/initialized", "tools/call"]);
       expect(requests[2].params).toMatchObject({ name: "lsp_diagnostics", arguments: { file: sourcePath, root } });
@@ -194,6 +195,7 @@ describe("repository-local lifecycle measurement harness", () => {
     });
     expect(forceClose).not.toHaveBeenCalled();
     expect(receipt.reasonCodes).toContain("cleanup_uncertain");
+    expect(receipt.reasonCodes).toContain("metrics_unavailable");
     expect(receipt.outcome).toBe("INCONCLUSIVE");
 
     const reusedForceClose = vi.fn(() => true);
@@ -225,6 +227,33 @@ describe("repository-local lifecycle measurement harness", () => {
     expect(reusedReceipt.reasonCodes).toContain("pid_reuse_uncertain");
     expect(reusedReceipt.reasonCodes).toContain("cleanup_uncertain");
     expect(reusedReceipt.outcome).toBe("INCONCLUSIVE");
+  });
+
+  it("rejects a selected outcome without child lifetime evidence", () => {
+    const receipt = {
+      schemaVersion: 1,
+      runId: "a".repeat(32),
+      rootFingerprint: "b".repeat(64),
+      language: "typescript",
+      operationClass: "explicit_mcp",
+      startedAtMonotonicMs: 1,
+      finishedAtMonotonicMs: 2,
+      connectionDurationMs: 1,
+      childLifetimeMs: null,
+      initializationDurationMs: 1,
+      requestLatencyMs: 1,
+      bridgePid: 1,
+      ownedChildPid: null,
+      bridgeOwnedCpuMs: 1,
+      bridgeOwnedMemoryBytes: 1,
+      restartCount: 0,
+      recoveryFailures: 0,
+      controlState: "positive",
+      reasonCodes: [],
+      outcome: "RETAIN_BASELINE"
+    };
+
+    expect(() => validateReceipt(receipt)).toThrow("child lifetime evidence");
   });
 
   it("prints no receipt for CLI startup errors", () => {

@@ -1,4 +1,4 @@
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -84,6 +84,21 @@ export function resolvePathInsideWorkspaceRootSync(rootPath: string, targetPath:
 
 export function workspaceRootIdentitySync(rootPath: string): string {
   return normalizePathIdentity(realPathForIdentitySync(rootPath));
+}
+
+/**
+ * Returns a stable identity for the current directory instance, not just its
+ * canonical path. This lets long-lived services detect delete/recreate of a
+ * workspace at the same path without weakening path-boundary checks.
+ */
+export function workspaceRootInstanceIdentitySync(rootPath: string): string {
+  const canonicalRoot = workspaceRootIdentitySync(rootPath);
+  try {
+    const stats = statSync(canonicalRoot);
+    return `${canonicalRoot}\u0000${stats.dev}:${stats.ino}:${stats.birthtimeMs}:${stats.ctimeMs}`;
+  } catch {
+    return `${canonicalRoot}\u0000missing`;
+  }
 }
 
 export function isPathInsideWorkspaceRootSync(targetPath: string, rootPath: string): boolean {

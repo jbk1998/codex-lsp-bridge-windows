@@ -9,7 +9,8 @@ import {
   resolveExplicitWorkspaceRootSync,
   resolveRequestedRootSync,
   shouldSelectWorkspaceService,
-  workspaceRootIdentitySync
+  workspaceRootIdentitySync,
+  workspaceRootInstanceIdentitySync
 } from "../src/core/workspace-root.js";
 
 const temporaryRoots: string[] = [];
@@ -108,6 +109,18 @@ describe("workspace root resolution", () => {
     expect(workspaceRootIdentitySync(root)).toBe(workspaceRootIdentitySync(alias));
     expect(isPathInsideWorkspaceRootSync(path.join(alias, "src", "index.ts"), root)).toBe(true);
     expect(isPathInsideWorkspaceRootSync(path.join(aliasParent, "outside.ts"), root)).toBe(false);
+  });
+
+  it("changes directory-instance identity after delete and recreate at the same path", async () => {
+    const root = await makeTemporaryDirectory("codex-lsp-recreated-root-");
+    await fs.writeFile(path.join(root, "package.json"), "{}\n");
+    const originalIdentity = workspaceRootInstanceIdentitySync(root);
+
+    await fs.rm(root, { recursive: true, force: true });
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(path.join(root, "package.json"), "{}\n");
+
+    expect(workspaceRootInstanceIdentitySync(root)).not.toBe(originalIdentity);
   });
 
   it("rejects a target that enters an outside directory through a junction", async () => {

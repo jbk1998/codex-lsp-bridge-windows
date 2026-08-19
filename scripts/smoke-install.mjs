@@ -32,7 +32,6 @@ run(["scripts/install-codex.mjs"]);
 const rewrittenConfig = read("config.toml");
 assert(rewrittenConfig.includes("\r\n"), "reinstall did not preserve CRLF config line endings");
 assert((rewrittenConfig.replace(/\r\n?/g, "\n").match(/^\[mcp_servers\.codex-lsp-bridge\]$/gm) ?? []).length === 1, "CRLF reinstall created duplicate MCP sections");
-fs.writeFileSync(path.join(codexHome, "config.toml"), rewrittenConfig.replace(/\r\n?/g, "\n"), "utf8");
 
 run(["scripts/uninstall-codex.mjs"]);
 
@@ -48,6 +47,10 @@ const autoConfig = read("config.toml");
 assert(!autoConfig.match(/command\s*=\s*"(?:node|npm|npx)"/), "auto-update install used a mutable runtime command");
 assert(autoConfig.replaceAll("\\", "/").replace(/\/+/g, "/").includes("codex-lsp-bridge/bridge-entrypoint.mjs"), "auto-update install did not materialize a local bridge entrypoint");
 assert(!read("hooks.json").includes("codex-lsp-bridge:post-tool-diagnostics"), "auto-update install enabled the managed PostToolUse hook");
+
+run(["scripts/install-codex.mjs", "--auto-update", "--package", `file:${packageRoot}`]);
+const leftoverBackups = fs.readdirSync(codexHome).filter((entry) => entry.startsWith("codex-lsp-bridge.backup-"));
+assert(leftoverBackups.length === 0, "auto-update left an installer-owned backup behind");
 
 const rustDryRun = run(["scripts/install-codex.mjs", "--dry-run", "--with-rust-analyzer"]);
 assert(rustDryRun.stdout.includes("would install rust-analyzer"), "with-rust-analyzer dry run did not report rustup action");
