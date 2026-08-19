@@ -1,10 +1,9 @@
 import { createInterface } from "node:readline";
 import { stderr, stdin as input, stdout as output } from "node:process";
-import path from "node:path";
 import type { CommandService, WorkspaceCommandService } from "../core/command-service.js";
 import type { DisposalDeadline, ProcessTerminationResult } from "../core/process-ownership.js";
 import { McpLifecycleCoordinator, type McpLifecycleResult } from "./mcp-lifecycle.js";
-import { shouldSelectWorkspaceService } from "../core/workspace-root.js";
+import { resolvePathInsideWorkspaceRootSync, shouldSelectWorkspaceService } from "../core/workspace-root.js";
 import { filePathToUri } from "../utils/uri.js";
 
 type LspCommandService = CommandService | WorkspaceCommandService;
@@ -391,11 +390,9 @@ function normalizeFileParams(params: Record<string, unknown>): Record<string, un
 }
 
 function resolveFileInsideRoot(root: string, file: string): string {
-  const resolvedRoot = path.resolve(root);
-  const filePath = path.isAbsolute(file) ? path.resolve(file) : path.resolve(resolvedRoot, file);
-  const relative = path.relative(resolvedRoot, filePath);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new JsonRpcError(-32602, `File is outside workspace root: ${filePath}`);
+  try {
+    return resolvePathInsideWorkspaceRootSync(root, file);
+  } catch (error) {
+    throw new JsonRpcError(-32602, error instanceof Error ? error.message : "File is outside workspace root");
   }
-  return filePath;
 }

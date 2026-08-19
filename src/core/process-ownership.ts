@@ -36,6 +36,27 @@ export function createDisposalDeadline(
 export interface ProcessTerminationResult {
   clean: boolean;
   reasonCode: ProcessOwnershipReasonCode;
+  reasonCodes?: ProcessOwnershipReasonCode[];
+  failureCount?: number;
+}
+
+export function aggregateTerminationResults(
+  results: Array<ProcessTerminationResult | void | undefined>,
+  rejectedCount = 0
+): ProcessTerminationResult | void {
+  const completed = results.filter((result): result is ProcessTerminationResult => Boolean(result));
+  const failures = completed.filter((result) => !result.clean);
+  if (failures.length === 0 && rejectedCount === 0) return completed[0];
+
+  const reasonCodes = [...new Set(failures.flatMap((result) => result.reasonCodes ?? [result.reasonCode]))];
+  if (rejectedCount > 0) reasonCodes.push("termination_rejected");
+  const distinctReasonCodes = [...new Set(reasonCodes)];
+  return {
+    clean: false,
+    reasonCode: distinctReasonCodes[0] ?? "termination_rejected",
+    ...(distinctReasonCodes.length > 1 ? { reasonCodes: distinctReasonCodes } : {}),
+    failureCount: failures.length + rejectedCount
+  };
 }
 
 export interface OwnedChildProcess {

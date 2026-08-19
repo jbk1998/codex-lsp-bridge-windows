@@ -1,6 +1,11 @@
 import { JsonRpcLspClient } from "./json-rpc-lsp-client.js";
 import { LspSemanticProvider } from "./lsp-semantic-provider.js";
-import { createDisposalDeadline, type DisposalDeadline, type ProcessTerminationResult } from "./process-ownership.js";
+import {
+  aggregateTerminationResults,
+  createDisposalDeadline,
+  type DisposalDeadline,
+  type ProcessTerminationResult
+} from "./process-ownership.js";
 import type { SemanticProvider } from "./types.js";
 import {
   createLanguageServerConfig,
@@ -60,12 +65,13 @@ export class LspManager {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
     const sharedDeadline = deadline ?? createDisposalDeadline();
-    this.disposePromise = Promise.all([...this.providers.values()].map((provider) => provider.dispose(sharedDeadline))).then((results) => {
+    this.disposePromise = Promise.allSettled(
+      [...this.providers.values()].map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline)))
+    ).then((settled) => {
       this.providers.clear();
-      const failures = results.filter((result): result is ProcessTerminationResult => Boolean(result && !result.clean));
-      if (failures.length > 0) return failures[0];
-      const completed = results.find((result): result is ProcessTerminationResult => Boolean(result));
-      return completed;
+      const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
+      const rejectedCount = settled.filter((entry) => entry.status === "rejected").length;
+      return aggregateTerminationResults(results, rejectedCount);
     });
     return this.disposePromise;
   }

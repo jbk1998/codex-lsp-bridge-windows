@@ -69,6 +69,16 @@ export function canonicalizeTargetPathSync(targetPath: string): string {
   }
 }
 
+export function resolvePathInsideWorkspaceRootSync(rootPath: string, targetPath: string): string {
+  const resolvedRoot = canonicalizeWorkspaceRootSync(rootPath);
+  const resolvedTarget = path.isAbsolute(targetPath) ? path.resolve(targetPath) : path.resolve(resolvedRoot, targetPath);
+  const canonicalTarget = canonicalizeTargetPathSync(resolvedTarget);
+  if (!isPathInsideWorkspaceRootSync(canonicalTarget, resolvedRoot)) {
+    throw new Error(`Path is outside workspace root: ${resolvedTarget}`);
+  }
+  return canonicalTarget;
+}
+
 export function workspaceRootIdentitySync(rootPath: string): string {
   return normalizePathIdentity(realPathForIdentitySync(rootPath));
 }

@@ -11,7 +11,13 @@ import { runDoctor } from "./core/doctor.js";
 import { LspManager } from "./core/lsp-manager.js";
 import { revalidateNativeNodeRuntime, validateNativeNodeRuntime, type NativeNodeRuntimeValidation } from "./core/native-node-runtime.js";
 import { createDisposalDeadline, type DisposalDeadline, type ProcessTerminationResult } from "./core/process-ownership.js";
-import { canonicalizeWorkspaceRootSync, resolveExplicitWorkspaceRootSync, resolveRequestedRootSync, workspaceRootIdentitySync } from "./core/workspace-root.js";
+import {
+  resolvePathInsideWorkspaceRootSync,
+  canonicalizeWorkspaceRootSync,
+  resolveExplicitWorkspaceRootSync,
+  resolveRequestedRootSync,
+  workspaceRootIdentitySync
+} from "./core/workspace-root.js";
 import { supportedExtensionsForLanguage } from "./adapters/language-config.js";
 import { filePathToUri } from "./utils/uri.js";
 import { runStdioMcp } from "./transport/mcp.js";
@@ -414,12 +420,7 @@ function filterDiagnosticSummary(
 }
 
 function resolveDirectoryInsideRoot(root: string, dir: string): string {
-  const directory = path.resolve(root, dir);
-  const relative = path.relative(root, directory);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error(`Directory is outside workspace root: ${directory}`);
-  }
-  return directory;
+  return resolvePathInsideWorkspaceRootSync(root, dir);
 }
 
 function maxSourceRevision(summaries: Array<Awaited<ReturnType<WorkspaceCommandService["diagnostics"]>>>): number | undefined {
@@ -428,12 +429,7 @@ function maxSourceRevision(summaries: Array<Awaited<ReturnType<WorkspaceCommandS
 }
 
 function resolveFileInsideRoot(root: string, file: string): string {
-  const filePath = path.isAbsolute(file) ? path.resolve(file) : path.resolve(root, file);
-  const relative = path.relative(root, filePath);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error(`File is outside workspace root: ${filePath}`);
-  }
-  return filePath;
+  return resolvePathInsideWorkspaceRootSync(root, file);
 }
 
 function runPackageScript(scriptName: string, args: string[], runtimeValidation: NativeNodeRuntimeValidation): void {

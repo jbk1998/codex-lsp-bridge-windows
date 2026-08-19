@@ -14,6 +14,8 @@ export interface McpLifecycleResult {
   clean: boolean;
   activeRequestCount: number;
   reasonCode?: McpLifecycleReasonCode;
+  reasonCodes?: McpLifecycleReasonCode[];
+  cleanupPending?: boolean;
 }
 
 export interface McpLifecycleOptions {
@@ -32,6 +34,7 @@ export class McpLifecycleCoordinator {
   private readonly activeRequests = new Set<Promise<unknown>>();
   private closePromise: Promise<McpLifecycleResult> | undefined;
   private lifecycleState: McpLifecycleState = "open";
+  private pendingDisposal: Promise<ProcessTerminationResult | void> | undefined;
 
   constructor(private readonly options: McpLifecycleOptions = {}) {}
 
@@ -72,26 +75,49 @@ export class McpLifecycleCoordinator {
     let disposalTimedOut = false;
 
     try {
-      const disposal = this.options.dispose?.(deadline) ?? Promise.resolve(undefined);
-      termination = await withDeadline(disposal, deadline.deadlineAt);
+      const disposalPromise = Promise.resolve(this.options.dispose?.(deadline) ?? undefined);
+      this.pendingDisposal = disposalPromise;
+      const outcome = await observeDisposal(disposalPromise, deadline.deadlineAt);
+      if (outcome.kind === "timeout") disposalTimedOut = true;
+      else if (outcome.kind === "rejected") disposalFailed = true;
+      else termination = outcome.value;
+      if (outcome.kind !== "timeout") this.pendingDisposal = undefined;
+      else {
+        void disposalPromise.then(
+          () => this.clearPendingDisposal(disposalPromise),
+          () => this.clearPendingDisposal(disposalPromise)
+        );
+      }
     } catch {
-      disposalTimedOut = Date.now() >= deadline.deadlineAt;
-      disposalFailed = !disposalTimedOut;
+      this.pendingDisposal = undefined;
+      disposalFailed = true;
     }
 
-    let reasonCode: McpLifecycleReasonCode | undefined;
-    if (!drained) reasonCode = "active_requests_timeout";
-    else if (disposalTimedOut) reasonCode = "disposal_timeout";
-    else if (disposalFailed) reasonCode = "disposal_failed";
-    else if (termination && !termination.clean) reasonCode = termination.reasonCode;
-    const clean = reasonCode === undefined;
+    const reasonCodes: McpLifecycleReasonCode[] = [];
+    if (!drained) reasonCodes.push("active_requests_timeout");
+    if (disposalTimedOut) reasonCodes.push("disposal_timeout");
+    if (disposalFailed) reasonCodes.push("disposal_failed");
+    if (termination && !termination.clean) {
+      reasonCodes.push(termination.reasonCode);
+      reasonCodes.push(...(termination.reasonCodes ?? []));
+    }
+    const uniqueReasonCodes = [...new Set(reasonCodes)];
+    const cleanupPending = this.pendingDisposal !== undefined;
+    const clean = uniqueReasonCodes.length === 0 && !cleanupPending;
+    const reasonCode = uniqueReasonCodes[0];
     this.lifecycleState = clean ? "clean" : "non_clean";
     return {
       state: this.lifecycleState,
       clean,
       activeRequestCount: this.activeRequests.size,
-      ...(reasonCode ? { reasonCode } : {})
+      ...(reasonCode ? { reasonCode } : {}),
+      ...(uniqueReasonCodes.length > 1 ? { reasonCodes: uniqueReasonCodes } : {}),
+      ...(cleanupPending ? { cleanupPending: true } : {})
     };
+  }
+
+  private clearPendingDisposal(disposal: Promise<ProcessTerminationResult | void>): void {
+    if (this.pendingDisposal === disposal) this.pendingDisposal = undefined;
   }
 
   private async waitForActiveRequests(deadlineAt: number): Promise<boolean> {
@@ -109,19 +135,27 @@ function delay(timeoutMs: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, timeoutMs));
 }
 
-function withDeadline<T>(promise: Promise<T>, deadlineAt: number): Promise<T> {
+type DisposalObservation<T> =
+  | { kind: "fulfilled"; value: T }
+  | { kind: "rejected"; error: unknown }
+  | { kind: "timeout" };
+
+function observeDisposal<T>(promise: Promise<T>, deadlineAt: number): Promise<DisposalObservation<T>> {
   const remainingMs = Math.max(0, deadlineAt - Date.now());
-  if (remainingMs === 0) return Promise.reject(new Error("deadline exceeded"));
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error("deadline exceeded")), remainingMs);
+    if (remainingMs === 0) {
+      resolve({ kind: "timeout" });
+      return;
+    }
+    const timer = setTimeout(() => resolve({ kind: "timeout" }), remainingMs);
     promise.then(
       (value) => {
         clearTimeout(timer);
-        resolve(value);
+        resolve({ kind: "fulfilled", value });
       },
       (error) => {
         clearTimeout(timer);
-        reject(error);
+        resolve({ kind: "rejected", error });
       }
     );
   });

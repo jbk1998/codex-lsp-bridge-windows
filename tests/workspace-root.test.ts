@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   findWorkspaceRootSync,
   isPathInsideWorkspaceRootSync,
+  resolvePathInsideWorkspaceRootSync,
   resolveExplicitWorkspaceRootSync,
   resolveRequestedRootSync,
   shouldSelectWorkspaceService,
@@ -107,5 +108,25 @@ describe("workspace root resolution", () => {
     expect(workspaceRootIdentitySync(root)).toBe(workspaceRootIdentitySync(alias));
     expect(isPathInsideWorkspaceRootSync(path.join(alias, "src", "index.ts"), root)).toBe(true);
     expect(isPathInsideWorkspaceRootSync(path.join(aliasParent, "outside.ts"), root)).toBe(false);
+  });
+
+  it("rejects a target that enters an outside directory through a junction", async () => {
+    const root = await makeTemporaryDirectory("codex-lsp-root-boundary-");
+    const outside = await makeTemporaryDirectory("codex-lsp-root-outside-");
+    const linkedDirectory = path.join(root, "linked");
+    await fs.writeFile(path.join(root, "package.json"), "{}\n");
+    await fs.writeFile(path.join(outside, "escape.ts"), "export const escaped = true;\n");
+
+    try {
+      await fs.symlink(outside, linkedDirectory, "junction");
+    } catch (error) {
+      const errorCode = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+      if (process.platform === "win32" && errorCode === "EPERM") return;
+      throw error;
+    }
+
+    expect(() => resolvePathInsideWorkspaceRootSync(root, path.join("linked", "escape.ts"))).toThrow(
+      "outside workspace root"
+    );
   });
 });
