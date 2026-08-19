@@ -1,9 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { LspClient, ServerProcessConfig } from "./json-rpc-lsp-client.js";
+import type { DisposalDeadline, ProcessTerminationResult } from "./process-ownership.js";
 import { lspSeverityToText } from "./diagnostics.js";
 import type { Diagnostic, DiagnosticOptions, DiagnosticReport, DocumentPosition, HoverInfo, Location, Position, SemanticProvider, SymbolMatch } from "./types.js";
 import { canonicalizeFileUri, filePathToUri, uriToFilePath } from "../utils/uri.js";
+import { canonicalizeTargetPathSync, canonicalizeWorkspaceRootSync, isPathInsideWorkspaceRootSync } from "./workspace-root.js";
 
 interface LspDiagnostic {
   range: { start: Position; end: Position };
@@ -44,9 +46,18 @@ export interface LspSemanticProviderOptions {
   inferredProjectCompilerOptions?: Record<string, unknown>;
 }
 
+export type LspProviderState = "new" | "initializing" | "ready" | "exited" | "recovering" | "failed" | "closing";
+
 export class LspSemanticProvider implements SemanticProvider {
   private initialized = false;
   private workspaceDocumentOpened = false;
+  private state: LspProviderState = "new";
+  private generation = 0;
+  private initializationPromise: Promise<void> | undefined;
+  private recoveryPromise: Promise<void> | undefined;
+  private workspaceOpenPromise: Promise<void> | undefined;
+  private disposePromise: Promise<ProcessTerminationResult | void> | undefined;
+  private disposed = false;
   private diagnosticsByUri = new Map<string, Diagnostic[]>();
   private diagnosticsRevisionByUri = new Map<string, number>();
   private diagnosticsSourceRevisionByUri = new Map<string, number>();
@@ -67,23 +78,32 @@ export class LspSemanticProvider implements SemanticProvider {
   private client: LspClient;
 
   constructor(private readonly options: LspSemanticProviderOptions) {
-    this.rootRealPathPromise = fs.realpath(options.rootPath);
-    this.client = options.clientFactory(options.server);
-    this.client.on("notification", (method: string, params: unknown) => {
-      if (method === "textDocument/publishDiagnostics") {
-        this.captureDiagnostics(params);
-      }
+    this.rootRealPathPromise = fs.realpath(options.rootPath).then(() => canonicalizeWorkspaceRootSync(options.rootPath)).catch(() => canonicalizeWorkspaceRootSync(options.rootPath));
+    this.client = this.createClient();
+  }
+
+  private createClient(): LspClient {
+    const client = this.options.clientFactory(this.options.server);
+    client.on("notification", (method: string, params: unknown) => {
+      if (!this.disposed && client === this.client && method === "textDocument/publishDiagnostics") this.captureDiagnostics(params);
     });
-    this.client.on("exit", () => {
-      this.initialized = false;
-      this.workspaceDocumentOpened = false;
-      this.diagnosticsByUri.clear();
-      this.diagnosticsRevisionByUri.clear();
-      this.diagnosticsSourceRevisionByUri.clear();
-      this.pendingSourceRevisionByUri.clear();
-      this.openedDocumentsByUri.clear();
-      this.cancelDiagnosticsWaiters();
-    });
+    client.on("exit", () => this.handleClientExit(client));
+    return client;
+  }
+
+  private handleClientExit(client: LspClient): void {
+    if (this.disposed || client !== this.client || this.state === "closing") return;
+    this.generation += 1;
+    this.initialized = false;
+    this.workspaceDocumentOpened = false;
+    this.workspaceOpenPromise = undefined;
+    this.state = "exited";
+    this.diagnosticsByUri.clear();
+    this.diagnosticsRevisionByUri.clear();
+    this.diagnosticsSourceRevisionByUri.clear();
+    this.pendingSourceRevisionByUri.clear();
+    this.configurationIssues = [];
+    this.cancelDiagnosticsWaiters();
   }
 
   async diagnostics(uri?: string, options: DiagnosticOptions = {}): Promise<DiagnosticReport> {
@@ -143,10 +163,7 @@ export class LspSemanticProvider implements SemanticProvider {
       await this.ensureInitialized();
       return { ok: true };
     } catch (error) {
-      if (isMissingLanguageServerError(error)) {
-        return { ok: false, reason: error instanceof Error ? error.message : String(error) };
-      }
-      throw error;
+      return { ok: false, reason: formatInitializationFailure(error) };
     }
   }
 
@@ -225,7 +242,10 @@ export class LspSemanticProvider implements SemanticProvider {
     };
   }
 
-  async dispose(): Promise<void> {
+  async dispose(deadline?: DisposalDeadline): Promise<ProcessTerminationResult | void> {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposed = true;
+    this.state = "closing";
     if (this.initialized) {
       for (const uri of this.openedDocumentsByUri.keys()) {
         this.client.notify("textDocument/didClose", {
@@ -234,54 +254,116 @@ export class LspSemanticProvider implements SemanticProvider {
       }
     }
     this.openedDocumentsByUri.clear();
-    await this.client.stop();
+    this.disposePromise = this.client.stop(deadline);
+    return this.disposePromise;
   }
 
   private async ensureInitialized(): Promise<void> {
-    if (this.initialized) return;
+    if (this.disposed) throw new Error("LSP provider is closing");
+    if (this.initialized && this.state === "ready") return;
+    if (this.state === "failed") throw new Error("LSP server recovery failed");
 
-    await this.client.request("initialize", {
-      processId: process.pid,
-      rootPath: this.options.rootPath,
-      rootUri: filePathToUri(this.options.rootPath),
-      workspaceFolders: [
-        {
-          uri: filePathToUri(this.options.rootPath),
-          name: path.basename(this.options.rootPath)
-        }
-      ],
-      capabilities: {
-        textDocument: {
-          publishDiagnostics: {},
-          definition: {},
-          references: {},
-          hover: {}
-        },
-        workspace: {
-          symbol: {}
-        }
-      }
-    });
-    this.client.notify("initialized", {});
-
-    if (this.options.inferredProjectCompilerOptions) {
-      try {
-        await this.client.request("workspace/executeCommand", {
-          command: "typescript.tsserverRequest",
-          arguments: [
-            "compilerOptionsForInferredProjects",
-            { options: this.options.inferredProjectCompilerOptions },
-            { expectsResult: true }
-          ]
+    if (this.state === "exited" || (this.state === "recovering" && this.recoveryPromise)) {
+      if (!this.recoveryPromise) {
+        const generation = this.generation;
+        this.state = "recovering";
+        const recovery = this.recoverGeneration(generation);
+        const trackedRecovery = recovery.finally(() => {
+          if (this.recoveryPromise === trackedRecovery) this.recoveryPromise = undefined;
         });
-      } catch (error) {
-        this.configurationIssues.push(
-          `Could not apply inferred TypeScript project options: ${error instanceof Error ? error.message : String(error)}`
-        );
+        this.recoveryPromise = trackedRecovery;
       }
+      return this.recoveryPromise;
     }
 
-    this.initialized = true;
+    if (!this.initializationPromise) {
+      this.state = "initializing";
+      const initialization = this.initializeGeneration(this.client, this.generation, false);
+      const trackedInitialization = initialization.finally(() => {
+        if (this.initializationPromise === trackedInitialization) this.initializationPromise = undefined;
+      });
+      this.initializationPromise = trackedInitialization;
+    }
+    return this.initializationPromise;
+  }
+
+  private async recoverGeneration(generation: number): Promise<void> {
+    try {
+      const client = this.createClient();
+      this.client = client;
+      await this.initializeGeneration(client, generation, true);
+    } catch (error) {
+      if (!this.disposed) this.state = "failed";
+      throw error;
+    }
+  }
+
+  private async initializeGeneration(client: LspClient, generation: number, reopenDocuments: boolean): Promise<void> {
+    try {
+      await client.request("initialize", {
+        processId: process.pid,
+        rootPath: this.options.rootPath,
+        rootUri: filePathToUri(this.options.rootPath),
+        workspaceFolders: [
+          {
+            uri: filePathToUri(this.options.rootPath),
+            name: path.basename(this.options.rootPath)
+          }
+        ],
+        capabilities: {
+          textDocument: {
+            publishDiagnostics: {},
+            definition: {},
+            references: {},
+            hover: {}
+          },
+          workspace: {
+            symbol: {}
+          }
+        }
+      });
+      client.notify("initialized", {});
+
+      this.configurationIssues = [];
+      if (this.options.inferredProjectCompilerOptions) {
+        try {
+          await client.request("workspace/executeCommand", {
+            command: "typescript.tsserverRequest",
+            arguments: [
+              "compilerOptionsForInferredProjects",
+              { options: this.options.inferredProjectCompilerOptions },
+              { expectsResult: true }
+            ]
+          });
+        } catch (error) {
+          this.configurationIssues.push(
+            `Could not apply inferred TypeScript project options: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      }
+
+      if (reopenDocuments) {
+        for (const [uri, document] of this.openedDocumentsByUri) {
+          this.pendingSourceRevisionByUri.set(uri, document.version);
+          client.notify("textDocument/didOpen", {
+            textDocument: {
+              uri,
+              languageId: this.options.languageId,
+              version: document.version,
+              text: document.text
+            }
+          });
+        }
+        this.workspaceDocumentOpened = this.openedDocumentsByUri.size > 0;
+      }
+
+      if (generation !== this.generation || this.disposed) throw new Error("LSP server exited during initialization");
+      this.initialized = true;
+      this.state = "ready";
+    } catch (error) {
+      if (!this.disposed) this.state = "failed";
+      throw error;
+    }
   }
 
   private async openOrUpdateDocument(uri: string): Promise<{ uri: string; filePath: string; changed: boolean; sourceRevision: number }> {
@@ -322,7 +404,17 @@ export class LspSemanticProvider implements SemanticProvider {
 
   private async ensureWorkspaceDocumentOpened(): Promise<void> {
     if (this.workspaceDocumentOpened) return;
+    if (this.workspaceOpenPromise) return this.workspaceOpenPromise;
 
+    const opening = this.openWorkspaceDocument();
+    const trackedOpening = opening.finally(() => {
+      if (this.workspaceOpenPromise === trackedOpening) this.workspaceOpenPromise = undefined;
+    });
+    this.workspaceOpenPromise = trackedOpening;
+    return trackedOpening;
+  }
+
+  private async openWorkspaceDocument(): Promise<void> {
     const seedFile = await this.findWorkspaceSeedFile();
     if (!seedFile) {
       throw new Error(`No ${this.options.languageId} workspace seed file found under ${this.options.rootPath}`);
@@ -424,13 +516,14 @@ export class LspSemanticProvider implements SemanticProvider {
     }
 
     const realRootPath = await this.rootRealPathPromise;
-    if (!isInsideRoot(realFilePath, realRootPath)) {
+    const canonicalFilePath = canonicalizeTargetPathSync(realFilePath);
+    if (!isPathInsideWorkspaceRootSync(canonicalFilePath, realRootPath)) {
       throw new Error(`File is outside workspace root: ${inputPath}`);
     }
 
     return {
-      uri: filePathToUri(realFilePath),
-      filePath: realFilePath
+      uri: filePathToUri(canonicalFilePath),
+      filePath: canonicalFilePath
     };
   }
 
@@ -498,6 +591,13 @@ function isMissingLanguageServerError(error: unknown): boolean {
   return error instanceof Error && error.message.startsWith("Failed to start LSP server");
 }
 
+function formatInitializationFailure(error: unknown): string {
+  if (isMissingLanguageServerError(error)) return error instanceof Error ? error.message : "Language server unavailable";
+  if (error instanceof Error && error.message.includes("LSP server exited")) return "LSP server exited before the request completed (server_exited)";
+  if (error instanceof Error && error.message === "LSP server recovery failed") return "LSP server recovery failed (server_exited)";
+  return error instanceof Error ? `${error.message} (server_exited)` : "Language server unavailable (server_exited)";
+}
+
 function toLspPosition(position: DocumentPosition): Position {
   return {
     line: position.line - 1,
@@ -516,10 +616,6 @@ async function fileExists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function isInsideRoot(filePath: string, rootPath: string): boolean {
-  return filePath === rootPath || filePath.startsWith(`${rootPath}${path.sep}`);
 }
 
 function symbolKindName(kind: number): string {

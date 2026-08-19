@@ -1,16 +1,24 @@
-import { createInterface } from "node:readline/promises";
-import { stdin as input, stdout as output } from "node:process";
+import { createInterface } from "node:readline";
+import { stderr, stdin as input, stdout as output } from "node:process";
 import path from "node:path";
 import type { CommandService, WorkspaceCommandService } from "../core/command-service.js";
+import type { DisposalDeadline, ProcessTerminationResult } from "../core/process-ownership.js";
+import { McpLifecycleCoordinator, type McpLifecycleResult } from "./mcp-lifecycle.js";
 import { shouldSelectWorkspaceService } from "../core/workspace-root.js";
 import { filePathToUri } from "../utils/uri.js";
 
 type LspCommandService = CommandService | WorkspaceCommandService;
 
-interface McpRuntime {
+export interface McpRuntime {
   status?: () => unknown;
   directoryDiagnostics?: (request: { dir: string; severity?: string; root?: string; maxFiles?: number; timeoutBudgetMs?: number; concurrency?: number }) => Promise<unknown>;
   serviceForParams?: (params: Record<string, unknown>) => LspCommandService;
+  dispose?: (deadline: DisposalDeadline) => Promise<ProcessTerminationResult | void>;
+  lifecycle?: McpLifecycleCoordinator;
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
+  errorOutput?: NodeJS.WritableStream;
+  setExitCode?: (code: number) => void;
 }
 
 interface Request {
@@ -38,7 +46,7 @@ class JsonRpcError extends Error {
   }
 }
 
-const tools = [
+export const mcpTools = [
   {
     name: "lsp_diagnostics",
     description: "Return compressed LSP diagnostics for a file or currently opened workspace documents.",
@@ -163,14 +171,41 @@ const tools = [
   }
 ];
 
-export async function runStdioMcp(service: LspCommandService, runtime: McpRuntime = {}): Promise<void> {
-  const rl = createInterface({ input, output });
+export async function runStdioMcp(service: LspCommandService, runtime: McpRuntime = {}): Promise<McpLifecycleResult> {
+  const outputStream = runtime.output ?? output;
+  const errorOutput = runtime.errorOutput ?? stderr;
+  const lifecycle = runtime.lifecycle ?? new McpLifecycleCoordinator({ dispose: runtime.dispose });
+  const rl = createInterface({ input: runtime.input ?? input, crlfDelay: Infinity });
 
-  for await (const line of rl) {
-    if (line.trim().length === 0) continue;
-    const response = await handleJsonRpcLine(service, line, runtime);
-    if (response) output.write(`${JSON.stringify(response)}\n`);
+  let dispatchFailure: unknown;
+  rl.on("line", (line) => {
+    if (line.trim().length === 0) return;
+    void lifecycle
+      .dispatch(async () => {
+        const response = await handleJsonRpcLine(service, line, runtime);
+        if (response) await writeMcpLine(outputStream, JSON.stringify(response));
+      })
+      .catch((error) => {
+        dispatchFailure ??= error;
+      });
+  });
+
+  await new Promise<void>((resolve) => rl.once("close", resolve));
+  const result = await lifecycle.close();
+  if (dispatchFailure || !result.clean) {
+    const reason = result.reasonCode ?? "dispatch_failed";
+    errorOutput.write(`MCP lifecycle ended non-cleanly: ${reason}\n`);
+    runtime.setExitCode?.(1);
   }
+  return result;
+}
+
+async function writeMcpLine(outputStream: NodeJS.WritableStream, line: string): Promise<void> {
+  if (outputStream.write(`${line}\n`)) return;
+  await new Promise<void>((resolve, reject) => {
+    outputStream.once("drain", resolve);
+    outputStream.once("error", reject);
+  });
 }
 
 export async function handleJsonRpcLine(
@@ -179,7 +214,7 @@ export async function handleJsonRpcLine(
   runtime: McpRuntime = {}
 ): Promise<JsonRpcResponse | undefined> {
   try {
-    return handleRequest(service, JSON.parse(line) as Request, runtime);
+    return await handleRequest(service, JSON.parse(line) as Request, runtime);
   } catch {
     return {
       jsonrpc: "2.0",
@@ -233,7 +268,7 @@ export async function dispatch(service: LspCommandService, request: Request, run
     };
   }
   if (request.method === "tools/list") {
-    return { tools };
+    return { tools: mcpTools };
   }
   if (request.method === "tools/call") {
     const result = await callTool(service, params, runtime);

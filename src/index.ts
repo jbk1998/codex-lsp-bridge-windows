@@ -10,7 +10,8 @@ import { resolveDiagnosticsTimeout } from "./core/diagnostics-timeout.js";
 import { runDoctor } from "./core/doctor.js";
 import { LspManager } from "./core/lsp-manager.js";
 import { revalidateNativeNodeRuntime, validateNativeNodeRuntime, type NativeNodeRuntimeValidation } from "./core/native-node-runtime.js";
-import { resolveExplicitWorkspaceRootSync, resolveRequestedRootSync } from "./core/workspace-root.js";
+import { createDisposalDeadline, type DisposalDeadline, type ProcessTerminationResult } from "./core/process-ownership.js";
+import { canonicalizeWorkspaceRootSync, resolveExplicitWorkspaceRootSync, resolveRequestedRootSync, workspaceRootIdentitySync } from "./core/workspace-root.js";
 import { supportedExtensionsForLanguage } from "./adapters/language-config.js";
 import { filePathToUri } from "./utils/uri.js";
 import { runStdioMcp } from "./transport/mcp.js";
@@ -54,17 +55,23 @@ async function main(): Promise<void> {
   const config = loadConfig(root);
   const managers = new Map<string, LspManager>();
   const sourceFileListCache = new Map<string, SourceFileListCacheEntry>();
+  let mcpOwnsDisposal = false;
+  const disposeManagers = async (deadline: DisposalDeadline): Promise<ProcessTerminationResult | void> => {
+    const results = await Promise.all([...managers.values()].map((manager) => manager.dispose(deadline)));
+    return results.find((result): result is ProcessTerminationResult => Boolean(result && !result.clean)) ?? results.find(Boolean);
+  };
   const serviceForRoot = (serviceRoot: string, languageOverride?: SupportedLanguage) => {
-    const resolvedRoot = path.resolve(serviceRoot);
+    const resolvedRoot = canonicalizeWorkspaceRootSync(serviceRoot);
+    const rootIdentity = workspaceRootIdentitySync(resolvedRoot);
     const rootConfig = loadConfig(resolvedRoot);
-    let scopedManager = managers.get(resolvedRoot);
+    let scopedManager = managers.get(rootIdentity);
     if (!scopedManager) {
       const diagnosticsTimeout = resolveDiagnosticsTimeout(resolvedRoot, rootConfig.diagnosticsTimeoutMs);
       scopedManager = new LspManager(resolvedRoot, {
         diagnosticsTimeoutMs: diagnosticsTimeout.timeoutMs,
         languageServers: rootConfig.languageServers
       });
-      managers.set(resolvedRoot, scopedManager);
+      managers.set(rootIdentity, scopedManager);
     }
     return new WorkspaceCommandService(scopedManager, languageOverride ?? rootConfig.defaultLanguage);
   };
@@ -80,6 +87,10 @@ async function main(): Promise<void> {
 
     if (args[0] === "mcp") {
       await runStdioMcp(service, {
+        dispose: (deadline) => {
+          mcpOwnsDisposal = true;
+          return disposeManagers(deadline);
+        },
         status: () => runDoctor(root),
         serviceForParams: (params) => serviceForRoot(resolveRequestedRootSync(root, params), language),
         directoryDiagnostics: async ({ dir, severity, root: requestedRoot, maxFiles, timeoutBudgetMs, concurrency }) => {
@@ -151,7 +162,7 @@ async function main(): Promise<void> {
     printUsage("stderr");
     process.exitCode = 1;
   } finally {
-    await Promise.all([...managers.values()].map((manager) => manager.dispose()));
+    if (!mcpOwnsDisposal) await disposeManagers(createDisposalDeadline());
   }
 }
 
@@ -176,7 +187,7 @@ function readPosition(args: string[]): { file: string; line: number; character: 
   if (!file || line === undefined || character === undefined) {
     throw new Error("--file, --line, and --character must be provided together");
   }
-  const root = path.resolve(readOption(args, "--root") ?? process.cwd());
+  const root = canonicalizeWorkspaceRootSync(readOption(args, "--root") ?? process.cwd());
   return { file: resolveFileInsideRoot(root, file), line, character };
 }
 

@@ -1,5 +1,6 @@
 import { JsonRpcLspClient } from "./json-rpc-lsp-client.js";
 import { LspSemanticProvider } from "./lsp-semantic-provider.js";
+import { createDisposalDeadline, type DisposalDeadline, type ProcessTerminationResult } from "./process-ownership.js";
 import type { SemanticProvider } from "./types.js";
 import {
   createLanguageServerConfig,
@@ -8,6 +9,7 @@ import {
   type SupportedLanguage
 } from "../adapters/language-config.js";
 import { resolveInferredTypeScriptProjectOptions } from "./typescript-project.js";
+import { canonicalizeWorkspaceRootSync } from "./workspace-root.js";
 
 export interface LspManagerOptions {
   diagnosticsTimeoutMs?: number;
@@ -16,13 +18,20 @@ export interface LspManagerOptions {
 
 export class LspManager {
   private readonly providers = new Map<SupportedLanguage, SemanticProvider>();
+  private disposePromise: Promise<ProcessTerminationResult | void> | undefined;
+  private disposed = false;
 
   constructor(
-    private readonly rootPath: string,
+    rootPath: string,
     private readonly options: LspManagerOptions = {}
-  ) {}
+  ) {
+    this.rootPath = canonicalizeWorkspaceRootSync(rootPath);
+  }
+
+  private readonly rootPath: string;
 
   forLanguage(language: SupportedLanguage): SemanticProvider {
+    if (this.disposed) throw new Error("LSP manager is disposed");
     const existing = this.providers.get(language);
     if (existing) return existing;
 
@@ -47,8 +56,17 @@ export class LspManager {
     return this.forLanguage(detectLanguageFromFile(filePath));
   }
 
-  async dispose(): Promise<void> {
-    await Promise.all([...this.providers.values()].map((provider) => provider.dispose()));
-    this.providers.clear();
+  async dispose(deadline?: DisposalDeadline): Promise<ProcessTerminationResult | void> {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposed = true;
+    const sharedDeadline = deadline ?? createDisposalDeadline();
+    this.disposePromise = Promise.all([...this.providers.values()].map((provider) => provider.dispose(sharedDeadline))).then((results) => {
+      this.providers.clear();
+      const failures = results.filter((result): result is ProcessTerminationResult => Boolean(result && !result.clean));
+      if (failures.length > 0) return failures[0];
+      const completed = results.find((result): result is ProcessTerminationResult => Boolean(result));
+      return completed;
+    });
+    return this.disposePromise;
   }
 }

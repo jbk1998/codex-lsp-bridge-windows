@@ -1,8 +1,28 @@
+import { EventEmitter } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { createServerRequestResponse, JsonRpcLspClient, prepareSpawnCommand } from "../src/core/json-rpc-lsp-client.js";
+import { createDisposalDeadline } from "../src/core/process-ownership.js";
+
+class FakeChild extends EventEmitter {
+  readonly stdout = new PassThrough();
+  readonly stderr = new PassThrough();
+  readonly stdin = new PassThrough();
+  readonly pid = 42;
+  exitCode: number | null = null;
+  signalCode = null;
+  killCalls = 0;
+
+  kill(): boolean {
+    this.killCalls += 1;
+    this.exitCode = 1;
+    this.emit("exit", 1, null);
+    return true;
+  }
+}
 
 describe("JsonRpcLspClient", () => {
   it("rejects requests instead of crashing when the language server command is missing", async () => {
@@ -34,6 +54,21 @@ describe("JsonRpcLspClient", () => {
       "\"\"C:\\Program Files\\nodejs\\typescript-language-server.cmd\" \"--stdio\" \"--log-level\" \"info\"\""
     ]);
     expect(prepared.windowsVerbatimArguments).toBe(true);
+  });
+
+  it("bounds an unresponsive shutdown and reports observed ownership", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never }
+    );
+    const initialize = client.request("initialize").catch(() => undefined);
+
+    const result = await client.stop(createDisposalDeadline(Date.now(), 100, 5, 20));
+
+    expect(result).toEqual({ clean: true, reasonCode: "owned_child_exit" });
+    expect(child.killCalls).toBe(1);
+    await initialize;
   });
 
   it("rewrites npm Windows shims to direct Node entrypoints", async () => {

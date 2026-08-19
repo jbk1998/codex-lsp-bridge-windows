@@ -2,6 +2,14 @@ import { EventEmitter } from "node:events";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import {
+  createDisposalDeadline,
+  createProcessOwnership,
+  type DisposalDeadline,
+  type OwnedChildProcess,
+  type ProcessOwnership,
+  type ProcessTerminationResult
+} from "./process-ownership.js";
 
 export interface JsonRpcMessage {
   jsonrpc: "2.0";
@@ -30,31 +38,46 @@ export interface LspClient {
   on(eventName: "exit", listener: (event: { code: number | null; signal: NodeJS.Signals | null }) => void): this;
   request<T>(method: string, params?: unknown): Promise<T>;
   notify(method: string, params?: unknown): void;
-  stop(): Promise<void>;
+  stop(deadline?: DisposalDeadline): Promise<ProcessTerminationResult | void>;
+}
+
+export interface JsonRpcLspClientOptions {
+  spawnProcess?: typeof spawn;
+  ownershipFactory?: (child: ChildProcessWithoutNullStreams, config: ServerProcessConfig, prepared: PreparedSpawnCommand) => ProcessOwnership;
 }
 
 export class JsonRpcLspClient extends EventEmitter implements LspClient {
   private process: ChildProcessWithoutNullStreams | undefined;
   private nextId = 1;
   private buffer = Buffer.alloc(0);
+  private closing = false;
+  private stopPromise: Promise<ProcessTerminationResult | void> | undefined;
+  private ownership: ProcessOwnership | undefined;
   private readonly pending = new Map<
     number,
     { resolve: (value: unknown) => void; reject: (reason: Error) => void }
   >();
 
-  constructor(private readonly config: ServerProcessConfig) {
+  constructor(private readonly config: ServerProcessConfig, private readonly options: JsonRpcLspClientOptions = {}) {
     super();
   }
 
   start(): void {
     if (this.process) return;
+    if (this.closing) throw new Error("LSP server is closing");
 
     const prepared = prepareSpawnCommand(this.config);
-    this.process = spawn(prepared.command, prepared.args, {
+    const spawnProcess = this.options.spawnProcess ?? spawn;
+    this.process = spawnProcess(prepared.command, prepared.args, {
       cwd: this.config.cwd,
       stdio: "pipe",
       windowsVerbatimArguments: prepared.windowsVerbatimArguments
     });
+    this.ownership = this.options.ownershipFactory
+      ? this.options.ownershipFactory(this.process, this.config, prepared)
+      : createProcessOwnership(this.process as unknown as OwnedChildProcess, {
+          wrapper: prepared.command.toLowerCase().endsWith("cmd.exe") || prepared.command.toLowerCase().endsWith("cmd")
+        });
 
     this.process.stdout.on("data", (chunk: Buffer) => this.readChunk(chunk));
     this.process.stderr.on("data", (chunk: Buffer) => {
@@ -64,17 +87,26 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
       const error = new Error(`Failed to start LSP server "${this.config.command}": ${cause.message}`);
       this.rejectPending(error);
       this.process = undefined;
+      this.ownership = undefined;
+      this.closing = false;
       this.emit("exit", { code: null, signal: null });
     });
     this.process.on("exit", (code, signal) => {
       const error = new Error(`LSP server exited with code ${code ?? "null"} signal ${signal ?? "null"}`);
       this.rejectPending(error);
       this.process = undefined;
+      this.ownership = undefined;
+      this.closing = false;
       this.emit("exit", { code, signal });
     });
   }
 
   async request<T>(method: string, params?: unknown): Promise<T> {
+    return this.requestInternal(method, params, false);
+  }
+
+  private requestInternal<T>(method: string, params: unknown, allowClosing: boolean): Promise<T> {
+    if (this.closing && !allowClosing) return Promise.reject(new Error("LSP server is closing"));
     this.start();
     const id = this.nextId++;
     const message: JsonRpcMessage = { jsonrpc: "2.0", id, method, params };
@@ -91,22 +123,46 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   }
 
   notify(method: string, params?: unknown): void {
+    this.notifyInternal(method, params, false);
+  }
+
+  private notifyInternal(method: string, params: unknown, allowClosing: boolean): void {
+    if (this.closing && !allowClosing) throw new Error("LSP server is closing");
     this.start();
     this.write({ jsonrpc: "2.0", method, params });
   }
 
-  async stop(): Promise<void> {
+  async stop(deadline = createDisposalDeadline()): Promise<ProcessTerminationResult | void> {
+    if (this.stopPromise) return this.stopPromise;
     const process = this.process;
-    if (!process) return;
+    const ownership = this.ownership;
+    if (!process || !ownership) return undefined;
 
+    this.closing = true;
+    this.stopPromise = this.stopProcess(process, ownership, deadline);
+    const result = await this.stopPromise;
+    if (!this.process || process.exitCode !== null || process.signalCode !== null) this.closing = false;
+    this.stopPromise = undefined;
+    return result;
+  }
+
+  private async stopProcess(
+    process: ChildProcessWithoutNullStreams,
+    ownership: ProcessOwnership,
+    deadline: DisposalDeadline
+  ): Promise<ProcessTerminationResult> {
     try {
-      await this.request("shutdown");
-      this.notify("exit");
-      await waitForExit(process, 1500);
-    } finally {
-      if (process.exitCode === null && !process.killed) process.kill();
-      this.process = undefined;
+      const shutdownDeadline = Math.min(deadline.deadlineAt, Date.now() + deadline.shutdownRequestMs);
+      const shutdown = this.requestInternal("shutdown", undefined, true);
+      await withDeadline(shutdown, shutdownDeadline);
+      this.notifyInternal("exit", undefined, true);
+    } catch {
+      // A language server that does not answer shutdown is handled by the owned-child boundary below.
     }
+    if (process.exitCode !== null || process.signalCode !== null) {
+      return { clean: true, reasonCode: "already_exited" };
+    }
+    return ownership.terminate(Math.min(deadline.deadlineAt, Date.now() + deadline.childExitGraceMs));
   }
 
   private write(message: JsonRpcMessage): void {
@@ -257,13 +313,20 @@ function isWorkspaceConfigurationParams(value: unknown): value is { items: unkno
   return Array.isArray((value as { items?: unknown }).items);
 }
 
-function waitForExit(process: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<void> {
-  if (process.exitCode !== null) return Promise.resolve();
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, timeoutMs);
-    process.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
+function withDeadline<T>(promise: Promise<T>, deadlineAt: number): Promise<T> {
+  const remainingMs = Math.max(0, deadlineAt - Date.now());
+  if (remainingMs === 0) return Promise.reject(new Error("deadline exceeded"));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("deadline exceeded")), remainingMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
   });
 }

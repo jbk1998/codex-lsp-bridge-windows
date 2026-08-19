@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -25,7 +25,7 @@ const workspaceRootMarkers = [
 export function resolveRequestedRootSync(fallbackRoot: string, params: Record<string, unknown>): string {
   if (typeof params.root === "string") return resolveExplicitWorkspaceRootSync(params.root);
 
-  const resolvedFallbackRoot = path.resolve(fallbackRoot);
+  const resolvedFallbackRoot = canonicalizeWorkspaceRootSync(fallbackRoot);
   const target = readAbsoluteWorkspaceTarget(params);
   if (!target || isInsideRoot(target.path, resolvedFallbackRoot)) return resolvedFallbackRoot;
 
@@ -33,7 +33,7 @@ export function resolveRequestedRootSync(fallbackRoot: string, params: Record<st
 }
 
 export function resolveExplicitWorkspaceRootSync(root: string): string {
-  const resolvedRoot = path.resolve(root);
+  const resolvedRoot = canonicalizeWorkspaceRootSync(root);
   if (!isWorkspaceRootSync(resolvedRoot)) {
     throw new Error(`Workspace root is not recognized: ${resolvedRoot}`);
   }
@@ -44,11 +44,40 @@ export function findWorkspaceRootSync(startDirectory: string): string | undefine
   let current = path.resolve(startDirectory);
 
   while (true) {
-    if (isWorkspaceRootSync(current)) return current;
+    if (isWorkspaceRootSync(current)) return canonicalizeWorkspaceRootSync(current);
     const parent = path.dirname(current);
     if (parent === current) return undefined;
     current = parent;
   }
+}
+
+export function canonicalizeWorkspaceRootSync(rootPath: string): string {
+  const resolvedRoot = path.resolve(rootPath);
+  try {
+    return normalizePathForAccess(realpathSync(resolvedRoot));
+  } catch {
+    return normalizePathForAccess(resolvedRoot);
+  }
+}
+
+export function canonicalizeTargetPathSync(targetPath: string): string {
+  const resolvedTarget = path.resolve(targetPath);
+  try {
+    return normalizePathForAccess(realpathSync(resolvedTarget));
+  } catch {
+    return normalizePathForAccess(resolvedTarget);
+  }
+}
+
+export function workspaceRootIdentitySync(rootPath: string): string {
+  return normalizePathIdentity(realPathForIdentitySync(rootPath));
+}
+
+export function isPathInsideWorkspaceRootSync(targetPath: string, rootPath: string): boolean {
+  const target = normalizePathIdentity(realPathForIdentitySync(targetPath));
+  const root = workspaceRootIdentitySync(rootPath);
+  const relative = path.relative(root, target);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 export function shouldSelectWorkspaceService(params: Record<string, unknown>): boolean {
@@ -82,6 +111,35 @@ function readAbsoluteWorkspaceTarget(
 }
 
 function isInsideRoot(targetPath: string, rootPath: string): boolean {
-  const relative = path.relative(rootPath, targetPath);
+  const relative = path.relative(workspaceRootIdentitySync(rootPath), normalizePathIdentity(realPathForIdentitySync(targetPath)));
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+function normalizePathIdentity(targetPath: string): string {
+  const normalized = path.normalize(targetPath);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function normalizePathForAccess(targetPath: string): string {
+  return path.normalize(targetPath);
+}
+
+function realPathForIdentitySync(targetPath: string): string {
+  let current = path.resolve(targetPath);
+  const missingSegments: string[] = [];
+  try {
+    while (true) {
+      try {
+        const resolvedCurrent = realpathSync.native(current);
+        return path.join(resolvedCurrent, ...missingSegments.reverse());
+      } catch {
+        const parent = path.dirname(current);
+        if (parent === current) return path.resolve(targetPath);
+        missingSegments.push(path.basename(current));
+        current = parent;
+      }
+    }
+  } catch {
+    return path.resolve(targetPath);
+  }
 }

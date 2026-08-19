@@ -4,9 +4,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   findWorkspaceRootSync,
+  isPathInsideWorkspaceRootSync,
   resolveExplicitWorkspaceRootSync,
   resolveRequestedRootSync,
-  shouldSelectWorkspaceService
+  shouldSelectWorkspaceService,
+  workspaceRootIdentitySync
 } from "../src/core/workspace-root.js";
 
 const temporaryRoots: string[] = [];
@@ -86,5 +88,24 @@ describe("workspace root resolution", () => {
     const markerlessRoot = await makeTemporaryDirectory("codex-lsp-markerless-");
 
     expect(() => resolveExplicitWorkspaceRootSync(markerlessRoot)).toThrow("Workspace root is not recognized");
+  });
+
+  it("coalesces a directory junction alias while preserving the root boundary", async () => {
+    const root = await makeTemporaryDirectory("codex-lsp-canonical-root-");
+    const aliasParent = await makeTemporaryDirectory("codex-lsp-canonical-alias-");
+    const alias = path.join(aliasParent, "alias");
+    await fs.writeFile(path.join(root, "package.json"), "{}\n");
+
+    try {
+      await fs.symlink(root, alias, "junction");
+    } catch (error) {
+      const errorCode = error && typeof error === "object" && "code" in error ? String(error.code) : undefined;
+      if (process.platform === "win32" && errorCode === "EPERM") return;
+      throw error;
+    }
+
+    expect(workspaceRootIdentitySync(root)).toBe(workspaceRootIdentitySync(alias));
+    expect(isPathInsideWorkspaceRootSync(path.join(alias, "src", "index.ts"), root)).toBe(true);
+    expect(isPathInsideWorkspaceRootSync(path.join(aliasParent, "outside.ts"), root)).toBe(false);
   });
 });
