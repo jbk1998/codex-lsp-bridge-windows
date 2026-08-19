@@ -3,11 +3,12 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LspSemanticProvider } from "../src/core/lsp-semantic-provider.js";
 import { JsonRpcLspClient } from "../src/core/json-rpc-lsp-client.js";
 import type { LspClient, ServerProcessConfig } from "../src/core/json-rpc-lsp-client.js";
 import { filePathToUri } from "../src/utils/uri.js";
+import { canonicalizeTargetPathSync } from "../src/core/workspace-root.js";
 
 class FakeClient extends EventEmitter implements LspClient {
   readonly requests: Array<{ method: string; params?: unknown }> = [];
@@ -121,6 +122,26 @@ describe("LspSemanticProvider", () => {
 
     expect(client.requests.filter((request) => request.method === "initialize")).toHaveLength(1);
     expect(client.notifications.filter((notification) => notification.method === "textDocument/didOpen")).toHaveLength(1);
+  });
+
+  it("accepts diagnostics that stabilize before the freshness waiter is registered", async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = createProvider();
+      const uri = filePathToUri(filePath);
+      client.onNotify = (method, params) => {
+        if (method !== "textDocument/didOpen") return;
+        client.emit("notification", "textDocument/publishDiagnostics", {
+          uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+          diagnostics: []
+        });
+        vi.advanceTimersByTime(5);
+      };
+
+      await expect(provider.diagnostics(uri)).resolves.toMatchObject({ status: "ok", stale: false });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("recovers one child generation and reopens the document manifest", async () => {
@@ -656,7 +677,7 @@ describe("LspSemanticProvider", () => {
     expect(didOpen).toMatchObject({
       params: {
         textDocument: {
-          uri: filePathToUri(await fs.realpath(filePath))
+          uri: filePathToUri(canonicalizeTargetPathSync(await fs.realpath(filePath)))
         }
       }
     });

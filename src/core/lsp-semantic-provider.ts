@@ -547,6 +547,14 @@ export class LspSemanticProvider implements SemanticProvider {
 
   private waitForDiagnostics(uri: string, minRevision: number, timeoutMs = this.options.diagnosticsTimeoutMs ?? defaultDiagnosticsTimeoutMs): Promise<boolean> {
     const currentRevision = this.diagnosticsRevisionByUri.get(uri) ?? 0;
+    const documentVersion = this.documentRegistry.get(uri)?.version;
+    if (
+      documentVersion !== undefined &&
+      this.diagnosticsSourceRevisionByUri.get(uri) === documentVersion &&
+      currentRevision >= minRevision
+    ) {
+      return Promise.resolve(true);
+    }
     return new Promise((resolve) => {
       const waiters = this.diagnosticsWaitersByUri.get(uri) ?? [];
       const waiter: {

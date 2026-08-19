@@ -3,7 +3,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { MeasurementHarnessError, launchMaterializedBridge, measurementReceiptKeys, runMeasurement, validateReceipt } from "../scripts/measure-bridge-lifecycle.mjs";
+import * as measurement from "../scripts/measure-bridge-lifecycle.mjs";
+
+const { MeasurementHarnessError, launchMaterializedBridge, measurementReceiptKeys, runMeasurement, validateReceipt } = measurement;
 
 describe("repository-local lifecycle measurement harness", () => {
   it("emits one allowlisted receipt for a controlled positive run", async () => {
