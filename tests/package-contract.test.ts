@@ -21,6 +21,8 @@ describe("package contract", () => {
       "codex-lsp-bridge-install": "scripts/install-codex.mjs",
       "codex-lsp-bridge-uninstall": "scripts/uninstall-codex.mjs"
     });
+    expect(Object.values(pkg.bin).some((value) => value.includes("measure-bridge-lifecycle"))).toBe(false);
+    expect(pkg.files).not.toContain("scripts/measure-bridge-lifecycle.mjs");
     expect(pkg.files).toEqual(
       expect.arrayContaining([
         "dist/index.js",
@@ -70,5 +72,6 @@ describe("package contract", () => {
     expect(hooks.hooks).toEqual({});
     expect(fs.existsSync(path.join(packageRoot, plugin.skills[0]))).toBe(true);
     expect(fs.existsSync(path.join(packageRoot, plugin.hooks))).toBe(true);
+    expect(fs.readFileSync(path.join(packageRoot, "src", "transport", "mcp.ts"), "utf8")).not.toContain("measure-bridge-lifecycle");
   });
 });

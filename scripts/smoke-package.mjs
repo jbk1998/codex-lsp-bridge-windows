@@ -29,6 +29,8 @@ try {
   assert(help.stdout.includes('"distExists": true'), "installed package doctor did not report distExists true");
 
   const installBin = path.join(tempRoot, "node_modules", ".bin", process.platform === "win32" ? "codex-lsp-bridge-install.cmd" : "codex-lsp-bridge-install");
+  const installedPackageRoot = path.join(tempRoot, "node_modules", "codex-lsp-bridge");
+  assert(!fs.existsSync(path.join(installedPackageRoot, "scripts", "measure-bridge-lifecycle.mjs")), "installed package shipped the repository-local measurement harness");
   const codexHome = path.join(tempRoot, "codex-home");
   run(installBin, ["--dry-run"], tempRoot, { CODEX_HOME: codexHome });
 } finally {

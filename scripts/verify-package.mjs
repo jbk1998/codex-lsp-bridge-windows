@@ -77,6 +77,10 @@ for (const file of requiredPackageFiles) {
 
 const unexpected = [...files].filter((file) => file.startsWith("dist/tests/") || file.startsWith("dist/src/"));
 assert(unexpected.length === 0, `npm pack output includes stale build artifacts: ${unexpected.join(", ")}`);
+assert(!files.has("scripts/measure-bridge-lifecycle.mjs"), "npm pack output includes the repository-local measurement harness");
+
+const packageJson = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
+assert(!Object.values(packageJson.bin ?? {}).some((value) => String(value).includes("measure-bridge-lifecycle")), "package bins expose the measurement harness");
 
 console.log(`[codex-lsp-bridge] verified npm package contents (${files.size} files)`);
 
