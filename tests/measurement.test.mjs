@@ -2,10 +2,17 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
-const measurement = await import("../scripts/measure-bridge-lifecycle.mjs");
+import { beforeAll, describe, expect, it, vi } from "vitest";
 
-const { MeasurementHarnessError, launchMaterializedBridge, measurementReceiptKeys, runMeasurement, validateReceipt } = measurement;
+let MeasurementHarnessError;
+let launchMaterializedBridge;
+let measurementReceiptKeys;
+let runMeasurement;
+let validateReceipt;
+
+beforeAll(async () => {
+  ({ MeasurementHarnessError, launchMaterializedBridge, measurementReceiptKeys, runMeasurement, validateReceipt } = await import("../scripts/measure-bridge-lifecycle.mjs"));
+});
 
 describe("repository-local lifecycle measurement harness", () => {
   it("emits one allowlisted receipt for a controlled positive run", async () => {
