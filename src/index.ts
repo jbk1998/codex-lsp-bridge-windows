@@ -10,7 +10,12 @@ import { resolveDiagnosticsTimeout } from "./core/diagnostics-timeout.js";
 import { runDoctor } from "./core/doctor.js";
 import { LspManager } from "./core/lsp-manager.js";
 import { revalidateNativeNodeRuntime, validateNativeNodeRuntime, type NativeNodeRuntimeValidation } from "./core/native-node-runtime.js";
-import { createDisposalDeadline, type DisposalDeadline, type ProcessTerminationResult } from "./core/process-ownership.js";
+import {
+  aggregateTerminationResults,
+  createDisposalDeadline,
+  type DisposalDeadline,
+  type ProcessTerminationResult
+} from "./core/process-ownership.js";
 import {
   resolvePathInsideWorkspaceRootSync,
   canonicalizeWorkspaceRootSync,
@@ -63,8 +68,14 @@ async function main(): Promise<void> {
   const sourceFileListCache = new Map<string, SourceFileListCacheEntry>();
   let mcpOwnsDisposal = false;
   const disposeManagers = async (deadline: DisposalDeadline): Promise<ProcessTerminationResult | void> => {
-    const results = await Promise.all([...managers.values()].map((manager) => manager.dispose(deadline)));
-    return results.find((result): result is ProcessTerminationResult => Boolean(result && !result.clean)) ?? results.find(Boolean);
+    const settled = await Promise.allSettled(
+      [...managers.values()].map((manager) => Promise.resolve().then(() => manager.dispose(deadline)))
+    );
+    const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
+    return aggregateTerminationResults(
+      results,
+      settled.filter((entry) => entry.status === "rejected").length
+    );
   };
   const serviceForRoot = (serviceRoot: string, languageOverride?: SupportedLanguage) => {
     const resolvedRoot = canonicalizeWorkspaceRootSync(serviceRoot);
