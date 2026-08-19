@@ -7,6 +7,7 @@ import {
   createProcessOwnership,
   type DisposalDeadline,
   type OwnedChildProcess,
+  type ProcessIdentityProvider,
   type ProcessOwnership,
   type ProcessTerminationResult
 } from "./process-ownership.js";
@@ -44,6 +45,9 @@ export interface LspClient {
 export interface JsonRpcLspClientOptions {
   spawnProcess?: typeof spawn;
   ownershipFactory?: (child: ChildProcessWithoutNullStreams, config: ServerProcessConfig, prepared: PreparedSpawnCommand) => ProcessOwnership;
+  processIdentityProvider?: ProcessIdentityProvider;
+  verifyProcessIdentity?: () => boolean | Promise<boolean>;
+  verifyDescendants?: () => boolean | Promise<boolean>;
 }
 
 export class JsonRpcLspClient extends EventEmitter implements LspClient {
@@ -76,7 +80,10 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
     this.ownership = this.options.ownershipFactory
       ? this.options.ownershipFactory(this.process, this.config, prepared)
       : createProcessOwnership(this.process as unknown as OwnedChildProcess, {
-          wrapper: prepared.command.toLowerCase().endsWith("cmd.exe") || prepared.command.toLowerCase().endsWith("cmd")
+          wrapper: prepared.command.toLowerCase().endsWith("cmd.exe") || prepared.command.toLowerCase().endsWith("cmd"),
+          identityProvider: this.options.processIdentityProvider,
+          verify: this.options.verifyProcessIdentity,
+          verifyDescendants: this.options.verifyDescendants
         });
 
     this.process.stdout.on("data", (chunk: Buffer) => this.readChunk(chunk));

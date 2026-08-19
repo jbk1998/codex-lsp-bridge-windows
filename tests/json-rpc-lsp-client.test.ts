@@ -5,7 +5,7 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { createServerRequestResponse, JsonRpcLspClient, prepareSpawnCommand } from "../src/core/json-rpc-lsp-client.js";
-import { createDisposalDeadline } from "../src/core/process-ownership.js";
+import { createDisposalDeadline, type ProcessIdentityProvider } from "../src/core/process-ownership.js";
 
 class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
@@ -22,6 +22,12 @@ class FakeChild extends EventEmitter {
     this.emit("exit", 1, null);
     return true;
   }
+}
+
+function identityProvider(token: string | (() => string) = "launch"): ProcessIdentityProvider {
+  return {
+    read: (pid) => ({ pid, creationToken: typeof token === "function" ? token() : token })
+  };
 }
 
 describe("JsonRpcLspClient", () => {
@@ -60,7 +66,7 @@ describe("JsonRpcLspClient", () => {
     const child = new FakeChild();
     const client = new JsonRpcLspClient(
       { command: "server", args: ["--stdio"], cwd: process.cwd() },
-      { spawnProcess: (() => child) as never }
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
     );
     const initialize = client.request("initialize").catch(() => undefined);
 
@@ -69,6 +75,44 @@ describe("JsonRpcLspClient", () => {
     expect(result).toEqual({ clean: true, reasonCode: "owned_child_exit" });
     expect(child.killCalls).toBe(1);
     await initialize;
+  });
+
+  it("refuses to terminate a PID whose identity changed after launch", async () => {
+    const child = new FakeChild();
+    let token = "launch";
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      {
+        spawnProcess: (() => child) as never,
+        processIdentityProvider: identityProvider(() => token)
+      }
+    );
+    const initialize = client.request("initialize").catch(() => undefined);
+    token = "pid-reuse";
+
+    await expect(client.stop(createDisposalDeadline(Date.now(), 100, 1, 20))).resolves.toEqual({
+      clean: false,
+      reasonCode: "identity_mismatch"
+    });
+    expect(child.killCalls).toBe(0);
+  });
+
+  it("refuses to terminate when the process identity cannot be read", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      {
+        spawnProcess: (() => child) as never,
+        processIdentityProvider: { read: () => undefined }
+      }
+    );
+    const initialize = client.request("initialize").catch(() => undefined);
+
+    await expect(client.stop(createDisposalDeadline(Date.now(), 100, 1, 20))).resolves.toEqual({
+      clean: false,
+      reasonCode: "identity_mismatch"
+    });
+    expect(child.killCalls).toBe(0);
   });
 
   it("rewrites npm Windows shims to direct Node entrypoints", async () => {
