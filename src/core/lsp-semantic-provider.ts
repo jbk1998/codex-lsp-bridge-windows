@@ -6,6 +6,7 @@ import { lspSeverityToText } from "./diagnostics.js";
 import type { Diagnostic, DiagnosticOptions, DiagnosticReport, DocumentPosition, HoverInfo, Location, Position, SemanticProvider, SymbolMatch } from "./types.js";
 import { canonicalizeFileUri, filePathToUri, uriToFilePath } from "../utils/uri.js";
 import { canonicalizeTargetPathSync, canonicalizeWorkspaceRootSync, isPathInsideWorkspaceRootSync } from "./workspace-root.js";
+import { DocumentRegistry } from "./document-registry.js";
 
 interface LspDiagnostic {
   range: { start: Position; end: Position };
@@ -29,6 +30,18 @@ interface LspSymbol {
 
 interface LspHover {
   contents: string | { value: string } | Array<string | { value: string }>;
+}
+
+interface PendingSourceRevision {
+  generation: number;
+  version: number;
+}
+
+interface DiagnosticsCandidate {
+  generation: number;
+  revision: number;
+  sourceRevision: number;
+  settleTimer?: NodeJS.Timeout;
 }
 
 const defaultDiagnosticsTimeoutMs = 15000;
@@ -61,8 +74,9 @@ export class LspSemanticProvider implements SemanticProvider {
   private diagnosticsByUri = new Map<string, Diagnostic[]>();
   private diagnosticsRevisionByUri = new Map<string, number>();
   private diagnosticsSourceRevisionByUri = new Map<string, number>();
-  private pendingSourceRevisionByUri = new Map<string, number>();
-  private openedDocumentsByUri = new Map<string, { text: string; version: number }>();
+  private pendingSourceRevisionByUri = new Map<string, PendingSourceRevision>();
+  private diagnosticsCandidatesByUri = new Map<string, DiagnosticsCandidate>();
+  private readonly documentRegistry = new DocumentRegistry();
   private configurationIssues: string[] = [];
   private diagnosticsWaitersByUri = new Map<
     string,
@@ -102,6 +116,7 @@ export class LspSemanticProvider implements SemanticProvider {
     this.diagnosticsRevisionByUri.clear();
     this.diagnosticsSourceRevisionByUri.clear();
     this.pendingSourceRevisionByUri.clear();
+    this.cancelDiagnosticsCandidates();
     this.configurationIssues = [];
     this.cancelDiagnosticsWaiters();
   }
@@ -144,8 +159,9 @@ export class LspSemanticProvider implements SemanticProvider {
       };
     }
 
-    const sourceRevisions = [...this.openedDocumentsByUri.values()].map((document) => document.version);
-    const stale = [...this.openedDocumentsByUri.entries()].some(
+    const documents = this.documentRegistry.entries();
+    const sourceRevisions = documents.map(([, document]) => document.version);
+    const stale = documents.some(
       ([uri, document]) => this.diagnosticsSourceRevisionByUri.get(uri) !== document.version
     );
     return {
@@ -175,7 +191,7 @@ export class LspSemanticProvider implements SemanticProvider {
   async definitionAt(position: DocumentPosition): Promise<Location> {
     const document = await this.openOrUpdateDocument(filePathToUri(position.file));
     if (this.options.languageId === "typescript") {
-      const sourceDefinitions = await this.client.request<LspLocation[] | null>("workspace/executeCommand", {
+      const sourceDefinitions = await this.requestWithRecovery<LspLocation[] | null>("workspace/executeCommand", {
         command: "_typescript.goToSourceDefinition",
         arguments: [document.uri, toLspPosition(position)]
       });
@@ -185,7 +201,7 @@ export class LspSemanticProvider implements SemanticProvider {
       return this.toLocation(sourceDefinitions[0]);
     }
 
-    const result = await this.client.request<LspLocation | LspLocation[] | null>("textDocument/definition", {
+    const result = await this.requestWithRecovery<LspLocation | LspLocation[] | null>("textDocument/definition", {
       textDocument: { uri: document.uri },
       position: toLspPosition(position)
     });
@@ -201,7 +217,7 @@ export class LspSemanticProvider implements SemanticProvider {
 
   async referencesAt(position: DocumentPosition): Promise<Location[]> {
     const document = await this.openOrUpdateDocument(filePathToUri(position.file));
-    const result = await this.client.request<LspLocation[]>("textDocument/references", {
+    const result = await this.requestWithRecovery<LspLocation[]>("textDocument/references", {
       textDocument: { uri: document.uri },
       position: toLspPosition(position),
       context: { includeDeclaration: true }
@@ -212,7 +228,7 @@ export class LspSemanticProvider implements SemanticProvider {
   async symbols(query: string): Promise<SymbolMatch[]> {
     await this.ensureInitialized();
     await this.ensureWorkspaceDocumentOpened();
-    const symbols = await this.client.request<LspSymbol[]>("workspace/symbol", { query });
+    const symbols = await this.requestWithRecovery<LspSymbol[]>("workspace/symbol", { query });
     return symbols.map((symbol) => ({
       ...this.toLocation(symbol.location),
       name: symbol.name,
@@ -228,7 +244,7 @@ export class LspSemanticProvider implements SemanticProvider {
 
   async hoverAt(position: DocumentPosition): Promise<HoverInfo> {
     const document = await this.openOrUpdateDocument(filePathToUri(position.file));
-    const result = await this.client.request<LspHover | null>("textDocument/hover", {
+    const result = await this.requestWithRecovery<LspHover | null>("textDocument/hover", {
       textDocument: { uri: document.uri },
       position: toLspPosition(position)
     });
@@ -247,13 +263,14 @@ export class LspSemanticProvider implements SemanticProvider {
     this.disposed = true;
     this.state = "closing";
     if (this.initialized) {
-      for (const uri of this.openedDocumentsByUri.keys()) {
+      for (const [uri] of this.documentRegistry.entries()) {
         this.client.notify("textDocument/didClose", {
           textDocument: { uri }
         });
       }
     }
-    this.openedDocumentsByUri.clear();
+    this.documentRegistry.clear();
+    this.cancelDiagnosticsCandidates();
     this.disposePromise = this.client.stop(deadline);
     return this.disposePromise;
   }
@@ -263,7 +280,9 @@ export class LspSemanticProvider implements SemanticProvider {
     if (this.initialized && this.state === "ready") return;
     if (this.state === "failed") throw new Error("LSP server recovery failed");
 
-    if (this.state === "exited" || (this.state === "recovering" && this.recoveryPromise)) {
+    if (this.recoveryPromise) return this.recoveryPromise;
+
+    if (this.state === "exited" || this.state === "recovering") {
       if (!this.recoveryPromise) {
         const generation = this.generation;
         this.state = "recovering";
@@ -285,6 +304,46 @@ export class LspSemanticProvider implements SemanticProvider {
       this.initializationPromise = trackedInitialization;
     }
     return this.initializationPromise;
+  }
+
+  private async requestWithRecovery<T>(method: string, params?: unknown): Promise<T> {
+    let retried = false;
+
+    while (true) {
+      await this.ensureInitialized();
+      const client = this.client;
+      const generation = this.generation;
+
+      try {
+        return await client.request<T>(method, params);
+      } catch (error) {
+        const racedWithExit = client !== this.client || generation !== this.generation;
+        if (retried || !racedWithExit || this.disposed) throw error;
+        retried = true;
+        await this.ensureInitialized();
+      }
+    }
+  }
+
+  private async notifyWithRecovery(method: string, params: unknown): Promise<void> {
+    const client = this.client;
+    const generation = this.generation;
+
+    try {
+      client.notify(method, params);
+    } catch (error) {
+      const racedWithExit = client !== this.client || generation !== this.generation;
+      if (!racedWithExit || this.disposed) throw error;
+      await this.ensureInitialized();
+      return;
+    }
+
+    if (client !== this.client || generation !== this.generation) await this.ensureInitialized();
+  }
+
+  private markDocumentPending(uri: string, version: number): void {
+    this.invalidateDiagnosticsCandidate(uri);
+    this.pendingSourceRevisionByUri.set(uri, { generation: this.generation, version });
   }
 
   private async recoverGeneration(generation: number): Promise<void> {
@@ -343,8 +402,8 @@ export class LspSemanticProvider implements SemanticProvider {
       }
 
       if (reopenDocuments) {
-        for (const [uri, document] of this.openedDocumentsByUri) {
-          this.pendingSourceRevisionByUri.set(uri, document.version);
+        for (const [uri, document] of this.documentRegistry.entries()) {
+          this.pendingSourceRevisionByUri.set(uri, { generation, version: document.version });
           client.notify("textDocument/didOpen", {
             textDocument: {
               uri,
@@ -354,7 +413,7 @@ export class LspSemanticProvider implements SemanticProvider {
             }
           });
         }
-        this.workspaceDocumentOpened = this.openedDocumentsByUri.size > 0;
+        this.workspaceDocumentOpened = this.documentRegistry.entries().length > 0;
       }
 
       if (generation !== this.generation || this.disposed) throw new Error("LSP server exited during initialization");
@@ -369,37 +428,39 @@ export class LspSemanticProvider implements SemanticProvider {
   private async openOrUpdateDocument(uri: string): Promise<{ uri: string; filePath: string; changed: boolean; sourceRevision: number }> {
     await this.ensureInitialized();
     const document = await this.resolveDocument(uri);
-    const { filePath } = document;
-    const text = await fs.readFile(filePath, "utf8");
-    const opened = this.openedDocumentsByUri.get(document.uri);
+    return this.documentRegistry.runSerialized(document.uri, async () => {
+      const text = await fs.readFile(document.filePath, "utf8");
+      const opened = this.documentRegistry.get(document.uri);
 
-    if (!opened) {
-      this.openedDocumentsByUri.set(document.uri, { text, version: 1 });
-      this.pendingSourceRevisionByUri.set(document.uri, 1);
-      this.client.notify("textDocument/didOpen", {
+      if (!opened) {
+        const version = 1;
+        this.documentRegistry.set(document.uri, { text, version });
+        this.markDocumentPending(document.uri, version);
+        await this.notifyWithRecovery("textDocument/didOpen", {
+          textDocument: {
+            uri: document.uri,
+            languageId: this.options.languageId,
+            version,
+            text
+          }
+        });
+        return { ...document, changed: true, sourceRevision: version };
+      }
+
+      if (opened.text === text) return { ...document, changed: false, sourceRevision: opened.version };
+
+      const version = opened.version + 1;
+      this.documentRegistry.set(document.uri, { text, version });
+      this.markDocumentPending(document.uri, version);
+      await this.notifyWithRecovery("textDocument/didChange", {
         textDocument: {
           uri: document.uri,
-          languageId: this.options.languageId,
-          version: 1,
-          text
-        }
+          version
+        },
+        contentChanges: [{ text }]
       });
-      return { ...document, changed: true, sourceRevision: 1 };
-    }
-
-    if (opened.text === text) return { ...document, changed: false, sourceRevision: opened.version };
-
-    const version = opened.version + 1;
-    this.openedDocumentsByUri.set(document.uri, { text, version });
-    this.pendingSourceRevisionByUri.set(document.uri, version);
-    this.client.notify("textDocument/didChange", {
-      textDocument: {
-        uri: document.uri,
-        version
-      },
-      contentChanges: [{ text }]
+      return { ...document, changed: true, sourceRevision: version };
     });
-    return { ...document, changed: true, sourceRevision: version };
   }
 
   private async ensureWorkspaceDocumentOpened(): Promise<void> {
@@ -446,14 +507,15 @@ export class LspSemanticProvider implements SemanticProvider {
   private captureDiagnostics(params: unknown): void {
     if (!isPublishDiagnosticsParams(params)) return;
 
-    const uri = canonicalizeFileUri(params.uri);
+    let uri: string;
+    try {
+      uri = this.canonicalizeProviderUri(params.uri);
+    } catch {
+      return;
+    }
+
     const revision = (this.diagnosticsRevisionByUri.get(uri) ?? 0) + 1;
     this.diagnosticsRevisionByUri.set(uri, revision);
-    const sourceRevision = this.pendingSourceRevisionByUri.get(uri) ?? this.openedDocumentsByUri.get(uri)?.version;
-    if (sourceRevision !== undefined) {
-      this.diagnosticsSourceRevisionByUri.set(uri, sourceRevision);
-      this.pendingSourceRevisionByUri.delete(uri);
-    }
     this.diagnosticsByUri.set(
       uri,
       params.diagnostics.map((diagnostic) => ({
@@ -466,6 +528,20 @@ export class LspSemanticProvider implements SemanticProvider {
         code: diagnostic.code
       }))
     );
+    const pending = this.pendingSourceRevisionByUri.get(uri);
+    const document = this.documentRegistry.get(uri);
+    if (pending && document && pending.version === document.version) {
+      const candidate: DiagnosticsCandidate = {
+        generation: pending.generation,
+        revision,
+        sourceRevision: pending.version
+      };
+      this.diagnosticsCandidatesByUri.set(uri, candidate);
+      candidate.settleTimer = setTimeout(
+        () => this.commitDiagnosticsCandidate(uri, candidate),
+        this.options.diagnosticsStabilityMs ?? defaultDiagnosticsStabilityMs
+      );
+    }
     this.scheduleDiagnosticsWaiters(uri, revision);
   }
 
@@ -506,11 +582,15 @@ export class LspSemanticProvider implements SemanticProvider {
       realFilePath = await fs.realpath(inputPath);
     } catch {
       const canonicalUri = filePathToUri(inputPath);
-      if (this.openedDocumentsByUri.has(canonicalUri)) {
-        this.client.notify("textDocument/didClose", {
-          textDocument: { uri: canonicalUri }
+      if (this.documentRegistry.get(canonicalUri)) {
+        await this.documentRegistry.runSerialized(canonicalUri, async () => {
+          if (!this.documentRegistry.get(canonicalUri)) return;
+          this.documentRegistry.delete(canonicalUri);
+          this.invalidateDiagnosticsCandidate(canonicalUri);
+          await this.notifyWithRecovery("textDocument/didClose", {
+            textDocument: { uri: canonicalUri }
+          });
         });
-        this.openedDocumentsByUri.delete(canonicalUri);
       }
       throw new Error(`File not found: ${inputPath}`);
     }
@@ -543,6 +623,12 @@ export class LspSemanticProvider implements SemanticProvider {
           return;
         }
 
+        if (this.diagnosticsSourceRevisionByUri.get(uri) !== this.documentRegistry.get(uri)?.version) {
+          waiter.settleTimer = undefined;
+          waiter.settleRevision = undefined;
+          return;
+        }
+
         clearTimeout(waiter.timer);
         const nextWaiters = (this.diagnosticsWaitersByUri.get(uri) ?? []).filter((candidate) => candidate !== waiter);
         if (nextWaiters.length > 0) this.diagnosticsWaitersByUri.set(uri, nextWaiters);
@@ -563,9 +649,53 @@ export class LspSemanticProvider implements SemanticProvider {
     this.diagnosticsWaitersByUri.clear();
   }
 
+  private commitDiagnosticsCandidate(uri: string, candidate: DiagnosticsCandidate): void {
+    if (this.diagnosticsCandidatesByUri.get(uri) !== candidate) return;
+
+    const document = this.documentRegistry.get(uri);
+    const pending = this.pendingSourceRevisionByUri.get(uri);
+    const isCurrent =
+      candidate.generation === this.generation &&
+      document?.version === candidate.sourceRevision &&
+      pending?.generation === candidate.generation &&
+      pending.version === candidate.sourceRevision &&
+      this.diagnosticsRevisionByUri.get(uri) === candidate.revision;
+
+    this.diagnosticsCandidatesByUri.delete(uri);
+    candidate.settleTimer = undefined;
+    if (!isCurrent) return;
+
+    this.diagnosticsSourceRevisionByUri.set(uri, candidate.sourceRevision);
+    this.pendingSourceRevisionByUri.delete(uri);
+    this.scheduleDiagnosticsWaiters(uri, candidate.revision);
+  }
+
+  private invalidateDiagnosticsCandidate(uri: string): void {
+    const candidate = this.diagnosticsCandidatesByUri.get(uri);
+    if (candidate?.settleTimer) clearTimeout(candidate.settleTimer);
+    this.diagnosticsCandidatesByUri.delete(uri);
+  }
+
+  private cancelDiagnosticsCandidates(): void {
+    for (const candidate of this.diagnosticsCandidatesByUri.values()) {
+      if (candidate.settleTimer) clearTimeout(candidate.settleTimer);
+    }
+    this.diagnosticsCandidatesByUri.clear();
+  }
+
+  private canonicalizeProviderUri(uri: string): string {
+    const filePath = canonicalizeTargetPathSync(uriToFilePath(canonicalizeFileUri(uri)));
+    const rootPath = canonicalizeWorkspaceRootSync(this.options.rootPath);
+    if (!isPathInsideWorkspaceRootSync(filePath, rootPath)) {
+      throw new Error(`Location is outside workspace root: ${filePath}`);
+    }
+    return filePathToUri(filePath);
+  }
+
   private toLocation(location: LspLocation): Location {
+    const uri = this.canonicalizeProviderUri(location.uri);
     return {
-      file: uriToFilePath(location.uri),
+      file: uriToFilePath(uri),
       line: location.range.start.line + 1,
       character: location.range.start.character + 1,
       range: location.range
