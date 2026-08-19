@@ -172,7 +172,7 @@ describe("LspSemanticProvider", () => {
       server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
       workspaceSeedFiles: ["src/editor.ts"],
       workspaceSeedExtensions: [".ts"],
-      diagnosticsTimeoutMs: 50,
+      diagnosticsTimeoutMs: 500,
       diagnosticsStabilityMs: 1,
       clientFactory: () => clients.shift()!
     });

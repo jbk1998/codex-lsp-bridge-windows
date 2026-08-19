@@ -346,10 +346,17 @@ function assertSafePathAncestry(filePath) {
       if (error?.code === "ENOENT") continue;
       throw error;
     }
-    if (candidate !== absolutePath && !stats.isDirectory()) throw new Error(`managed path ancestor is not a directory: ${candidate}`);
+    const trustedPlatformAlias = isTrustedPlatformAlias(candidate);
+    if (candidate !== absolutePath && !stats.isDirectory() && !trustedPlatformAlias) throw new Error(`managed path ancestor is not a directory: ${candidate}`);
     // On Windows Node reports directory junctions and symbolic links as symbolic links from lstat.
-    if (stats.isSymbolicLink()) throw new Error(`managed path ancestor is a symlink or reparse escape: ${candidate}`);
+    if (stats.isSymbolicLink() && !trustedPlatformAlias) throw new Error(`managed path ancestor is a symlink or reparse escape: ${candidate}`);
   }
+}
+
+function isTrustedPlatformAlias(candidate) {
+  // macOS exposes /var as a system alias for /private/var. The alias is
+  // required for os.tmpdir() paths but is not a user-controlled descendant.
+  return process.platform === "darwin" && candidate === "/var";
 }
 
 function pathExists(filePath) {
