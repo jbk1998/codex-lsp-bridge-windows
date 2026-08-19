@@ -85,8 +85,13 @@ export interface ProcessIdentityProvider {
 export interface ProcessOwnershipOptions {
   wrapper?: boolean;
   verify?: () => boolean | Promise<boolean>;
-  verifyDescendants?: () => boolean | Promise<boolean>;
+  verifyDescendants?: (pid: number) => boolean | Promise<boolean>;
+  descendantProvider?: ProcessDescendantProvider;
   identityProvider?: ProcessIdentityProvider;
+}
+
+export interface ProcessDescendantProvider {
+  list(pid: number): number[] | undefined;
 }
 
 export interface ProcessOwnership {
@@ -110,6 +115,10 @@ export const defaultProcessIdentityProvider: ProcessIdentityProvider = {
   read: readOsProcessIdentity
 };
 
+export const defaultProcessDescendantProvider: ProcessDescendantProvider = {
+  list: readOsProcessDescendants
+};
+
 async function terminateChild(
   child: OwnedChildProcess,
   deadlineAt: number,
@@ -129,7 +138,8 @@ async function terminateChild(
   // intentionally no recursive kill-tree fallback for wrappers.
   if (options.wrapper) {
     try {
-      if (!(await (options.verifyDescendants ?? (() => false))())) {
+      const verifyDescendants = options.verifyDescendants ?? ((pid: number) => verifyNoDescendants(pid, options.descendantProvider));
+      if (!(await verifyDescendants(child.pid))) {
         return { clean: false, reasonCode: "descendant_unverified" };
       }
     } catch {
@@ -226,6 +236,72 @@ function readWindowsProcessIdentity(pid: number): ProcessIdentity | undefined {
     windowsHide: true
   }).trim();
   return output ? { pid, creationToken: `windows:${output}` } : undefined;
+}
+
+function verifyNoDescendants(pid: number, provider = defaultProcessDescendantProvider): boolean {
+  const descendants = provider.list(pid);
+  return descendants !== undefined && descendants.length === 0;
+}
+
+function readOsProcessDescendants(pid: number): number[] | undefined {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return undefined;
+  try {
+    if (process.platform === "win32") return readWindowsProcessDescendants(pid);
+    if (process.platform === "linux") return readLinuxProcessDescendants(pid);
+  } catch {
+    // Process enumeration is an authorization check. Access errors fail closed.
+  }
+  return undefined;
+}
+
+function readLinuxProcessDescendants(rootPid: number): number[] | undefined {
+  const parentByPid = new Map<number, number>();
+  for (const entry of fs.readdirSync("/proc")) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number(entry);
+    try {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      const commandEnd = stat.lastIndexOf(")");
+      if (commandEnd === -1) continue;
+      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+      const parentPid = Number(fields[1]);
+      if (Number.isSafeInteger(parentPid) && parentPid > 0) parentByPid.set(pid, parentPid);
+    } catch {
+      // A process can disappear between directory enumeration and stat read.
+    }
+  }
+  if (!parentByPid.has(rootPid) && rootPid !== process.pid) return undefined;
+  const descendants: number[] = [];
+  const queue = [rootPid];
+  while (queue.length > 0) {
+    const parentPid = queue.shift()!;
+    for (const [candidatePid, candidateParentPid] of parentByPid) {
+      if (candidateParentPid !== parentPid || candidatePid === rootPid || descendants.includes(candidatePid)) continue;
+      descendants.push(candidatePid);
+      queue.push(candidatePid);
+    }
+  }
+  return descendants;
+}
+
+function readWindowsProcessDescendants(rootPid: number): number[] | undefined {
+  const command = [
+    "$root =",
+    String(rootPid),
+    "; $all = @(Get-CimInstance Win32_Process -ErrorAction Stop); $known = @($root); $changed = $true;",
+    "while ($changed) { $changed = $false; foreach ($item in $all) { $itemPid = [int]$item.ProcessId; $parentPid = [int]$item.ParentProcessId; if (($known -contains $parentPid) -and -not ($known -contains $itemPid)) { $known += $itemPid; $changed = $true } } }",
+    "$known | Where-Object { $_ -ne $root } | ConvertTo-Json -Compress"
+  ].join(" ");
+  const output = execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: 1500,
+    windowsHide: true
+  }).trim();
+  if (!output || output === "null") return [];
+  const parsed = JSON.parse(output);
+  const values = Array.isArray(parsed) ? parsed : [parsed];
+  return values.filter((value) => Number.isSafeInteger(Number(value)) && Number(value) > 0).map(Number);
 }
 
 function isExited(child: OwnedChildProcess): boolean {

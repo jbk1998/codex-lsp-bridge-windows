@@ -67,7 +67,11 @@ describe("process ownership", () => {
 
   it("keeps wrapper descendants non-clean unless ownership is verified", async () => {
     const child = new FakeChild();
-    const ownership = createProcessOwnership(child, { wrapper: true, identityProvider: identityProvider() });
+    const ownership = createProcessOwnership(child, {
+      wrapper: true,
+      identityProvider: identityProvider(),
+      descendantProvider: { list: () => undefined }
+    });
 
     await expect(ownership.terminate(Date.now() + 100)).resolves.toEqual({
       clean: false,
@@ -88,6 +92,21 @@ describe("process ownership", () => {
 
     await expect(resultPromise).resolves.toEqual({ clean: true, reasonCode: "owned_child_exit" });
     expect(child.killCalls).toBe(1);
+  });
+
+  it("refuses a wrapper when safe descendant enumeration finds a child", async () => {
+    const child = new FakeChild();
+    const ownership = createProcessOwnership(child, {
+      wrapper: true,
+      identityProvider: identityProvider(),
+      descendantProvider: { list: () => [5678] }
+    });
+
+    await expect(ownership.terminate(Date.now() + 100)).resolves.toEqual({
+      clean: false,
+      reasonCode: "descendant_unverified"
+    });
+    expect(child.killCalls).toBe(0);
   });
 
   it("reports a bounded timeout without broad tree termination", async () => {
