@@ -36,7 +36,7 @@ Keep the bridge runtime and the language-server launcher separate:
 
 The repository-local harness is `scripts/measure-bridge-lifecycle.mjs`. It is
 not a package bin, MCP surface, hook, or resident service. Run its tests with
-`npm run test:run -- tests/measurement.test.mjs`; native Windows process,
+`npm run test:run -- tests/measurement.test.ts`; native Windows process,
 resource, identity, and simultaneous-control evidence remains a maintainer
 acceptance step.
 

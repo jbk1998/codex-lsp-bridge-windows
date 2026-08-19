@@ -523,7 +523,7 @@ The controller must not change the workload it is measuring: use the same genera
 
 **Files and surfaces:**
 
-- Add scripts/measure-bridge-lifecycle.mjs and tests/measurement.test.mjs.
+- Add scripts/measure-bridge-lifecycle.mjs and tests/measurement.test.ts.
 - Add only the smallest test seams needed for controlled lifecycle events; do not emit measurement data through MCP tools, tools/list, lsp_status, normal diagnostics, or persistent startup state.
 - Update scripts/verify-package.mjs, scripts/smoke-package.mjs, and tests/package-contract.test.ts to assert the harness is repository-local, absent from the package allowlist and npm pack output, and unreachable from package bins or MCP metadata.
 - Keep scripts/measure-hook-latency.mjs as a separate existing benchmark and do not treat it as lifecycle coverage.
@@ -585,7 +585,7 @@ Installer and updater writes are staged and atomic for all managed config, hook,
 | Root and language reuse | tests/lsp-manager.test.ts, tests/workspace-root.test.ts, tests/mcp-lifecycle.test.ts; repeated requests, two roots, two languages, Windows aliases, junction/symlink boundaries, root replacement, and canonical identity. |
 | Initialization and recovery | tests/lsp-semantic-provider.test.ts, tests/mcp-lifecycle.test.ts; single-flight initialization, unexpected exit, generation reopen manifest, concurrent follower recovery, recovery failure, stale diagnostics, and source revision. |
 | Bounded shutdown | tests/json-rpc-lsp-client.test.ts, tests/mcp-lifecycle.test.ts, tests/process-ownership.test.ts; unresponsive server, in-flight request, EOF, shared deadline, wrapper descendant, PID reuse, detached child, permission failure, and non-clean reason codes. |
-| Measurement privacy and attribution | tests/measurement.test.mjs; schema allowlist, redaction, random identifiers/fingerprints, negative control, simultaneous positive control, INCONCLUSIVE reason codes, HARNESS_ERROR distinction, reparse-safe cleanup, and repository-local package exclusion. |
+| Measurement privacy and attribution | tests/measurement.test.ts; schema allowlist, redaction, random identifiers/fingerprints, negative control, simultaneous positive control, INCONCLUSIVE reason codes, HARNESS_ERROR distinction, reparse-safe cleanup, and repository-local package exclusion. |
 | Hook and IPC boundary | tests/post-tool-use-wrapper.test.mjs, tests/post-tool-use.test.mjs, tests/ipc.test.ts, tests/package-contract.test.ts; default hook absent/disabled, active wrapper characterization, helper-only future status, and inactive IPC boundary. |
 | Package and fresh-process behavior | scripts/smoke-install.mjs, scripts/smoke-package.mjs, scripts/verify-package.mjs, tests/package-contract.test.ts; installed config, static/template matrix, package contents, harness exclusion, dry-run, uninstall, rollback, and fresh replay. |
 
@@ -595,7 +595,7 @@ Run targeted tests before broader verification:
 
     npm run test:run -- tests/native-node-runtime.test.ts tests/doctor.test.ts tests/package-contract.test.ts
     npm run test:run -- tests/json-rpc-lsp-client.test.ts tests/lsp-manager.test.ts tests/lsp-semantic-provider.test.ts tests/workspace-root.test.ts tests/mcp-lifecycle.test.ts tests/process-ownership.test.ts
-    npm run test:run -- tests/measurement.test.mjs tests/post-tool-use-wrapper.test.mjs tests/post-tool-use.test.mjs tests/ipc.test.ts
+    npm run test:run -- tests/measurement.test.ts tests/post-tool-use-wrapper.test.mjs tests/post-tool-use.test.mjs tests/ipc.test.ts
 
 Then run the repository contract:
 

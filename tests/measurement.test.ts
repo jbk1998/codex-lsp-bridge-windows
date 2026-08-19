@@ -2,24 +2,21 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { beforeAll, describe, expect, it, vi } from "vitest";
-
-let MeasurementHarnessError;
-let launchMaterializedBridge;
-let measurementReceiptKeys;
-let runMeasurement;
-let validateReceipt;
-
-beforeAll(async () => {
-  ({ MeasurementHarnessError, launchMaterializedBridge, measurementReceiptKeys, runMeasurement, validateReceipt } = await import("../scripts/measure-bridge-lifecycle.mjs"));
-});
+import { describe, expect, it, vi } from "vitest";
+import {
+  MeasurementHarnessError,
+  launchMaterializedBridge,
+  measurementReceiptKeys,
+  runMeasurement,
+  validateReceipt
+} from "../scripts/measure-bridge-lifecycle.mjs";
 
 describe("repository-local lifecycle measurement harness", () => {
   it("emits one allowlisted receipt for a controlled positive run", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-measure-test-"));
     const root = path.join(tempRoot, "workspace-with-source-like-text-and-secret");
     await fs.mkdir(root);
-    const launcherCalls = [];
+    const launcherCalls: unknown[] = [];
     let clockValue = 100;
     try {
       const receipt = await runMeasurement({
