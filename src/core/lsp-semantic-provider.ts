@@ -145,7 +145,11 @@ export class LspSemanticProvider implements SemanticProvider {
         !this.diagnosticsByUri.has(document.uri) ||
         publishedSourceRevision !== openedDocument.sourceRevision
       ) {
-        timedOut = !(await this.waitForDiagnostics(document.uri, currentRevision + 1, options.timeoutMs));
+        // Recovery may reopen a document and receive its fresh diagnostics before
+        // this call can register a waiter. The current revision is therefore the
+        // baseline; the source-revision check still prevents an old notification
+        // from being accepted for a changed document.
+        timedOut = !(await this.waitForDiagnostics(document.uri, currentRevision, options.timeoutMs));
       }
       const sourceRevision = openedDocument.sourceRevision;
       const stale = timedOut || this.diagnosticsSourceRevisionByUri.get(document.uri) !== sourceRevision;

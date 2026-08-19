@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import * as measurement from "../scripts/measure-bridge-lifecycle.mjs";
+const measurement = await import("../scripts/measure-bridge-lifecycle.mjs");
 
 const { MeasurementHarnessError, launchMaterializedBridge, measurementReceiptKeys, runMeasurement, validateReceipt } = measurement;
 
