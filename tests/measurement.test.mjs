@@ -2,9 +2,10 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MeasurementHarnessError,
+  launchMaterializedBridge,
   measurementReceiptKeys,
   runMeasurement,
   validateReceipt
@@ -34,9 +35,6 @@ describe("repository-local lifecycle measurement harness", () => {
           launcherCalls.push(context);
           return {
             pid: 4101,
-            ownershipToken: "bridge-identity-1",
-            ownedChildPid: 4102,
-            ownedChildIdentityProven: true,
             run: async () => ({
               connectionDurationMs: 20,
               childLifetimeMs: 12,
@@ -51,10 +49,12 @@ describe("repository-local lifecycle measurement harness", () => {
         },
         processInspector: {
           snapshot: async () => ({
-            ownershipProven: true,
+            pid: 4101,
+            identityObserved: true,
             identity: "bridge-identity-1",
             cpuMs: 8,
-            memoryBytes: 4096
+            memoryBytes: 4096,
+            descendants: [{ pid: 4102, identity: "child-identity-1", identityObserved: true }]
           })
         }
       });
@@ -125,6 +125,106 @@ describe("repository-local lifecycle measurement harness", () => {
         }
       })
     ).rejects.toMatchObject({ constructor: MeasurementHarnessError, code: "execution_failed" });
+  });
+
+  it("routes the materialized diagnostics workload to the read-only diagnostics tool", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-measure-routing-"));
+    const root = path.join(tempRoot, "workspace");
+    const sourcePath = path.join(root, "src", "index.ts");
+    const bridgeScript = path.join(tempRoot, "fake-mcp.mjs");
+    const requestLog = path.join(tempRoot, "requests.jsonl");
+    await fs.mkdir(path.dirname(sourcePath), { recursive: true });
+    await fs.mkdir(root, { recursive: true });
+    await fs.writeFile(sourcePath, "export const measurementFixture = 1;\n");
+    await fs.writeFile(
+      bridgeScript,
+      `import fs from "node:fs";\nimport readline from "node:readline";\nconst log = ${JSON.stringify(requestLog)};\nconst rl = readline.createInterface({ input: process.stdin });\nrl.on("line", (line) => { const request = JSON.parse(line); fs.appendFileSync(log, JSON.stringify(request) + "\\n"); if (request.id !== undefined) process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: {} }) + "\\n"); });\nrl.on("close", () => process.exit(0));\n`
+    );
+    try {
+      const bridge = await launchMaterializedBridge(
+        { version: 1, runtime: "native-node", command: process.execPath, args: [bridgeScript] },
+        { root, operationClass: "diagnostics", diagnosticsTarget: sourcePath, timeoutMs: 2000, clock: { now: () => 1 } }
+      );
+      await bridge.run();
+      bridge.close();
+      await expect(bridge.waitForExit(2000)).resolves.toBe(true);
+      const requests = (await fs.readFile(requestLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      expect(requests.map((request) => request.method)).toEqual(["initialize", "notifications/initialized", "tools/call"]);
+      expect(requests[2].params).toMatchObject({ name: "lsp_diagnostics", arguments: { file: sourcePath, root } });
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unvalidated launch records and does not force-close after identity uncertainty", async () => {
+    await expect(runMeasurement({
+      root: process.cwd(),
+      tempRoot: os.tmpdir(),
+      controlState: "positive",
+      controlObserved: true,
+      controlSimultaneous: true,
+      launchRecord: { version: 1, runtime: "native-node", command: "node.cmd", args: ["bridge.mjs"] },
+      launcher: async () => ({ pid: 4201 })
+    })).rejects.toMatchObject({ code: "launch_record_invalid" });
+
+    const forceClose = vi.fn(() => true);
+    const receipt = await runMeasurement({
+      root: process.cwd(),
+      tempRoot: os.tmpdir(),
+      controlState: "positive",
+      controlObserved: true,
+      controlSimultaneous: true,
+      launchRecord: { version: 1, runtime: "native-node", command: process.execPath, args: ["bridge.mjs"] },
+      launcher: async () => ({
+        pid: 4201,
+        run: async () => ({}),
+        close: async () => undefined,
+        waitForExit: async () => false,
+        forceClose
+      }),
+      processInspector: {
+        snapshot: async (_pid, context) => ({
+          pid: 4201,
+          identityObserved: context.phase !== "force_close",
+          identity: context.phase === "force_close" ? null : "identity-at-launch",
+          cpuMs: 1,
+          memoryBytes: 1
+        })
+      }
+    });
+    expect(forceClose).not.toHaveBeenCalled();
+    expect(receipt.reasonCodes).toContain("cleanup_uncertain");
+    expect(receipt.outcome).toBe("INCONCLUSIVE");
+
+    const reusedForceClose = vi.fn(() => true);
+    const reusedReceipt = await runMeasurement({
+      root: process.cwd(),
+      tempRoot: os.tmpdir(),
+      controlState: "positive",
+      controlObserved: true,
+      controlSimultaneous: true,
+      launchRecord: { version: 1, runtime: "native-node", command: process.execPath, args: ["bridge.mjs"] },
+      launcher: async () => ({
+        pid: 4202,
+        run: async () => ({}),
+        close: async () => undefined,
+        waitForExit: async () => false,
+        forceClose: reusedForceClose
+      }),
+      processInspector: {
+        snapshot: async (_pid, context) => ({
+          pid: 4202,
+          identityObserved: true,
+          identity: context.phase === "launch" ? "identity-at-launch" : "identity-after-reuse",
+          cpuMs: 1,
+          memoryBytes: 1
+        })
+      }
+    });
+    expect(reusedForceClose).not.toHaveBeenCalled();
+    expect(reusedReceipt.reasonCodes).toContain("pid_reuse_uncertain");
+    expect(reusedReceipt.reasonCodes).toContain("cleanup_uncertain");
+    expect(reusedReceipt.outcome).toBe("INCONCLUSIVE");
   });
 
   it("prints no receipt for CLI startup errors", () => {

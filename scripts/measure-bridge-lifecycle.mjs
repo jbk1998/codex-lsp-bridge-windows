@@ -1,13 +1,15 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const execFileAsync = promisify(execFile);
 const receiptSchemaVersion = 1;
 const r21Outcomes = new Set(["RETAIN_BASELINE", "REPEAT_MEASUREMENT", "EVALUATE_IDLE_SUSPENSION", "EVALUATE_NARROW_BROKER"]);
 const supportedLanguages = new Set(["typescript", "python", "rust", "go"]);
@@ -59,6 +61,7 @@ export async function runMeasurement(options = {}) {
   const startedAtMonotonicMs = monotonicNow(clock);
   const runId = randomHex(randomBytesImpl, 16);
   const rootFingerprint = fingerprintRoot(root, randomBytesImpl);
+  const processInspector = options.processInspector ?? createDefaultProcessInspector();
   const reasonCodes = [];
   let runDirectory;
   let bridge;
@@ -84,20 +87,24 @@ export async function runMeasurement(options = {}) {
       reasonCodes.push("missing_workload");
     } else {
       const launchRecord = await resolveLaunchRecord(options);
+      const validatedLaunchRecord = await revalidateLaunchRecord(launchRecord);
       const launch = options.launcher ?? launchMaterializedBridge;
       try {
-        bridge = await launch(launchRecord, {
+        const diagnosticsTarget = operationClass === "diagnostics" ? selectDiagnosticTarget(fsImpl, root, language, options.diagnosticsFile) : undefined;
+        bridge = await launch(validatedLaunchRecord, {
           root,
           language,
           operationClass,
+          diagnosticsTarget,
+          processInspector,
           runDirectory,
           timeoutMs: options.timeoutMs ?? 5000,
           signal: options.signal,
           clock
         });
-        bridgeSampleBefore = await inspectBridge(options.processInspector, bridge, "before");
+        bridgeSampleBefore = await inspectBridge(processInspector, bridge, "launch");
         runMetrics = (await bridge.run?.()) ?? {};
-        bridgeSampleAfter = await inspectBridge(options.processInspector, bridge, "after");
+        bridgeSampleAfter = await inspectBridge(processInspector, bridge, "after");
       } catch {
         throw new MeasurementHarnessError("execution_failed");
       }
@@ -111,7 +118,13 @@ export async function runMeasurement(options = {}) {
         await bridge.close?.();
         const exited = (await bridge.waitForExit?.(options.timeoutMs ?? 5000)) ?? true;
         if (!exited) {
-          await bridge.forceClose?.();
+          const identityBeforeForceClose = await inspectBridge(processInspector, bridge, "force_close");
+          if (!bridgeSampleBefore?.identity || !identityBeforeForceClose || !sameIdentity(bridgeSampleBefore.identity, identityBeforeForceClose.identity)) {
+            cleanupUncertain = true;
+          } else {
+            const forced = (await bridge.forceClose?.(bridgeSampleBefore.identity, processInspector)) ?? false;
+            if (!forced) cleanupUncertain = true;
+          }
           const exitedAfterForce = (await bridge.waitForExit?.(250)) ?? false;
           if (!exitedAfterForce) cleanupUncertain = true;
         }
@@ -130,16 +143,19 @@ export async function runMeasurement(options = {}) {
 
   const finishedAtMonotonicMs = monotonicNow(clock);
   if (!bridge || !Number.isInteger(bridge.pid) || bridge.pid <= 0) reasonCodes.push("ownership_ambiguous");
-  if (!bridgeSampleBefore || !bridgeSampleAfter || !sameIdentity(bridgeSampleBefore.identity, bridgeSampleAfter.identity)) {
+  if (bridge && (!bridgeSampleBefore || !bridgeSampleAfter || !sameIdentity(bridgeSampleBefore.identity, bridgeSampleAfter.identity))) {
     reasonCodes.push("pid_reuse_uncertain");
+    cleanupUncertain = true;
   }
 
-  const bridgeOwnedCpuMs = finiteOrNull(bridgeSampleAfter?.cpuMs ?? runMetrics.bridgeOwnedCpuMs);
-  const bridgeOwnedMemoryBytes = finiteOrNull(bridgeSampleAfter?.memoryBytes ?? runMetrics.bridgeOwnedMemoryBytes);
+  const bridgeOwnedCpuMs = finiteOrNull(bridgeSampleAfter?.cpuMs);
+  const bridgeOwnedMemoryBytes = finiteOrNull(bridgeSampleAfter?.memoryBytes);
   if (bridgeOwnedCpuMs === null || bridgeOwnedMemoryBytes === null) reasonCodes.push("metrics_unavailable");
   if (cleanupUncertain) reasonCodes.push("cleanup_uncertain");
 
-  const ownedChildPid = Number.isInteger(bridge?.ownedChildPid) && bridge.ownedChildIdentityProven === true ? bridge.ownedChildPid : null;
+  const ownedChild = observableOwnedChild(bridgeSampleAfter) ?? observableOwnedChild(bridgeSampleBefore);
+  const ownedChildPid = ownedChild?.pid ?? null;
+  if (operationClass === "diagnostics" && ownedChildPid === null) reasonCodes.push("ownership_ambiguous");
   const receipt = {
     schemaVersion: receiptSchemaVersion,
     runId,
@@ -202,25 +218,26 @@ export function validateReceipt(receipt) {
 
 export function createDefaultProcessInspector() {
   return {
-    async snapshot(pid, context = {}) {
-      return {
-        pid,
-        identity: context.handle?.ownershipToken ?? null,
-        ownershipProven: context.handle?.ownershipToken !== undefined,
-        alive: isProcessAlive(pid),
-        cpuMs: null,
-        memoryBytes: null
-      };
+    async snapshot(pid) {
+      if (process.platform === "win32") return inspectWindowsProcess(pid);
+      return inspectProcProcess(pid);
     }
   };
 }
 
 async function resolveLaunchRecord(options) {
-  if (options.launchRecord) return options.launchRecord;
+  if (options.launchRecord) {
+    try {
+      const runtime = await importNativeNodeRuntime();
+      return runtime.validateNativeNodeLaunchRecord(options.launchRecord);
+    } catch {
+      throw new MeasurementHarnessError("launch_record_invalid");
+    }
+  }
   if (options.launchRecordPath) {
     try {
       const record = JSON.parse(fs.readFileSync(path.resolve(options.launchRecordPath), "utf8"));
-      const runtime = await import(pathToFileURL(path.join(packageRoot, "dist", "core", "native-node-runtime.js")).href);
+      const runtime = await importNativeNodeRuntime();
       return runtime.validateNativeNodeLaunchRecord(record);
     } catch {
       throw new MeasurementHarnessError("launch_record_invalid");
@@ -228,15 +245,29 @@ async function resolveLaunchRecord(options) {
   }
 
   try {
-    const runtime = await import(pathToFileURL(path.join(packageRoot, "dist", "core", "native-node-runtime.js")).href);
+    const runtime = await importNativeNodeRuntime();
     return runtime.createNativeNodeLaunchRecord(path.join(packageRoot, "dist", "index.js"), ["mcp"]);
   } catch {
     throw new MeasurementHarnessError("launch_record_unavailable");
   }
 }
 
-async function launchMaterializedBridge(record, context) {
-  const child = spawn(record.command, record.args, {
+async function revalidateLaunchRecord(record) {
+  try {
+    const runtime = await importNativeNodeRuntime();
+    return runtime.validateNativeNodeLaunchRecord(record);
+  } catch {
+    throw new MeasurementHarnessError("launch_record_invalid");
+  }
+}
+
+async function importNativeNodeRuntime() {
+  return import(pathToFileURL(path.join(packageRoot, "dist", "core", "native-node-runtime.js")).href);
+}
+
+export async function launchMaterializedBridge(record, context) {
+  const validatedRecord = await revalidateLaunchRecord(record);
+  const child = spawn(validatedRecord.command, validatedRecord.args, {
     cwd: context.root,
     stdio: ["pipe", "pipe", "pipe"],
     windowsVerbatimArguments: false
@@ -293,7 +324,6 @@ async function launchMaterializedBridge(record, context) {
 
   return {
     pid: child.pid,
-    ownershipToken: child,
     async run() {
       const connectionStarted = monotonicNow(context.clock);
       const initializationStarted = monotonicNow(context.clock);
@@ -301,7 +331,11 @@ async function launchMaterializedBridge(record, context) {
       const initializationDurationMs = monotonicNow(context.clock) - initializationStarted;
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
       const requestStarted = monotonicNow(context.clock);
-      await request(2, "tools/call", { name: "lsp_status", arguments: {} });
+      const toolArguments = context.operationClass === "diagnostics"
+        ? { file: context.diagnosticsTarget, root: context.root }
+        : {};
+      const toolName = context.operationClass === "diagnostics" ? "lsp_diagnostics" : "lsp_status";
+      await request(2, "tools/call", { name: toolName, arguments: toolArguments });
       return {
         connectionDurationMs: monotonicNow(context.clock) - connectionStarted,
         initializationDurationMs,
@@ -325,8 +359,16 @@ async function launchMaterializedBridge(record, context) {
         });
       });
     },
-    forceClose() {
-      if (!exited) child.kill();
+    async forceClose(expectedIdentity, inspector) {
+      if (exited || !expectedIdentity || !inspector || typeof inspector.snapshot !== "function") return false;
+      let current;
+      try {
+        current = await inspector.snapshot(child.pid, { phase: "force_close" });
+      } catch {
+        return false;
+      }
+      if (!current || current.identityObserved !== true || !sameIdentity(expectedIdentity, current.identity)) return false;
+      return child.kill();
     }
   };
 }
@@ -335,12 +377,110 @@ async function inspectBridge(inspector, bridge, phase) {
   const effectiveInspector = inspector ?? createDefaultProcessInspector();
   if (!Number.isInteger(bridge?.pid) || bridge.pid <= 0) return undefined;
   try {
-    const sample = await effectiveInspector.snapshot(bridge.pid, { phase, handle: bridge });
-    if (!sample || sample.ownershipProven !== true) return undefined;
+    const sample = await effectiveInspector.snapshot(bridge.pid, { phase });
+    if (!sample || sample.pid !== undefined && sample.pid !== bridge.pid || sample.identityObserved !== true || sample.identity === null || sample.identity === undefined) return undefined;
+    if (sample.descendants && !Array.isArray(sample.descendants)) sample.descendants = [sample.descendants];
     return sample;
   } catch {
     return undefined;
   }
+}
+
+function observableOwnedChild(sample) {
+  if (!Array.isArray(sample?.descendants)) return undefined;
+  const children = sample.descendants.filter((candidate) =>
+    candidate && Number.isInteger(candidate.pid) && candidate.pid > 0 && candidate.identityObserved === true && candidate.identity !== null && candidate.identity !== undefined
+  );
+  return children.length === 1 ? children[0] : undefined;
+}
+
+function selectDiagnosticTarget(fsImpl, root, language, requestedFile) {
+  const candidates = requestedFile
+    ? [requestedFile]
+    : preferredDiagnosticFiles(language).map((relativePath) => path.join(root, relativePath));
+  const boundedCandidates = requestedFile ? candidates : [...candidates, ...findDiagnosticCandidates(fsImpl, root, language)];
+  for (const candidate of boundedCandidates) {
+    const resolved = path.resolve(root, candidate);
+    if (!isPathInsideRoot(root, resolved)) continue;
+    try {
+      const stat = fsImpl.lstatSync(resolved);
+      if (stat.isFile() && !stat.isSymbolicLink() && hasLanguageExtension(resolved, language)) return resolved;
+    } catch {
+      // Try the next bounded, deterministic candidate.
+    }
+  }
+  throw new MeasurementHarnessError("diagnostic_target_unavailable");
+}
+
+function findDiagnosticCandidates(fsImpl, root, language) {
+  const results = [];
+  const pending = [{ directory: root, depth: 0 }];
+  const ignoredDirectories = new Set([".git", "node_modules", "dist", "coverage"]);
+  while (pending.length > 0 && results.length < 32) {
+    const current = pending.shift();
+    let entries;
+    try {
+      entries = fsImpl.readdirSync(current.directory, { withFileTypes: true }).sort((left, right) => left.name.localeCompare(right.name));
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const candidate = path.join(current.directory, entry.name);
+      if (entry.isFile() && hasLanguageExtension(candidate, language)) results.push(candidate);
+      else if (entry.isDirectory() && current.depth < 3 && !ignoredDirectories.has(entry.name)) pending.push({ directory: candidate, depth: current.depth + 1 });
+      if (results.length >= 32) break;
+    }
+  }
+  return results;
+}
+
+function preferredDiagnosticFiles(language) {
+  if (language === "typescript") return ["src/index.ts", "src/index.tsx", "index.ts", "index.tsx"];
+  if (language === "python") return ["src/main.py", "main.py"];
+  if (language === "rust") return ["src/main.rs", "src/lib.rs", "main.rs", "lib.rs"];
+  return ["main.go", "src/main.go"];
+}
+
+function hasLanguageExtension(filePath, language) {
+  const extension = path.extname(filePath).toLowerCase();
+  if (language === "typescript") return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(extension);
+  return extension === ({ python: ".py", rust: ".rs", go: ".go" }[language] ?? "");
+}
+
+function isPathInsideRoot(root, candidate) {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+async function inspectWindowsProcess(pid) {
+  const script = "$p = Get-Process -Id " + pid + " -ErrorAction Stop; $all = @(); try { $all = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId,ParentProcessId,CreationDate) } catch {}; $desc = @(); $frontier = @( " + pid + "); while ($frontier.Count -gt 0) { $next = @(); foreach ($item in $all) { if ($frontier -contains [int]$item.ParentProcessId) { $desc += [pscustomobject]@{ pid = [int]$item.ProcessId; identity = \"$($item.ProcessId):$($item.CreationDate)\"; identityObserved = $true }; $next += [int]$item.ProcessId } } $frontier = $next }; [pscustomobject]@{ pid = [int]$p.Id; identity = \"$($p.Id):$($p.StartTime.ToUniversalTime().Ticks)\"; identityObserved = $true; alive = $true; cpuMs = [double]$p.TotalProcessorTime.TotalMilliseconds; memoryBytes = [int64]$p.WorkingSet64; descendants = @($desc) } | ConvertTo-Json -Compress";
+  return runProcessInspector("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
+}
+
+async function runProcessInspector(command, args) {
+  const { stdout } = await execFileAsync(command, args, { windowsHide: true, maxBuffer: 256 * 1024 });
+  const sample = JSON.parse(stdout);
+  if (Array.isArray(sample)) throw new Error("unexpected process inspector response");
+  return sample;
+}
+
+async function inspectProcProcess(pid) {
+  if (!isProcessAlive(pid)) throw new Error("process is not alive");
+  const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
+  const startTime = fields[19];
+  const cpuTicks = Number(fields[11]) + Number(fields[12]);
+  const status = fs.readFileSync(`/proc/${pid}/status`, "utf8");
+  const memoryMatch = status.match(/^VmRSS:\s+(\d+)\s+kB$/m);
+  return {
+    pid,
+    identity: `${pid}:${startTime}`,
+    identityObserved: true,
+    alive: true,
+    cpuMs: Number.isFinite(cpuTicks) ? cpuTicks * 10 : null,
+    memoryBytes: memoryMatch ? Number(memoryMatch[1]) * 1024 : null,
+    descendants: []
+  };
 }
 
 function createRunDirectory(fsImpl, tempRoot) {
