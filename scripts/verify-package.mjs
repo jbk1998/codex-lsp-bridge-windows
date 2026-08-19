@@ -10,6 +10,7 @@ const requiredPackageFiles = [
   "dist/adapters/language-config.js",
   "dist/core/command-service.js",
   "dist/core/lsp-manager.js",
+  "dist/core/native-node-runtime.js",
   "dist/core/workspace-root.js",
   "dist/transport/mcp.js",
   "dist/utils/uri.js",
@@ -33,6 +34,7 @@ const requiredPackageFiles = [
 
 const requiredLocalFiles = [
   "dist/index.js",
+  "dist/core/native-node-runtime.js",
   "dist/core/workspace-root.js",
   ".codex-plugin/plugin.json",
   ".mcp.json",

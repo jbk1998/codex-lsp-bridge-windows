@@ -9,6 +9,7 @@ import { loadConfig } from "./core/config.js";
 import { resolveDiagnosticsTimeout } from "./core/diagnostics-timeout.js";
 import { runDoctor } from "./core/doctor.js";
 import { LspManager } from "./core/lsp-manager.js";
+import { revalidateNativeNodeRuntime, validateNativeNodeRuntime, type NativeNodeRuntimeValidation } from "./core/native-node-runtime.js";
 import { resolveExplicitWorkspaceRootSync, resolveRequestedRootSync } from "./core/workspace-root.js";
 import { supportedExtensionsForLanguage } from "./adapters/language-config.js";
 import { filePathToUri } from "./utils/uri.js";
@@ -30,21 +31,22 @@ interface SourceFileListCacheEntry {
 }
 
 async function main(): Promise<void> {
+  const runtimeValidation = validateNativeNodeRuntime();
   const args = process.argv.slice(2);
   if (args.length === 0 || args[0] === "help" || args[0] === "--help" || args[0] === "-h") {
     printUsage("stdout");
     return;
   }
   if (args[0] === "install") {
-    runPackageScript("install-codex.mjs", args.slice(1));
+    runPackageScript("install-codex.mjs", args.slice(1), runtimeValidation);
     return;
   }
   if (args[0] === "uninstall") {
-    runPackageScript("uninstall-codex.mjs", args.slice(1));
+    runPackageScript("uninstall-codex.mjs", args.slice(1), runtimeValidation);
     return;
   }
   if (args[0] === "post-tool-diagnostics") {
-    runPackageScript("codex-lsp-post-tool-use.mjs", args.slice(1));
+    runPackageScript("codex-lsp-post-tool-use.mjs", args.slice(1), runtimeValidation);
     return;
   }
 
@@ -423,10 +425,11 @@ function resolveFileInsideRoot(root: string, file: string): string {
   return filePath;
 }
 
-function runPackageScript(scriptName: string, args: string[]): void {
+function runPackageScript(scriptName: string, args: string[], runtimeValidation: NativeNodeRuntimeValidation): void {
   const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const scriptPath = path.join(packageRoot, "scripts", scriptName);
-  const result = spawnSync(process.execPath, [scriptPath, ...args], {
+  const currentRuntime = revalidateNativeNodeRuntime(runtimeValidation);
+  const result = spawnSync(currentRuntime.executablePath, [scriptPath, ...args], {
     stdio: "inherit"
   });
   process.exitCode = result.status ?? 1;

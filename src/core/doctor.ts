@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { listLanguageServerConfigs } from "../adapters/language-config.js";
 import { loadConfig } from "./config.js";
 import { resolveDiagnosticsTimeout, type ResolvedDiagnosticsTimeout } from "./diagnostics-timeout.js";
+import { NativeNodeRuntimeError, validateNativeNodeRuntime } from "./native-node-runtime.js";
 
 type DoctorLanguageResult = {
   language: string;
@@ -20,8 +21,14 @@ export interface DoctorResult {
   languages: DoctorLanguageResult[];
   codex: {
     mcpConfigured: boolean;
+    explicitMcpReady: boolean;
     hookConfigured: boolean;
+    hookState: "absent" | "disabled" | "enabled" | "invalid";
     instructionsConfigured: boolean;
+    launcher: {
+      status: "ready" | "unavailable";
+      code?: string;
+    };
   };
   build: {
     distExists: boolean;
@@ -48,10 +55,19 @@ export function runDoctor(rootPath: string): DoctorResult {
       ...(executablePath ? { path: executablePath } : {})
     };
   });
+  const mcpConfig = readText(path.join(codexHome, "config.toml"));
+  const hookConfig = readText(path.join(codexHome, "hooks.json"));
+  const hookState = inspectHookState(hookConfig);
+  const launcher = inspectCurrentLauncher();
+  const mcpConfigured = mcpConfig.includes("[mcp_servers.codex-lsp-bridge]");
+  const explicitMcpReady = inspectExplicitMcpConfig(mcpConfig);
   const codex = {
-    mcpConfigured: readText(path.join(codexHome, "config.toml")).includes("[mcp_servers.codex-lsp-bridge]"),
-    hookConfigured: readText(path.join(codexHome, "hooks.json")).includes("codex-lsp-bridge:post-tool-diagnostics"),
-    instructionsConfigured: readText(path.join(codexHome, "AGENTS.md")).includes("BEGIN codex-lsp-bridge")
+    mcpConfigured,
+    explicitMcpReady,
+    hookConfigured: hookState !== "absent",
+    hookState,
+    instructionsConfigured: readText(path.join(codexHome, "AGENTS.md")).includes("BEGIN codex-lsp-bridge"),
+    launcher
   };
   const build = inspectBuildFreshness(packageRoot);
   return {
@@ -74,13 +90,69 @@ function buildRecommendations(
       recommendations.push(`Install ${language.language} language server: ${language.installHint}`);
     }
   }
-  if (!codex.mcpConfigured || !codex.hookConfigured || !codex.instructionsConfigured) {
+  if (!codex.explicitMcpReady || !codex.instructionsConfigured) {
     recommendations.push("Run codex-lsp-bridge install and restart Codex.");
+  }
+  if (codex.hookState === "enabled") {
+    recommendations.push("The managed PostToolUse hook is enabled; disable it before lifecycle measurement.");
   }
   if (!build.distExists || build.stale) {
     recommendations.push("Run npm run build before using the local package.");
   }
   return recommendations;
+}
+
+function inspectCurrentLauncher(): DoctorResult["codex"]["launcher"] {
+  try {
+    validateNativeNodeRuntime();
+    return { status: "ready" };
+  } catch (error) {
+    return {
+      status: "unavailable",
+      code: error instanceof NativeNodeRuntimeError ? error.code : "runtime_unavailable"
+    };
+  }
+}
+
+function inspectExplicitMcpConfig(config: string): boolean {
+  const section = config.match(/(?:^|\n)\[mcp_servers\.codex-lsp-bridge\]\n([\s\S]*?)(?=\n\[|$)/)?.[1] ?? "";
+  const command = section.match(/^command\s*=\s*("(?:\\.|[^"\\])*")\s*$/m)?.[1];
+  if (!command) return false;
+  try {
+    const value = JSON.parse(command);
+    if (typeof value !== "string") return false;
+    validateNativeNodeRuntime(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function inspectHookState(content: string): DoctorResult["codex"]["hookState"] {
+  if (!content.trim()) return "absent";
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return content.includes("codex-lsp-bridge:post-tool-diagnostics") ? "invalid" : "absent";
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return "invalid";
+  const hooks = (parsed as { hooks?: { PostToolUse?: unknown } }).hooks?.PostToolUse;
+  if (!Array.isArray(hooks)) return "absent";
+  for (const entry of hooks) {
+    if (!entry || typeof entry !== "object") continue;
+    const nested = (entry as { hooks?: unknown }).hooks;
+    if (!Array.isArray(nested)) continue;
+    for (const hook of nested) {
+      if (!hook || typeof hook !== "object") continue;
+      if ((hook as { id?: unknown }).id !== "codex-lsp-bridge:post-tool-diagnostics") continue;
+      if ((hook as { enabled?: unknown }).enabled === false || (entry as { enabled?: unknown }).enabled === false) {
+        return "disabled";
+      }
+      return "enabled";
+    }
+  }
+  return "absent";
 }
 
 function findExecutable(command: string): string | undefined {
