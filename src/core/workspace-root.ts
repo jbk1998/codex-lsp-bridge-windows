@@ -71,7 +71,10 @@ export function canonicalizeTargetPathSync(targetPath: string): string {
 
 export function resolvePathInsideWorkspaceRootSync(rootPath: string, targetPath: string): string {
   const resolvedRoot = canonicalizeWorkspaceRootSync(rootPath);
-  const resolvedTarget = path.isAbsolute(targetPath) ? path.resolve(targetPath) : path.resolve(resolvedRoot, targetPath);
+  const normalizedTargetPath = normalizeInputPathSeparators(targetPath);
+  const resolvedTarget = path.isAbsolute(normalizedTargetPath)
+    ? path.resolve(normalizedTargetPath)
+    : path.resolve(resolvedRoot, normalizedTargetPath);
   const canonicalTarget = canonicalizeTargetPathSync(resolvedTarget);
   if (!isPathInsideWorkspaceRootSync(canonicalTarget, resolvedRoot)) {
     throw new Error(`Path is outside workspace root: ${resolvedTarget}`);
@@ -126,12 +129,21 @@ function isInsideRoot(targetPath: string, rootPath: string): boolean {
 }
 
 function normalizePathIdentity(targetPath: string): string {
-  const normalized = path.normalize(targetPath);
+  const normalized = normalizePathForAccess(targetPath);
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 function normalizePathForAccess(targetPath: string): string {
-  return path.normalize(targetPath);
+  const normalized = path.normalize(targetPath);
+  /* c8 ignore next -- Darwin's /private/var namespace alias is not reachable on other CI hosts. */
+  if (process.platform === "darwin" && normalized.startsWith("/private/var/")) {
+    return normalized.slice("/private".length);
+  }
+  return normalized;
+}
+
+function normalizeInputPathSeparators(targetPath: string): string {
+  return process.platform === "win32" ? targetPath : targetPath.replaceAll("\\", "/");
 }
 
 function realPathForIdentitySync(targetPath: string): string {

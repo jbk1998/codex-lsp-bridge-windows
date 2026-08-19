@@ -300,7 +300,8 @@ function resolveNpmShimEntrypoint(command: string): string | undefined {
 
   const match = /"%dp0%\\([^"]+\.(?:js|cjs|mjs))"/i.exec(contents);
   if (!match) return undefined;
-  const entrypoint = path.join(path.dirname(command), match[1]);
+  const relativeEntrypoint = match[1].split(/[\\/]+/).join(path.sep);
+  const entrypoint = path.join(path.dirname(command), relativeEntrypoint);
   return fs.existsSync(entrypoint) ? entrypoint : undefined;
 }
 
