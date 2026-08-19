@@ -6,9 +6,10 @@ in [the 2026-08-18 plan](./2026-08-18-lsp-bridge-process-reuse-debate-and-plan.m
 
 ## Status
 
-This is the target contract for the staged rollout. It is not evidence that
-every installer, plugin, or generated Codex configuration path already enforces
-it. The rollout is complete only when the acceptance checks below pass.
+The source implementation, generated no-hook baseline, and repository-local
+measurement boundary are in place. Native Windows process-identity, resource,
+fresh-install, and simultaneous-control evidence remains an acceptance gate;
+repository fixtures do not establish production load improvement.
 
 ## User-facing behavior
 
@@ -52,10 +53,13 @@ it. The rollout is complete only when the acceptance checks below pass.
 
 ## Measurement rules
 
-Baseline measurement is opt-in and local. The diagnostic harness is inactive
-outside measurement runs, creates no resident service or persistent shared
-state, and records only allowlisted process and lifecycle metrics. It must not
-capture source contents, document text, credentials, or unrelated process data.
+Baseline measurement is opt-in and local. Run
+`scripts/measure-bridge-lifecycle.mjs` only during an approved measurement
+window with the approved native Node executable. The harness is repository-only,
+inactive outside measurement runs, creates no resident service or persistent
+shared state, and records only allowlisted process and lifecycle metrics. It
+must not capture source contents, document text, credentials, or unrelated
+process data.
 
 The baseline includes:
 
@@ -67,8 +71,10 @@ The baseline includes:
   latency, CPU, memory, restarts, and recovery failures.
 
 If process ownership or workload representativeness cannot be established, the
-run is `INCONCLUSIVE`. It must be repeated or extended, and it cannot support
-a bridge-load or machine-load improvement claim.
+run emits one `INCONCLUSIVE` receipt. Startup, parse, or execution failure is a
+`HARNESS_ERROR` with no receipt. An inconclusive run must be repeated or
+extended, and neither result can support a bridge-load or machine-load
+improvement claim.
 
 The four permitted baseline outcomes are:
 
@@ -96,6 +102,12 @@ Before calling the staged rollout complete, verify:
 - privacy, rollback, and `INCONCLUSIVE` handling;
 - no load-improvement claim without representative workload and valid
   attribution.
+
+The default installer leaves the managed hook absent or disabled. The historical
+per-file wrapper and batching/IPC helper are characterized separately and are
+not current baseline acceptance evidence. A future hook proposal must count
+total bridge invocations across all files and languages in one edit event and
+must prove no more than one.
 
 See [RELEASE.md](./RELEASE.md) for the release gate and
 [CONTRIBUTING.md](../CONTRIBUTING.md) for contributor expectations.

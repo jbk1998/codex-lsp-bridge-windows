@@ -44,6 +44,24 @@ checks in those documents pass.
   representative-workload check is `INCONCLUSIVE` and cannot support a load
   improvement claim.
 
+The repository-only lifecycle harness is not a package bin, MCP tool, hook, or
+resident service. Run it only during an approved measurement window with the
+native Node executable and both external attribution controls:
+
+```text
+<approved-native-node.exe> scripts/measure-bridge-lifecycle.mjs \
+  --control positive --control-observed --control-simultaneous \
+  --r21-outcome REPEAT_MEASUREMENT
+```
+
+Use `--control negative` for the Code Mode-only negative control. The harness
+prints one privacy-allowlisted JSON receipt for completed runs, removes its
+temporary run directory, and reports `INCONCLUSIVE` when workload, ownership,
+control, or required metrics are missing. Startup, parse, or execution errors
+are `HARNESS_ERROR` and do not produce a receipt. Native Windows CPU, memory,
+process-identity, and simultaneous-control evidence remains a maintainer
+acceptance step; repository fixtures are readiness evidence only.
+
 ## Why Use It
 
 Codex is strong at text search and patching, but many coding mistakes are
@@ -197,7 +215,8 @@ restart, Codex can call:
 - Definition, references, symbols, and hover from local language servers.
 - Position-based lookup for precise navigation when file/line/character is
   known.
-- Quiet PostToolUse diagnostics for touched supported source files.
+- An explicitly preserved, future-only PostToolUse diagnostics path; the default
+  installer does not enable it during the baseline.
 - Rust workspace detection through `Cargo.toml` and `.rs` hook coverage.
 - Workspace-root boundaries with realpath checks, including symlink escape
   protection.
@@ -307,20 +326,22 @@ Preview the generated Codex config without writing files:
 codex-lsp-bridge install --dry-run
 ```
 
-The installer writes:
+The installer writes or updates:
 
 - `~/.codex/config.toml`: global MCP server registration
-- `~/.codex/hooks.json`: `PostToolUse` hook for touched supported source-file diagnostics
+- `~/.codex/hooks.json`: inspected and preserved; the default install leaves the
+  managed `PostToolUse` hook absent
 - `~/.codex/AGENTS.md`: managed workflow instructions that tell Codex to use
   LSP diagnostics during review, audit, and investigation workflows, not only
   after edits
 
-The generated MCP and hook commands are part of the runtime contract. On
-Windows, they must resolve the approved native `node.exe` directly for the
-bridge runtime. Run `codex-lsp-bridge install --dry-run` and inspect the output
-when validating a setup; a bare `node`, `node.cmd`, `npm`, or `node_repl.exe`
-bridge launcher is not a valid process-baseline configuration. This restriction
-does not apply to a language server's own supported `.cmd` or `.bat` launcher.
+The installer-generated MCP and any future hook commands are part of the
+runtime contract. On Windows, they must resolve the approved native `node.exe`
+directly for the bridge runtime. Run `codex-lsp-bridge install --dry-run` and
+inspect the output when validating a setup; a bare `node`, `node.cmd`, `npm`, or
+`node_repl.exe` bridge launcher is not a valid process-baseline configuration.
+This restriction does not apply to a language server's own supported `.cmd` or
+`.bat` launcher.
 
 Restart Codex after installing.
 
@@ -341,12 +362,12 @@ codex plugin add codex-lsp-bridge@<marketplace>
 ```
 
 Until then, use the `npx codex-lsp-bridge@latest install` path above. It writes
-the same MCP registration, hook, and workflow instructions directly into
-`~/.codex`.
+the same MCP registration and workflow instructions directly into `~/.codex`,
+preserves existing user-owned hook state, and leaves the managed hook absent.
 
 ## Uninstall
 
-Remove the MCP server registration and automatic diagnostics hook:
+Remove the MCP server registration and any managed diagnostics hook:
 
 ```bash
 npx codex-lsp-bridge@latest uninstall
@@ -377,35 +398,32 @@ that rule rather than using a package-manager shim as the bridge runtime. Treat
 the generated configuration as unvalidated until the process and lifecycle
 acceptance checks pass.
 
-The current local-install shape points Codex at the built server:
+The generated local-install shape points Codex at the built server through the
+validated native runtime:
 
 ```toml
 [mcp_servers.codex-lsp-bridge]
-command = "node"
+command = "C:\\path\\to\\native\\node.exe"
 args = [
-  "/absolute/path/to/codex-lsp-bridge/dist/index.js",
+  "C:\\path\\to\\codex-lsp-bridge\\dist\\index.js",
   "mcp"
 ]
 ```
 
-The current `--auto-update` shape points Codex at npm instead:
+An explicit `--auto-update` operation stages a package locally, then writes the
+same native runtime shape with a local immutable entrypoint:
 
 ```toml
 [mcp_servers.codex-lsp-bridge]
-command = "npm"
+command = "C:\\path\\to\\native\\node.exe"
 args = [
-  "exec",
-  "--yes",
-  "--package=codex-lsp-bridge@latest",
-  "--",
-  "codex-lsp-bridge",
+  "C:\\path\\to\\.codex\\codex-lsp-bridge\\bridge-entrypoint.mjs",
   "mcp"
 ]
 ```
 
-That mode lets other users receive package updates after restarting Codex,
-without manually reinstalling the MCP config. It depends on npm package
-resolution, so use the default local install mode for active local development.
+Package-manager resolution is therefore limited to the explicit install/update
+operation; MCP startup does not resolve packages or access the network.
 
 The target Windows runtime shape is a direct native executable path:
 
@@ -431,63 +449,19 @@ Recognized roots include `.git`, `.lsp-root`, `AGENTS.md`, `CLAUDE.md`,
 Markerless roots remain rejected; add `.lsp-root` inside a user-owned code
 folder when it should be treated as an independent workspace.
 
-The hook runs after edit tools and checks touched supported source files. The
-current generated shape is:
+The default generated hook shape is intentionally inactive:
 
 ```json
 {
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Write|Edit|MultiEdit|apply_patch|functions.apply_patch",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node '/absolute/path/to/codex-lsp-bridge/scripts/codex-lsp-post-tool-use.mjs'",
-            "id": "codex-lsp-bridge:post-tool-diagnostics"
-          }
-        ]
-      }
-    ]
-  }
+  "hooks": {}
 }
 ```
 
-The target Windows hook shape invokes the approved native runtime directly:
-
-```json
-{
-  "type": "command",
-  "command": "C:\\path\\to\\native\\node.exe C:\\path\\to\\codex-lsp-bridge\\scripts\\codex-lsp-post-tool-use.mjs",
-  "id": "codex-lsp-bridge:post-tool-diagnostics"
-}
-```
-
-Keep the hook disabled during the staged process and load baseline. If it is
-reactivated later, one edit event must produce at most one bridge CLI launch.
-
-The hook is intentionally post-tool, not pre-tool. Diagnostics are useful after
-a file changes, not before. Read-only review sessions will not trigger the hook
-unless Codex edits a file or explicitly calls the MCP diagnostics tool.
-If the touched file's language server is not installed, the hook skips that file
-quietly by default so a contributor without optional language tooling is not
-blocked.
-
-Rust files use the same hook path as TypeScript files. A touched `.rs` file
-calls `codex-lsp-bridge diagnostics --file <file> --root <workspace>`, which
-auto-detects Rust from the extension and starts `rust-analyzer` lazily. Missing
-`rust-analyzer` is treated as unavailable language tooling, not as a successful
-clean diagnostic result.
-
-Hook output is intentionally quiet:
-
-- clean files print one short line
-- `timed_out` with no diagnostics is silent by default
-- `CODEX_LSP_HOOK_VERBOSE_PENDING=1` prints pending or skipped language-server
-  details
-- warning/hint-only diagnostics print a compact count
-- repeated identical error output is deduplicated
-- `CODEX_LSP_HOOK_MAX_FILES` limits touched-file fanout, default `5`
+An existing user-owned hook is reported and preserved. The historical wrapper
+and batching/IPC helper remain characterized for a future, separately approved
+reactivation; they are not enabled by the baseline installer. Any future
+proposal must use the approved native runtime and prove at most one bridge CLI
+invocation across all files and languages in one edit event before activation.
 
 The installer also adds a managed `codex-lsp-bridge` section to
 `~/.codex/AGENTS.md`. That section is what makes review, audit, and
@@ -720,12 +694,10 @@ MCP stdio smoke test:
 printf '%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"lsp_symbols","arguments":{"query":"CommandService"}}}' \
-  | node dist/index.js mcp
+  | <approved-native-node.exe> dist/index.js mcp
 ```
 
-For Windows runtime validation, replace `node` in this developer smoke command
-with the approved native `node.exe`; the generated Codex bridge configuration
-must use that direct runtime as well.
+The generated Codex bridge configuration must use that direct runtime as well.
 
 ## Design Notes
 

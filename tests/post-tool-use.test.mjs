@@ -13,7 +13,7 @@ import {
   runPostToolUseDiagnostics
 } from "../scripts/codex-lsp-post-tool-use-core.mjs";
 
-describe("post-tool-use diagnostics hook", () => {
+describe("deferred post-tool-use diagnostics helper", () => {
   let rootPath = "";
   let outsidePath = "";
 
@@ -118,7 +118,7 @@ describe("post-tool-use diagnostics hook", () => {
     });
   });
 
-  it("prints clean diagnostics output from the batched subprocess path", async () => {
+  it("characterizes clean output from the helper's batched subprocess path", async () => {
     rootPath = await makeWorkspace();
     const binPath = path.join(rootPath, "fake-bin");
     await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
@@ -164,7 +164,7 @@ describe("post-tool-use diagnostics hook", () => {
     });
   });
 
-  it("uses IPC diagnostics before subprocess fallback when metadata is valid", async () => {
+  it("characterizes deferred IPC diagnostics before subprocess fallback", async () => {
     rootPath = await makeWorkspace();
     await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
     await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export {}\n");
@@ -194,7 +194,7 @@ describe("post-tool-use diagnostics hook", () => {
     expect(result.stdout).toBe("[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n");
   });
 
-  it("falls back to subprocess diagnostics when IPC is unavailable", async () => {
+  it("characterizes helper fallback when deferred IPC is unavailable", async () => {
     rootPath = await makeWorkspace();
     const binPath = path.join(rootPath, "fake-bin");
     await fs.mkdir(path.join(rootPath, "src"), { recursive: true });
