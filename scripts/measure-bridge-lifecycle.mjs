@@ -5,10 +5,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
-const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageRoot = resolvePackageRoot();
 const execFileAsync = promisify(execFile);
 const receiptSchemaVersion = 1;
 const r21Outcomes = new Set(["RETAIN_BASELINE", "REPEAT_MEASUREMENT", "EVALUATE_IDLE_SUSPENSION", "EVALUATE_NARROW_BROKER"]);
@@ -550,6 +550,14 @@ async function main() {
   }
 }
 
+function resolvePackageRoot() {
+  const entryPoint = process.argv[1];
+  if (entryPoint && path.basename(entryPoint) === "measure-bridge-lifecycle.mjs") {
+    return path.resolve(path.dirname(entryPoint), "..");
+  }
+  return process.cwd();
+}
+
 function parseArgs(args) {
   const values = {
     root: process.cwd(),
@@ -583,6 +591,6 @@ function parseArgs(args) {
   return values;
 }
 
-if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) {
+if (process.argv[1] && path.basename(process.argv[1]) === "measure-bridge-lifecycle.mjs") {
   void main();
 }
