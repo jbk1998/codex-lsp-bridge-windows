@@ -117,8 +117,9 @@ Example diagnostic signal:
 - **TypeScript diagnostics.** The bridge can surface syntax and semantic
   diagnostics such as `TS1109` and `TS2322` from `typescript-language-server`.
   Standalone JavaScript/ESM roots use the bundled Node runtime's `@types/node`
-  declarations for inferred projects when they are available; an explicit
-  `tsconfig.json`/`jsconfig.json` remains authoritative.
+  declarations for inferred projects when available, with the bridge package's
+  production dependency as a fallback; an explicit `tsconfig.json`/`jsconfig.json`
+  remains authoritative.
 - **Pyright diagnostics.** Python projects can get opened-file Pyright
   diagnostics through the same MCP interface.
 - **Root-aware calls.** CLI and MCP callers can pass `--root` / `root` with a

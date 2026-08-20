@@ -12,10 +12,12 @@ describe("package contract", () => {
   it("publishes every Codex plugin surface needed for one-command use", () => {
     const pkg = readJson<{
       bin: Record<string, string>;
+      dependencies: Record<string, string>;
       files: string[];
       scripts: Record<string, string>;
     }>("package.json");
 
+    expect(pkg.dependencies["@types/node"]).toBe("^22.15.0");
     expect(pkg.bin).toMatchObject({
       "codex-lsp-bridge": "dist/index.js",
       "codex-lsp-bridge-install": "scripts/install-codex.mjs",
