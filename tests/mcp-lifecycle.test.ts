@@ -106,6 +106,38 @@ describe("MCP lifecycle coordinator", () => {
     await active;
   });
 
+  it("reports drain and disposal exhaustion as separate lifecycle reasons", async () => {
+    let releaseActive: (() => void) | undefined;
+    let releaseDisposal: (() => void) | undefined;
+    const coordinator = new McpLifecycleCoordinator({
+      createDeadline: () => createDisposalDeadline(Date.now(), 10, 1, 1),
+      dispose: () =>
+        new Promise<void>((resolve) => {
+          releaseDisposal = resolve;
+        })
+    });
+    const active = coordinator.dispatch(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseActive = resolve;
+        })
+    );
+
+    await expect(coordinator.close()).resolves.toMatchObject({
+      state: "non_clean",
+      clean: false,
+      reasonCode: "active_requests_timeout",
+      reasonCodes: ["active_requests_timeout", "disposal_timeout"],
+      cleanupPending: true,
+      activeRequestCount: 1
+    });
+
+    releaseActive?.();
+    releaseDisposal?.();
+    await active;
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
   it("reports timed-out disposal as tracked cleanup instead of losing the in-flight promise", async () => {
     let release: (() => void) | undefined;
     const coordinator = new McpLifecycleCoordinator({
