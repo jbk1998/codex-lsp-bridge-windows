@@ -11,6 +11,8 @@ import {
   type ProcessOwnership,
   type ProcessTerminationResult
 } from "./process-ownership.js";
+import { validateNativeNodeRuntime } from "./native-node-runtime.js";
+import { filePathToUri } from "../utils/uri.js";
 
 export interface JsonRpcMessage {
   jsonrpc: "2.0";
@@ -58,7 +60,7 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   private stopPromise: Promise<ProcessTerminationResult | void> | undefined;
   private ownership: ProcessOwnership | undefined;
   private readonly pending = new Map<
-    number,
+    number | string,
     { resolve: (value: unknown) => void; reject: (reason: Error) => void }
   >();
 
@@ -72,11 +74,19 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
 
     const prepared = prepareSpawnCommand(this.config);
     const spawnProcess = this.options.spawnProcess ?? spawn;
-    this.process = spawnProcess(prepared.command, prepared.args, {
-      cwd: this.config.cwd,
-      stdio: "pipe",
-      windowsVerbatimArguments: prepared.windowsVerbatimArguments
-    });
+    try {
+      this.process = spawnProcess(prepared.command, prepared.args, {
+        cwd: this.config.cwd,
+        stdio: "pipe",
+        windowsVerbatimArguments: prepared.windowsVerbatimArguments
+      });
+    } catch (cause) {
+      const error = formatStartError(this.config.command, cause);
+      this.rejectPending(error);
+      this.closing = false;
+      this.emit("exit", { code: null, signal: null });
+      throw error;
+    }
     this.ownership = this.options.ownershipFactory
       ? this.options.ownershipFactory(this.process, this.config, prepared)
       : createProcessOwnership(this.process as unknown as OwnedChildProcess, {
@@ -118,14 +128,21 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
     const id = this.nextId++;
     const message: JsonRpcMessage = { jsonrpc: "2.0", id, method, params };
 
+    let rejectResponse: (reason: unknown) => void = () => undefined;
     const response = new Promise<T>((resolve, reject) => {
+      rejectResponse = reject;
       this.pending.set(id, {
         resolve: (value) => resolve(value as T),
         reject
       });
     });
 
-    this.write(message);
+    try {
+      this.write(message);
+    } catch (cause) {
+      this.pending.delete(id);
+      rejectResponse(cause instanceof Error ? cause : new Error(String(cause)));
+    }
     return response;
   }
 
@@ -161,11 +178,13 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
     try {
       const shutdownDeadline = Math.min(deadline.deadlineAt, Date.now() + deadline.shutdownRequestMs);
       const shutdown = this.requestInternal("shutdown", undefined, true);
+      void shutdown.catch(() => undefined);
       await withDeadline(shutdown, shutdownDeadline);
       this.notifyInternal("exit", undefined, true);
     } catch {
       // A language server that does not answer shutdown is handled by the owned-child boundary below.
     }
+    this.rejectPending(new Error("LSP server is closing"));
     if (process.exitCode !== null || process.signalCode !== null) {
       return { clean: true, reasonCode: "already_exited" };
     }
@@ -212,7 +231,7 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   }
 
   private handleMessage(message: JsonRpcMessage): void {
-    if (typeof message.id === "number") {
+    if (message.id !== undefined && !message.method) {
       const pending = this.pending.get(message.id);
       if (pending) {
         this.pending.delete(message.id);
@@ -236,11 +255,15 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   }
 
   private respondToServerRequest(message: JsonRpcMessage): void {
-    this.write(createServerRequestResponse(message));
+    this.write(createServerRequestResponse(message, this.config.cwd));
   }
 }
 
-export function createServerRequestResponse(message: JsonRpcMessage): JsonRpcMessage {
+function formatStartError(command: string, cause: unknown): Error {
+  return new Error(`Failed to start LSP server "${command}": ${cause instanceof Error ? cause.message : String(cause)}`);
+}
+
+export function createServerRequestResponse(message: JsonRpcMessage, workspaceRoot?: string): JsonRpcMessage {
   if (message.method === "workspace/configuration") {
     const items = isWorkspaceConfigurationParams(message.params) ? message.params.items : [];
     return { jsonrpc: "2.0", id: message.id, result: items.map(() => ({})) };
@@ -257,18 +280,28 @@ export function createServerRequestResponse(message: JsonRpcMessage): JsonRpcMes
     };
   }
 
+  if (message.method === "workspace/workspaceFolders") {
+    return {
+      jsonrpc: "2.0",
+      id: message.id,
+      result: workspaceRoot
+        ? [{ uri: filePathToUri(workspaceRoot), name: path.basename(workspaceRoot) }]
+        : null
+    };
+  }
+
   return { jsonrpc: "2.0", id: message.id, result: null };
 }
 
 export function prepareSpawnCommand(config: ServerProcessConfig, platform: NodeJS.Platform = process.platform): PreparedSpawnCommand {
   if (isNodeEntrypoint(config.command)) {
-    return { command: process.execPath, args: [config.command, ...config.args] };
+    return { command: nativeNodeExecutable(), args: [config.command, ...config.args] };
   }
 
   if (platform === "win32" && isWindowsShellShim(config.command)) {
     const npmEntrypoint = resolveNpmShimEntrypoint(config.command);
     if (npmEntrypoint) {
-      return { command: process.execPath, args: [npmEntrypoint, ...config.args] };
+      return { command: nativeNodeExecutable(), args: [npmEntrypoint, ...config.args] };
     }
 
     return {
@@ -279,6 +312,10 @@ export function prepareSpawnCommand(config: ServerProcessConfig, platform: NodeJ
   }
 
   return { command: config.command, args: config.args };
+}
+
+function nativeNodeExecutable(): string {
+  return validateNativeNodeRuntime().executablePath;
 }
 
 function isNodeEntrypoint(command: string): boolean {

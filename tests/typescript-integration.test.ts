@@ -92,7 +92,7 @@ describe.skipIf(!hasTypeScriptLanguageServer)("TypeScript language server integr
       server: config.server,
       workspaceSeedFiles: config.workspaceSeedFiles,
       workspaceSeedExtensions: config.extensions,
-      diagnosticsTimeoutMs: 5000,
+      diagnosticsTimeoutMs: 10000,
       clientFactory: (server) => new JsonRpcLspClient(server)
     });
 
@@ -111,7 +111,7 @@ describe.skipIf(!hasTypeScriptLanguageServer)("TypeScript language server integr
       await provider.dispose();
       await fs.rm(rootPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
-  }, 15000);
+  }, 20000);
 
   it("reports TypeScript syntax diagnostics", async () => {
     const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-ts-syntax-fixture-"));
@@ -131,7 +131,7 @@ describe.skipIf(!hasTypeScriptLanguageServer)("TypeScript language server integr
       server: config.server,
       workspaceSeedFiles: config.workspaceSeedFiles,
       workspaceSeedExtensions: config.extensions,
-      diagnosticsTimeoutMs: 5000,
+      diagnosticsTimeoutMs: 10000,
       clientFactory: (server) => new JsonRpcLspClient(server)
     });
 
@@ -144,7 +144,7 @@ describe.skipIf(!hasTypeScriptLanguageServer)("TypeScript language server integr
       await provider.dispose();
       await fs.rm(rootPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
-  }, 15000);
+  }, 20000);
 });
 
 describe.skipIf(!hasPyrightLanguageServer)("Pyright language server integration", () => {

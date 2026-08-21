@@ -10,6 +10,7 @@ const workspaceRootMarkers = [
   "SKILL.md",
   "package.json",
   "tsconfig.json",
+  "jsconfig.json",
   "deno.json",
   "deno.jsonc",
   "Cargo.toml",
@@ -27,14 +28,15 @@ export function resolveRequestedRootSync(fallbackRoot: string, params: Record<st
 
   const resolvedFallbackRoot = canonicalizeWorkspaceRootSync(fallbackRoot);
   const target = readAbsoluteWorkspaceTarget(params);
-  if (!target || isInsideRoot(target.path, resolvedFallbackRoot)) return resolvedFallbackRoot;
+  if (!target) return resolvedFallbackRoot;
 
-  return findWorkspaceRootSync(target.startDirectory) ?? resolvedFallbackRoot;
+  return findWorkspaceRootSync(target.startDirectory) ??
+    (isDirectorySync(target.startDirectory) ? canonicalizeWorkspaceRootSync(target.startDirectory) : resolvedFallbackRoot);
 }
 
 export function resolveExplicitWorkspaceRootSync(root: string): string {
   const resolvedRoot = canonicalizeWorkspaceRootSync(root);
-  if (!isWorkspaceRootSync(resolvedRoot)) {
+  if (!isDirectorySync(resolvedRoot)) {
     throw new Error(`Workspace root is not recognized: ${resolvedRoot}`);
   }
   return resolvedRoot;
@@ -116,6 +118,14 @@ function isWorkspaceRootSync(directory: string): boolean {
   return workspaceRootMarkers.some((marker) => existsSync(path.join(directory, marker)));
 }
 
+function isDirectorySync(directory: string): boolean {
+  try {
+    return statSync(directory).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 function readAbsoluteWorkspaceTarget(
   params: Record<string, unknown>
 ): { path: string; startDirectory: string } | undefined {
@@ -136,11 +146,6 @@ function readAbsoluteWorkspaceTarget(
     }
   }
   return undefined;
-}
-
-function isInsideRoot(targetPath: string, rootPath: string): boolean {
-  const relative = path.relative(workspaceRootIdentitySync(rootPath), normalizePathIdentity(realPathForIdentitySync(targetPath)));
-  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function normalizePathIdentity(targetPath: string): string {

@@ -88,6 +88,7 @@ export class DiagnosticsWaiterController {
   }
 
   private removeWaiter(uri: string, waiter: DiagnosticsWaiter): void {
+    clearTimeout(waiter.timer);
     if (waiter.settleTimer) clearTimeout(waiter.settleTimer);
     const nextWaiters = (this.waitersByUri.get(uri) ?? []).filter((candidate) => candidate !== waiter);
     if (nextWaiters.length > 0) this.waitersByUri.set(uri, nextWaiters);

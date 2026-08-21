@@ -5,7 +5,12 @@ import type { DisposalDeadline, ProcessTerminationResult } from "./process-owner
 import { lspSeverityToText } from "./diagnostics.js";
 import type { Diagnostic, DiagnosticOptions, DiagnosticReport, DocumentPosition, HoverInfo, Location, Position, SemanticProvider, SymbolMatch } from "./types.js";
 import { canonicalizeFileUri, filePathToUri, uriToFilePath } from "../utils/uri.js";
-import { canonicalizeTargetPathSync, canonicalizeWorkspaceRootSync, isPathInsideWorkspaceRootSync } from "./workspace-root.js";
+import {
+  canonicalizeTargetPathSync,
+  canonicalizeWorkspaceRootSync,
+  isPathInsideWorkspaceRootSync,
+  workspaceRootInstanceIdentitySync
+} from "./workspace-root.js";
 import { DocumentRegistry } from "./document-registry.js";
 import { DiagnosticsWaiterController } from "./diagnostics-waiters.js";
 
@@ -33,6 +38,12 @@ interface LspHover {
   contents: string | { value: string } | Array<string | { value: string }>;
 }
 
+interface PublishDiagnosticsParams {
+  uri: string;
+  version?: number;
+  diagnostics: LspDiagnostic[];
+}
+
 interface PendingSourceRevision {
   generation: number;
   version: number;
@@ -58,6 +69,7 @@ export interface LspSemanticProviderOptions {
   diagnosticsTimeoutMs?: number;
   diagnosticsStabilityMs?: number;
   inferredProjectCompilerOptions?: Record<string, unknown>;
+  rootInstanceIdentity?: string;
 }
 
 export type LspProviderState = "new" | "initializing" | "ready" | "exited" | "recovering" | "failed" | "closing";
@@ -81,10 +93,12 @@ export class LspSemanticProvider implements SemanticProvider {
   private configurationIssues: string[] = [];
   private readonly diagnosticsWaiters: DiagnosticsWaiterController;
   private readonly rootRealPathPromise: Promise<string>;
+  private readonly rootInstanceIdentity: string;
   private client: LspClient;
 
   constructor(private readonly options: LspSemanticProviderOptions) {
-    this.rootRealPathPromise = fs.realpath(options.rootPath).then(() => canonicalizeWorkspaceRootSync(options.rootPath)).catch(() => canonicalizeWorkspaceRootSync(options.rootPath));
+    this.rootInstanceIdentity = options.rootInstanceIdentity ?? workspaceRootInstanceIdentitySync(options.rootPath);
+    this.rootRealPathPromise = Promise.resolve(canonicalizeWorkspaceRootSync(options.rootPath));
     this.diagnosticsWaiters = new DiagnosticsWaiterController({
       stabilityMs: options.diagnosticsStabilityMs ?? defaultDiagnosticsStabilityMs,
       getRevision: (uri) => this.diagnosticsRevisionByUri.get(uri) ?? 0,
@@ -97,7 +111,11 @@ export class LspSemanticProvider implements SemanticProvider {
   private createClient(): LspClient {
     const client = this.options.clientFactory(this.options.server);
     client.on("notification", (method: string, params: unknown) => {
-      if (!this.disposed && client === this.client && method === "textDocument/publishDiagnostics") this.captureDiagnostics(params);
+      if (
+        !this.disposed &&
+        client === this.client &&
+        method === "textDocument/publishDiagnostics"
+      ) this.captureDiagnostics(params);
     });
     client.on("exit", () => this.handleClientExit(client));
     return client;
@@ -120,22 +138,39 @@ export class LspSemanticProvider implements SemanticProvider {
   }
 
   async diagnostics(uri?: string, options: DiagnosticOptions = {}): Promise<DiagnosticReport> {
-    const initialized = await this.ensureInitializedForDiagnostics();
+    if (!this.isRootInstanceCurrent()) return this.rootUnavailableReport();
+    const timeoutMs = Math.max(0, options.timeoutMs ?? this.options.diagnosticsTimeoutMs ?? defaultDiagnosticsTimeoutMs);
+    const deadlineAt = Date.now() + timeoutMs;
+    const initialized = await this.ensureInitializedForDiagnostics(deadlineAt);
     if (!initialized.ok) {
       return {
-        status: "unavailable",
-        timedOut: false,
-        stale: false,
-        unavailableReason: initialized.reason,
-        configurationIssues: [],
+        status: initialized.timedOut ? "timed_out" : "unavailable",
+        timedOut: initialized.timedOut,
+        stale: initialized.timedOut,
+        ...(initialized.timedOut ? {} : { unavailableReason: initialized.reason }),
+        configurationIssues: [...this.configurationIssues],
         items: []
       };
     }
 
     if (uri) {
-      const document = await this.resolveDocument(uri);
+      let document: { uri: string; filePath: string };
+      try {
+        document = await withDiagnosticsDeadline(this.resolveDocument(uri), deadlineAt);
+      } catch (error) {
+        if (isDiagnosticsDeadlineExceeded(error)) return this.timedOutReport();
+        if (isWorkspaceRootChangedError(error)) return this.rootUnavailableReport();
+        throw error;
+      }
       const currentRevision = this.diagnosticsRevisionByUri.get(document.uri) ?? 0;
-      const openedDocument = await this.openOrUpdateDocument(document.uri);
+      let openedDocument: { uri: string; filePath: string; changed: boolean; sourceRevision: number };
+      try {
+        openedDocument = await withDiagnosticsDeadline(this.openOrUpdateDocument(document.uri), deadlineAt);
+      } catch (error) {
+        if (isDiagnosticsDeadlineExceeded(error)) return this.timedOutReport(document.uri);
+        if (isWorkspaceRootChangedError(error)) return this.rootUnavailableReport();
+        throw error;
+      }
       let timedOut = false;
       const publishedSourceRevision = this.diagnosticsSourceRevisionByUri.get(document.uri);
       if (
@@ -147,11 +182,8 @@ export class LspSemanticProvider implements SemanticProvider {
         // this call can register a waiter. The current revision is therefore the
         // baseline; the source-revision check still prevents an old notification
         // from being accepted for a changed document.
-        timedOut = !(await this.diagnosticsWaiters.wait(
-          document.uri,
-          currentRevision,
-          options.timeoutMs ?? this.options.diagnosticsTimeoutMs ?? defaultDiagnosticsTimeoutMs
-        ));
+        const remainingMs = Math.max(0, deadlineAt - Date.now());
+        timedOut = remainingMs === 0 || !(await this.diagnosticsWaiters.wait(document.uri, currentRevision, remainingMs));
       }
       const sourceRevision = openedDocument.sourceRevision;
       const stale = timedOut || this.diagnosticsSourceRevisionByUri.get(document.uri) !== sourceRevision;
@@ -180,12 +212,20 @@ export class LspSemanticProvider implements SemanticProvider {
     };
   }
 
-  private async ensureInitializedForDiagnostics(): Promise<{ ok: true } | { ok: false; reason: string }> {
+  private async ensureInitializedForDiagnostics(
+    deadlineAt: number
+  ): Promise<{ ok: true } | { ok: false; reason: string; timedOut: boolean }> {
     try {
-      await this.ensureInitialized();
+      await withDiagnosticsDeadline(this.ensureInitialized(), deadlineAt);
       return { ok: true };
     } catch (error) {
-      return { ok: false, reason: formatInitializationFailure(error) };
+      if (isDiagnosticsDeadlineExceeded(error)) {
+        return { ok: false, reason: "LSP initialization exceeded the diagnostics timeout", timedOut: true };
+      }
+      if (isWorkspaceRootChangedError(error)) {
+        return { ok: false, reason: formatInitializationFailure(error), timedOut: false };
+      }
+      return { ok: false, reason: formatInitializationFailure(error), timedOut: false };
     }
   }
 
@@ -283,6 +323,7 @@ export class LspSemanticProvider implements SemanticProvider {
   }
 
   private async ensureInitialized(): Promise<void> {
+    this.assertRootInstanceCurrent();
     if (this.disposed) throw new Error("LSP provider is closing");
     if (this.initialized && this.state === "ready") return;
     if (this.state === "failed") throw new Error("LSP server recovery failed");
@@ -349,6 +390,7 @@ export class LspSemanticProvider implements SemanticProvider {
   }
 
   private markDocumentPending(uri: string, version: number): void {
+    this.assertRootInstanceCurrent();
     this.invalidateDiagnosticsCandidate(uri);
     this.pendingSourceRevisionByUri.set(uri, { generation: this.generation, version });
   }
@@ -384,7 +426,8 @@ export class LspSemanticProvider implements SemanticProvider {
             hover: {}
           },
           workspace: {
-            symbol: {}
+            symbol: {},
+            workspaceFolders: true
           }
         }
       });
@@ -423,6 +466,7 @@ export class LspSemanticProvider implements SemanticProvider {
         this.workspaceDocumentOpened = this.documentRegistry.entries().length > 0;
       }
 
+      this.assertRootInstanceCurrent();
       if (generation !== this.generation || this.disposed) throw new Error("LSP server exited during initialization");
       this.initialized = true;
       this.state = "ready";
@@ -513,13 +557,17 @@ export class LspSemanticProvider implements SemanticProvider {
 
   private captureDiagnostics(params: unknown): void {
     if (!isPublishDiagnosticsParams(params)) return;
-
     let uri: string;
     try {
       uri = this.canonicalizeProviderUri(params.uri);
     } catch {
       return;
     }
+
+    const pending = this.pendingSourceRevisionByUri.get(uri);
+    const document = this.documentRegistry.get(uri);
+    if (!pending || !document || pending.version !== document.version) return;
+    if (params.version !== undefined && params.version !== document.version) return;
 
     const revision = (this.diagnosticsRevisionByUri.get(uri) ?? 0) + 1;
     this.diagnosticsRevisionByUri.set(uri, revision);
@@ -535,24 +583,21 @@ export class LspSemanticProvider implements SemanticProvider {
         code: diagnostic.code
       }))
     );
-    const pending = this.pendingSourceRevisionByUri.get(uri);
-    const document = this.documentRegistry.get(uri);
-    if (pending && document && pending.version === document.version) {
-      const candidate: DiagnosticsCandidate = {
-        generation: pending.generation,
-        revision,
-        sourceRevision: pending.version
-      };
-      this.diagnosticsCandidatesByUri.set(uri, candidate);
-      candidate.settleTimer = setTimeout(
-        () => this.commitDiagnosticsCandidate(uri, candidate),
-        this.options.diagnosticsStabilityMs ?? defaultDiagnosticsStabilityMs
-      );
-    }
+    const candidate: DiagnosticsCandidate = {
+      generation: pending.generation,
+      revision,
+      sourceRevision: pending.version
+    };
+    this.diagnosticsCandidatesByUri.set(uri, candidate);
+    candidate.settleTimer = setTimeout(
+      () => this.commitDiagnosticsCandidate(uri, candidate),
+      this.options.diagnosticsStabilityMs ?? defaultDiagnosticsStabilityMs
+    );
     this.diagnosticsWaiters.schedule(uri, revision);
   }
 
   private async resolveDocument(uri: string): Promise<{ uri: string; filePath: string }> {
+    this.assertRootInstanceCurrent();
     const inputPath = path.resolve(uriToFilePath(uri));
     let realFilePath: string;
     try {
@@ -573,6 +618,7 @@ export class LspSemanticProvider implements SemanticProvider {
     }
 
     const realRootPath = await this.rootRealPathPromise;
+    this.assertRootInstanceCurrent();
     const canonicalFilePath = canonicalizeTargetPathSync(realFilePath);
     if (!isPathInsideWorkspaceRootSync(canonicalFilePath, realRootPath)) {
       throw new Error(`File is outside workspace root: ${inputPath}`);
@@ -586,7 +632,6 @@ export class LspSemanticProvider implements SemanticProvider {
 
   private commitDiagnosticsCandidate(uri: string, candidate: DiagnosticsCandidate): void {
     if (this.diagnosticsCandidatesByUri.get(uri) !== candidate) return;
-
     const document = this.documentRegistry.get(uri);
     const pending = this.pendingSourceRevisionByUri.get(uri);
     const isCurrent =
@@ -619,6 +664,7 @@ export class LspSemanticProvider implements SemanticProvider {
   }
 
   private canonicalizeProviderUri(uri: string): string {
+    this.assertRootInstanceCurrent();
     const filePath = canonicalizeTargetPathSync(uriToFilePath(canonicalizeFileUri(uri)));
     const rootPath = canonicalizeWorkspaceRootSync(this.options.rootPath);
     if (!isPathInsideWorkspaceRootSync(filePath, rootPath)) {
@@ -636,6 +682,39 @@ export class LspSemanticProvider implements SemanticProvider {
       range: location.range
     };
   }
+
+  private isRootInstanceCurrent(): boolean {
+    return workspaceRootInstanceIdentitySync(this.options.rootPath) === this.rootInstanceIdentity;
+  }
+
+  private assertRootInstanceCurrent(): void {
+    if (!this.isRootInstanceCurrent()) {
+      throw new WorkspaceRootChangedError(this.options.rootPath);
+    }
+  }
+
+  private rootUnavailableReport(): DiagnosticReport {
+    return {
+      status: "unavailable",
+      timedOut: false,
+      stale: true,
+      unavailableReason: `Workspace root instance changed: ${this.options.rootPath} (root_replaced)`,
+      configurationIssues: [...this.configurationIssues],
+      items: []
+    };
+  }
+
+  private timedOutReport(uri?: string): DiagnosticReport {
+    const sourceUri = uri ? this.canonicalizeProviderUri(uri) : undefined;
+    const document = sourceUri ? this.documentRegistry.get(sourceUri) : undefined;
+    return {
+      status: "timed_out",
+      timedOut: true,
+      stale: true,
+      configurationIssues: [...this.configurationIssues],
+      ...(document ? { sourceRevision: document.version, items: [...(this.diagnosticsByUri.get(sourceUri!) ?? [])] } : { items: [] })
+    };
+  }
 }
 
 function normalizeHoverContents(contents: LspHover["contents"]): string {
@@ -646,10 +725,11 @@ function normalizeHoverContents(contents: LspHover["contents"]): string {
   return contents.value;
 }
 
-function isPublishDiagnosticsParams(value: unknown): value is { uri: string; diagnostics: LspDiagnostic[] } {
+function isPublishDiagnosticsParams(value: unknown): value is PublishDiagnosticsParams {
   if (!value || typeof value !== "object") return false;
-  const candidate = value as { uri?: unknown; diagnostics?: unknown };
-  return typeof candidate.uri === "string" && Array.isArray(candidate.diagnostics);
+  const candidate = value as { uri?: unknown; version?: unknown; diagnostics?: unknown };
+  return typeof candidate.uri === "string" && Array.isArray(candidate.diagnostics) &&
+    (candidate.version === undefined || typeof candidate.version === "number");
 }
 
 function isMissingLanguageServerError(error: unknown): boolean {
@@ -660,7 +740,48 @@ function formatInitializationFailure(error: unknown): string {
   if (isMissingLanguageServerError(error)) return error instanceof Error ? error.message : "Language server unavailable";
   if (error instanceof Error && error.message.includes("LSP server exited")) return "LSP server exited before the request completed (server_exited)";
   if (error instanceof Error && error.message === "LSP server recovery failed") return "LSP server recovery failed (server_exited)";
+  if (isWorkspaceRootChangedError(error)) return `${error.message}`;
   return error instanceof Error ? `${error.message} (server_exited)` : "Language server unavailable (server_exited)";
+}
+
+class WorkspaceRootChangedError extends Error {
+  constructor(rootPath: string) {
+    super(`Workspace root instance changed: ${rootPath} (root_replaced)`);
+    this.name = "WorkspaceRootChangedError";
+  }
+}
+
+class DiagnosticsDeadlineExceededError extends Error {
+  constructor() {
+    super("diagnostics deadline exceeded");
+    this.name = "DiagnosticsDeadlineExceededError";
+  }
+}
+
+function isWorkspaceRootChangedError(error: unknown): error is WorkspaceRootChangedError {
+  return error instanceof WorkspaceRootChangedError;
+}
+
+function isDiagnosticsDeadlineExceeded(error: unknown): error is DiagnosticsDeadlineExceededError {
+  return error instanceof DiagnosticsDeadlineExceededError;
+}
+
+function withDiagnosticsDeadline<T>(promise: Promise<T>, deadlineAt: number): Promise<T> {
+  const remainingMs = Math.max(0, deadlineAt - Date.now());
+  if (remainingMs === 0) return Promise.reject(new DiagnosticsDeadlineExceededError());
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new DiagnosticsDeadlineExceededError()), remainingMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
 }
 
 function toLspPosition(position: DocumentPosition): Position {

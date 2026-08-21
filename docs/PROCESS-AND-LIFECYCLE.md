@@ -23,6 +23,27 @@ repository fixtures do not establish production load improvement.
   root and one provider per language. The contract does not promise reuse across
   separate MCP connections.
 
+## Workspace identity and selection
+
+- An explicit `root` is canonicalized and must be an existing directory. A
+  recognized workspace marker is useful project metadata, but it is not
+  required when the caller names the exact directory. The manager key is the
+  canonical real path, normalized for the host.
+- When `root` is omitted and a request names an absolute file, directory, or
+  file URI, the bridge walks upward from that target and selects the nearest
+  marker. This lets a skill folder with `SKILL.md` remain separate from a
+  broader parent that also contains `package.json`. If no marker exists, the
+  target's existing containing directory becomes the root. This keeps
+  markerless folders usable without broadening the root to a drive or home
+  directory.
+- A manager also records the directory-instance identity. If a workspace is
+  deleted and recreated at the same path, the old manager and provider are not
+  reused. The old language-server child is retired and the new root gets fresh
+  state.
+- Documents, diagnostic revisions, waiters, clients, and recovery generations
+  belong to one manager and one language provider. They are never shared by
+  path alone across distinct roots.
+
 ## Runtime launch rules
 
 - The bridge runtime uses an approved native `node.exe` directly. Generated MCP,
@@ -44,6 +65,18 @@ repository fixtures do not establish production load improvement.
   one provider, and one steady-state language-server child.
 - Provider recovery reinitializes the service and reopens documents required by
   the current request before returning a dependent result.
+- A file-diagnostics timeout is one end-to-end deadline measured from request
+  entry. It covers initialization, recovery, root and file resolution,
+  document open or change, and the stable `publishDiagnostics` wait. A timeout
+  returns `status: timed_out`, `timedOut: true`, and `stale: true`.
+- A timed-out waiter is removed and its timers are cleared. The language server
+  may continue a healthy in-flight startup, but an old generation, old root,
+  or already-committed source revision cannot publish into a later result.
+  A subsequent request can use a completed recovery or receive an explicit
+  unavailable result if recovery failed.
+- Failed writes, process exits, and shutdown reject and clear outstanding JSON
+  RPC requests. Shutdown is shared and bounded, so repeated close or root-switch
+  paths do not create duplicate child teardown or orphaned request state.
 - Shutdown stops new work, disposes bridge-owned state, and confirms within a
   bounded timeout that no bridge-owned child remains. A timeout is a visible
   failure, not silent success.

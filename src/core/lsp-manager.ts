@@ -14,7 +14,7 @@ import {
   type SupportedLanguage
 } from "../adapters/language-config.js";
 import { resolveInferredTypeScriptProjectOptions } from "./typescript-project.js";
-import { canonicalizeWorkspaceRootSync } from "./workspace-root.js";
+import { canonicalizeWorkspaceRootSync, workspaceRootInstanceIdentitySync } from "./workspace-root.js";
 
 export interface LspManagerOptions {
   diagnosticsTimeoutMs?: number;
@@ -31,12 +31,17 @@ export class LspManager {
     private readonly options: LspManagerOptions = {}
   ) {
     this.rootPath = canonicalizeWorkspaceRootSync(rootPath);
+    this.rootInstanceIdentity = workspaceRootInstanceIdentitySync(this.rootPath);
   }
 
   private readonly rootPath: string;
+  private readonly rootInstanceIdentity: string;
 
   forLanguage(language: SupportedLanguage): SemanticProvider {
     if (this.disposed) throw new Error("LSP manager is disposed");
+    if (workspaceRootInstanceIdentitySync(this.rootPath) !== this.rootInstanceIdentity) {
+      throw new Error(`Workspace root instance changed: ${this.rootPath} (root_replaced)`);
+    }
     const existing = this.providers.get(language);
     if (existing) return existing;
 
@@ -51,6 +56,7 @@ export class LspManager {
       workspaceSeedExtensions: config.extensions,
       diagnosticsTimeoutMs: this.options.diagnosticsTimeoutMs,
       inferredProjectCompilerOptions: inferredProjectOptions,
+      rootInstanceIdentity: this.rootInstanceIdentity,
       clientFactory: (server) => new JsonRpcLspClient(server)
     });
     this.providers.set(language, provider);

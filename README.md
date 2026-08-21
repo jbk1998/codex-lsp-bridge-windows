@@ -86,6 +86,20 @@ Typical explicit-diagnostics loop:
 4. If diagnostics are stale or time out, the result says so instead of
    pretending there are no errors.
 
+Workspace selection is root-aware. An explicit `root` owns one isolated manager
+and one language provider. If an absolute file, directory, or URI is supplied
+without `root`, the bridge selects the nearest parent containing a workspace
+marker such as `SKILL.md`, `package.json`, or `tsconfig.json`. A nested skill
+root therefore does not inherit a sibling or parent language-server process. If
+no marker exists, the target's existing containing directory is used instead.
+
+File diagnostics use one timeout from request entry through server startup,
+recovery, document synchronization, and the stable diagnostics notification.
+When that deadline expires, the bridge returns `status: timed_out` with
+`timedOut: true` and `stale: true`; an empty timed-out result is not clean.
+Waiters and pending JSON-RPC state are cleaned up, and later requests either
+reuse a completed recovery or report an explicit unavailable state.
+
 The `PostToolUse` hook is a separate optional path. Keep it disabled during the
 staged process and load baseline; explicit MCP diagnostics continue to work.
 Any future hook reactivation must batch one edit event into at most one bridge
@@ -443,12 +457,15 @@ the staged process baseline can be called complete.
 Without `--root`, the server uses the Codex process working directory as the
 workspace root. That makes one global registration usable from any repository.
 For an absolute MCP `file`, `uri`, or `dir` target outside that startup root,
-the bridge selects the nearest recognized workspace automatically. Pass `root`
-explicitly for deterministic routing, especially for detached worktrees.
+the bridge selects the nearest recognized workspace automatically. If no marker
+exists, it uses the target's existing containing directory. Pass `root`
+explicitly for deterministic routing, especially for detached worktrees or
+markerless folders.
 Recognized roots include `.git`, `.lsp-root`, `AGENTS.md`, `CLAUDE.md`,
-`SKILL.md`, and common TypeScript, Python, Rust, Go, and Deno manifests.
-Markerless roots remain rejected; add `.lsp-root` inside a user-owned code
-folder when it should be treated as an independent workspace.
+`SKILL.md`, `package.json`, `tsconfig.json`, `jsconfig.json`, and common
+Python, Rust, Go, and Deno manifests.
+An explicit markerless directory is also valid; the bridge never replaces it
+with a broader parent or drive root.
 
 The default generated hook shape is intentionally inactive:
 

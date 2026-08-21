@@ -98,6 +98,7 @@ async function main(): Promise<void> {
       if (existingEntry) {
         retiredManagers.add(existingEntry.manager);
         sourceFileListCache.clear();
+        void existingEntry.manager.dispose(createDisposalDeadline()).catch(() => undefined);
       }
       const diagnosticsTimeout = resolveDiagnosticsTimeout(resolvedRoot, rootConfig.diagnosticsTimeoutMs);
       scopedManager = new LspManager(resolvedRoot, {

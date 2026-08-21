@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { createServerRequestResponse, JsonRpcLspClient, prepareSpawnCommand } from "../src/core/json-rpc-lsp-client.js";
 import { createDisposalDeadline, type ProcessIdentityProvider } from "../src/core/process-ownership.js";
+import { filePathToUri } from "../src/utils/uri.js";
 
 class FakeChild extends EventEmitter {
   readonly stdout = new PassThrough();
@@ -75,6 +76,8 @@ describe("JsonRpcLspClient", () => {
     expect(result).toEqual({ clean: true, reasonCode: "owned_child_exit" });
     expect(child.killCalls).toBe(1);
     await initialize;
+    expect((client as unknown as { pending: Map<unknown, unknown> }).pending.size).toBe(0);
+    expect(child.exitCode).not.toBeNull();
   });
 
   it("refuses to terminate a PID whose identity changed after launch", async () => {
@@ -180,5 +183,49 @@ describe("JsonRpcLspClient", () => {
       id: 3,
       result: null
     });
+
+    const workspaceRoot = path.join(os.tmpdir(), "codex-lsp-workspace");
+    expect(createServerRequestResponse({ jsonrpc: "2.0", id: 4, method: "workspace/workspaceFolders" }, workspaceRoot)).toEqual({
+      jsonrpc: "2.0",
+      id: 4,
+      result: [{ uri: filePathToUri(workspaceRoot), name: path.basename(workspaceRoot) }]
+    });
+  });
+
+  it("correlates string JSON-RPC response ids", async () => {
+    const client = new JsonRpcLspClient({ command: "server", args: ["--stdio"], cwd: process.cwd() });
+    let resolveResponse: (value: unknown) => void = () => undefined;
+    let rejectResponse: (reason: Error) => void = () => undefined;
+    const response = new Promise((resolve, reject) => {
+      resolveResponse = resolve;
+      rejectResponse = reject;
+    });
+    const internal = client as unknown as {
+      pending: Map<string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>;
+      handleMessage: (message: { jsonrpc: "2.0"; id: string; result: unknown }) => void;
+    };
+    internal.pending.set("string-1", { resolve: resolveResponse, reject: rejectResponse });
+    internal.handleMessage({ jsonrpc: "2.0", id: "string-1", result: { ready: true } });
+
+    await expect(response).resolves.toEqual({ ready: true });
+    expect(internal.pending.size).toBe(0);
+  });
+
+  it("removes a request when writing to the child fails", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+    const internal = client as unknown as { pending: Map<unknown, unknown> };
+    const write = child.stdin.write.bind(child.stdin);
+    child.stdin.write = (() => {
+      throw new Error("pipe closed");
+    }) as typeof child.stdin.write;
+
+    await expect(client.request("initialize")).rejects.toThrow("pipe closed");
+    expect(internal.pending.size).toBe(0);
+    child.stdin.write = write;
+    await client.stop(createDisposalDeadline(Date.now(), 100, 5, 20));
   });
 });

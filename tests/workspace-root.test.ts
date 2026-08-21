@@ -60,7 +60,20 @@ describe("workspace root resolution", () => {
     expect(shouldSelectWorkspaceService({ file: scriptPath })).toBe(true);
   });
 
-  it.each(["pyproject.toml", "pyrightconfig.json", "go.mod", ".lsp-root"])(
+  it("prefers the nearest nested workspace marker for an absolute target", async () => {
+    const startupRoot = await makeTemporaryDirectory("codex-lsp-startup-");
+    const skillRoot = path.join(startupRoot, "skills", "nested-skill");
+    const scriptDirectory = path.join(skillRoot, "scripts");
+    const scriptPath = path.join(scriptDirectory, "module.mjs");
+    await fs.writeFile(path.join(startupRoot, "package.json"), "{}\n");
+    await fs.mkdir(scriptDirectory, { recursive: true });
+    await fs.writeFile(path.join(skillRoot, "SKILL.md"), "# Nested skill\n");
+    await fs.writeFile(scriptPath, "export const ready = true;\n");
+
+    expect(resolveRequestedRootSync(startupRoot, { file: scriptPath })).toBe(path.resolve(skillRoot));
+  });
+
+  it.each(["pyproject.toml", "pyrightconfig.json", "go.mod", "jsconfig.json", ".lsp-root"])(
     "recognizes %s as a workspace marker",
     async (marker) => {
       const projectRoot = await makeTemporaryDirectory("codex-lsp-project-");
@@ -86,10 +99,19 @@ describe("workspace root resolution", () => {
     expect(resolveRequestedRootSync(startupRoot, { file: childPath })).toBe(path.resolve(startupRoot));
   });
 
-  it("fails closed for an explicit markerless root", async () => {
+  it("accepts an explicit markerless directory as an isolated workspace root", async () => {
     const markerlessRoot = await makeTemporaryDirectory("codex-lsp-markerless-");
 
-    expect(() => resolveExplicitWorkspaceRootSync(markerlessRoot)).toThrow("Workspace root is not recognized");
+    expect(resolveExplicitWorkspaceRootSync(markerlessRoot)).toBe(path.resolve(markerlessRoot));
+  });
+
+  it("uses an absolute target directory as the root when no marker exists", async () => {
+    const startupRoot = await makeTemporaryDirectory("codex-lsp-startup-");
+    const markerlessRoot = await makeTemporaryDirectory("codex-lsp-markerless-target-");
+    const scriptPath = path.join(markerlessRoot, "script.mjs");
+    await fs.writeFile(scriptPath, "export const ready = true;\n");
+
+    expect(resolveRequestedRootSync(startupRoot, { file: scriptPath })).toBe(path.resolve(markerlessRoot));
   });
 
   it("coalesces a directory junction alias while preserving the root boundary", async () => {
