@@ -145,6 +145,22 @@ describe("workspace root resolution", () => {
     expect(workspaceRootInstanceIdentitySync(root)).not.toBe(originalIdentity);
   });
 
+  it("keeps directory-instance identity stable during ordinary workspace activity", async () => {
+    const root = await makeTemporaryDirectory("codex-lsp-stable-root-");
+    await fs.writeFile(path.join(root, "package.json"), "{}\n");
+    const originalIdentity = workspaceRootInstanceIdentitySync(root);
+
+    const nested = path.join(root, "src");
+    const file = path.join(nested, "index.ts");
+    await fs.mkdir(nested);
+    await fs.writeFile(file, "export const value = 1;\n");
+    await fs.writeFile(file, "export const value = 2;\n");
+    await fs.rm(file);
+    await fs.rm(nested);
+
+    expect(workspaceRootInstanceIdentitySync(root)).toBe(originalIdentity);
+  });
+
   it("rejects a target that enters an outside directory through a junction", async () => {
     const root = await makeTemporaryDirectory("codex-lsp-root-boundary-");
     const outside = await makeTemporaryDirectory("codex-lsp-root-outside-");
