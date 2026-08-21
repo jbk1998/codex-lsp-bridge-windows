@@ -90,14 +90,16 @@ export function workspaceRootIdentitySync(rootPath: string): string {
 
 /**
  * Returns a stable identity for the current directory instance, not just its
- * canonical path. This lets long-lived services detect delete/recreate of a
- * workspace at the same path without weakening path-boundary checks.
+ * canonical path. Mutable metadata timestamps are deliberately excluded so
+ * ordinary activity inside a workspace cannot look like delete/recreate.
  */
 export function workspaceRootInstanceIdentitySync(rootPath: string): string {
   const canonicalRoot = workspaceRootIdentitySync(rootPath);
   try {
     const stats = statSync(canonicalRoot);
-    return `${canonicalRoot}\u0000${stats.dev}:${stats.ino}:${stats.birthtimeMs}:${stats.ctimeMs}`;
+    const stableFileId = `${stats.dev}:${stats.ino}`;
+    const creationEvidence = Number.isFinite(stats.birthtimeMs) ? stats.birthtimeMs : 0;
+    return `${canonicalRoot}\u0000${stableFileId}:${creationEvidence}`;
   } catch {
     return `${canonicalRoot}\u0000missing`;
   }
