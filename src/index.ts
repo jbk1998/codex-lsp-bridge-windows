@@ -9,7 +9,21 @@ import { loadConfig } from "./core/config.js";
 import { resolveDiagnosticsTimeout } from "./core/diagnostics-timeout.js";
 import { runDoctor } from "./core/doctor.js";
 import { LspManager } from "./core/lsp-manager.js";
-import { resolveExplicitWorkspaceRootSync, resolveRequestedRootSync } from "./core/workspace-root.js";
+import { revalidateNativeNodeRuntime, validateNativeNodeRuntime, type NativeNodeRuntimeValidation } from "./core/native-node-runtime.js";
+import {
+  aggregateTerminationResults,
+  createDisposalDeadline,
+  type DisposalDeadline,
+  type ProcessTerminationResult
+} from "./core/process-ownership.js";
+import {
+  resolvePathInsideWorkspaceRootSync,
+  canonicalizeWorkspaceRootSync,
+  resolveExplicitWorkspaceRootSync,
+  resolveRequestedRootSync,
+  workspaceRootIdentitySync,
+  workspaceRootInstanceIdentitySync
+} from "./core/workspace-root.js";
 import { supportedExtensionsForLanguage } from "./adapters/language-config.js";
 import { filePathToUri } from "./utils/uri.js";
 import { runStdioMcp } from "./transport/mcp.js";
@@ -29,40 +43,69 @@ interface SourceFileListCacheEntry {
   truncated: boolean;
 }
 
+interface ManagerEntry {
+  instanceIdentity: string;
+  manager: LspManager;
+}
+
 async function main(): Promise<void> {
+  const runtimeValidation = validateNativeNodeRuntime();
   const args = process.argv.slice(2);
   if (args.length === 0 || args[0] === "help" || args[0] === "--help" || args[0] === "-h") {
     printUsage("stdout");
     return;
   }
   if (args[0] === "install") {
-    runPackageScript("install-codex.mjs", args.slice(1));
+    runPackageScript("install-codex.mjs", args.slice(1), runtimeValidation);
     return;
   }
   if (args[0] === "uninstall") {
-    runPackageScript("uninstall-codex.mjs", args.slice(1));
+    runPackageScript("uninstall-codex.mjs", args.slice(1), runtimeValidation);
     return;
   }
   if (args[0] === "post-tool-diagnostics") {
-    runPackageScript("codex-lsp-post-tool-use.mjs", args.slice(1));
+    runPackageScript("codex-lsp-post-tool-use.mjs", args.slice(1), runtimeValidation);
     return;
   }
 
   const root = path.resolve(readOption(args, "--root") ?? process.cwd());
   const config = loadConfig(root);
-  const managers = new Map<string, LspManager>();
+  const managers = new Map<string, ManagerEntry>();
+  const retiredManagers = new Set<LspManager>();
   const sourceFileListCache = new Map<string, SourceFileListCacheEntry>();
+  let mcpOwnsDisposal = false;
+  const disposeManagers = async (deadline: DisposalDeadline): Promise<ProcessTerminationResult | void> => {
+    const settled = await Promise.allSettled(
+      [...new Set([
+        ...[...managers.values()].map((entry) => entry.manager),
+        ...retiredManagers
+      ])].map((manager) => Promise.resolve().then(() => manager.dispose(deadline)))
+    );
+    const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
+    return aggregateTerminationResults(
+      results,
+      settled.filter((entry) => entry.status === "rejected").length
+    );
+  };
   const serviceForRoot = (serviceRoot: string, languageOverride?: SupportedLanguage) => {
-    const resolvedRoot = path.resolve(serviceRoot);
+    const resolvedRoot = canonicalizeWorkspaceRootSync(serviceRoot);
+    const rootIdentity = workspaceRootIdentitySync(resolvedRoot);
+    const instanceIdentity = workspaceRootInstanceIdentitySync(resolvedRoot);
     const rootConfig = loadConfig(resolvedRoot);
-    let scopedManager = managers.get(resolvedRoot);
+    const existingEntry = managers.get(rootIdentity);
+    let scopedManager = existingEntry?.instanceIdentity === instanceIdentity ? existingEntry.manager : undefined;
     if (!scopedManager) {
+      if (existingEntry) {
+        retiredManagers.add(existingEntry.manager);
+        sourceFileListCache.clear();
+        void existingEntry.manager.dispose(createDisposalDeadline()).catch(() => undefined);
+      }
       const diagnosticsTimeout = resolveDiagnosticsTimeout(resolvedRoot, rootConfig.diagnosticsTimeoutMs);
       scopedManager = new LspManager(resolvedRoot, {
         diagnosticsTimeoutMs: diagnosticsTimeout.timeoutMs,
         languageServers: rootConfig.languageServers
       });
-      managers.set(resolvedRoot, scopedManager);
+      managers.set(rootIdentity, { instanceIdentity, manager: scopedManager });
     }
     return new WorkspaceCommandService(scopedManager, languageOverride ?? rootConfig.defaultLanguage);
   };
@@ -78,6 +121,10 @@ async function main(): Promise<void> {
 
     if (args[0] === "mcp") {
       await runStdioMcp(service, {
+        dispose: (deadline) => {
+          mcpOwnsDisposal = true;
+          return disposeManagers(deadline);
+        },
         status: () => runDoctor(root),
         serviceForParams: (params) => serviceForRoot(resolveRequestedRootSync(root, params), language),
         directoryDiagnostics: async ({ dir, severity, root: requestedRoot, maxFiles, timeoutBudgetMs, concurrency }) => {
@@ -149,7 +196,7 @@ async function main(): Promise<void> {
     printUsage("stderr");
     process.exitCode = 1;
   } finally {
-    await Promise.all([...managers.values()].map((manager) => manager.dispose()));
+    if (!mcpOwnsDisposal) await disposeManagers(createDisposalDeadline());
   }
 }
 
@@ -174,7 +221,7 @@ function readPosition(args: string[]): { file: string; line: number; character: 
   if (!file || line === undefined || character === undefined) {
     throw new Error("--file, --line, and --character must be provided together");
   }
-  const root = path.resolve(readOption(args, "--root") ?? process.cwd());
+  const root = canonicalizeWorkspaceRootSync(readOption(args, "--root") ?? process.cwd());
   return { file: resolveFileInsideRoot(root, file), line, character };
 }
 
@@ -401,12 +448,7 @@ function filterDiagnosticSummary(
 }
 
 function resolveDirectoryInsideRoot(root: string, dir: string): string {
-  const directory = path.resolve(root, dir);
-  const relative = path.relative(root, directory);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error(`Directory is outside workspace root: ${directory}`);
-  }
-  return directory;
+  return resolvePathInsideWorkspaceRootSync(root, dir);
 }
 
 function maxSourceRevision(summaries: Array<Awaited<ReturnType<WorkspaceCommandService["diagnostics"]>>>): number | undefined {
@@ -415,18 +457,14 @@ function maxSourceRevision(summaries: Array<Awaited<ReturnType<WorkspaceCommandS
 }
 
 function resolveFileInsideRoot(root: string, file: string): string {
-  const filePath = path.isAbsolute(file) ? path.resolve(file) : path.resolve(root, file);
-  const relative = path.relative(root, filePath);
-  if (relative.startsWith("..") || path.isAbsolute(relative)) {
-    throw new Error(`File is outside workspace root: ${filePath}`);
-  }
-  return filePath;
+  return resolvePathInsideWorkspaceRootSync(root, file);
 }
 
-function runPackageScript(scriptName: string, args: string[]): void {
+function runPackageScript(scriptName: string, args: string[], runtimeValidation: NativeNodeRuntimeValidation): void {
   const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
   const scriptPath = path.join(packageRoot, "scripts", scriptName);
-  const result = spawnSync(process.execPath, [scriptPath, ...args], {
+  const currentRuntime = revalidateNativeNodeRuntime(runtimeValidation);
+  const result = spawnSync(currentRuntime.executablePath, [scriptPath, ...args], {
     stdio: "inherit"
   });
   process.exitCode = result.status ?? 1;

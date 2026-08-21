@@ -5,9 +5,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { revalidateNativeNodeRuntime, validateNativeNodeRuntime } from "../dist/core/native-node-runtime.js";
 
 const repoRoot = process.cwd();
 const bridgeCli = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/index.js");
+const bridgeRuntime = validateNativeNodeRuntime();
 const maxFiles = Number(process.env.CODEX_LSP_HOOK_MAX_FILES ?? 5);
 const verbosePending = isEnabled(process.env.CODEX_LSP_HOOK_VERBOSE_PENDING);
 const supportedSourceFilePattern = /\.(ts|tsx|js|jsx|rs|py|go)$/;
@@ -43,7 +45,7 @@ for (const file of files) {
     continue;
   }
 
-  const result = spawnSync(process.execPath, [bridgeCli, "diagnostics", "--file", file, "--root", repoRoot], {
+  const result = spawnBridge([bridgeCli, "diagnostics", "--file", file, "--root", repoRoot], {
     cwd: repoRoot,
     encoding: "utf8",
     maxBuffer: 1024 * 1024
@@ -58,6 +60,11 @@ for (const file of files) {
   }
 
   diagnostics.push(JSON.parse(result.stdout));
+}
+
+function spawnBridge(args, options) {
+  const runtime = revalidateNativeNodeRuntime(bridgeRuntime);
+  return spawnSync(runtime.executablePath, args, options);
 }
 
 if (diagnostics.length === 0) {

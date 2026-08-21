@@ -34,6 +34,12 @@ Keep the bridge runtime and the language-server launcher separate:
   data. Include negative and positive process-attribution controls and report
   `INCONCLUSIVE` when ownership or workload representativeness cannot be proven.
 
+The repository-local harness is `scripts/measure-bridge-lifecycle.mjs`. It is
+not a package bin, MCP surface, hook, or resident service. Run its tests with
+`npm run test:run -- tests/measurement.test.ts`; native Windows process,
+resource, identity, and simultaneous-control evidence remains a maintainer
+acceptance step.
+
 See [docs/PROCESS-AND-LIFECYCLE.md](./docs/PROCESS-AND-LIFECYCLE.md) for the
 full acceptance contract.
 

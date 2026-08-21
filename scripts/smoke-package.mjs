@@ -17,6 +17,7 @@ const tarballName = packEntries[0]?.filename;
 assert(typeof tarballName === "string" && tarballName.length > 0, "npm pack did not return a tarball filename");
 
 const tarballPath = path.join(packageRoot, tarballName);
+let isolatedTargetRoot;
 try {
   run(npmCommand.command, [...npmCommand.args, "init", "-y"], tempRoot);
   run(npmCommand.command, [...npmCommand.args, "install", tarballPath], tempRoot);
@@ -29,9 +30,23 @@ try {
   assert(help.stdout.includes('"distExists": true'), "installed package doctor did not report distExists true");
 
   const installBin = path.join(tempRoot, "node_modules", ".bin", process.platform === "win32" ? "codex-lsp-bridge-install.cmd" : "codex-lsp-bridge-install");
+  const installedPackageRoot = path.join(tempRoot, "node_modules", "codex-lsp-bridge");
+  assert(fs.existsSync(path.join(tempRoot, "node_modules", "@types", "node", "package.json")), "production package install did not include @types/node");
+  assert(!fs.existsSync(path.join(installedPackageRoot, "scripts", "measure-bridge-lifecycle.mjs")), "installed package shipped the repository-local measurement harness");
+  isolatedTargetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-lsp-installed-target-"));
+  run(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `const { resolveNodeTypeRoots } = await import("./node_modules/codex-lsp-bridge/dist/core/typescript-project.js"); const roots = resolveNodeTypeRoots(${JSON.stringify(isolatedTargetRoot)}, process.execPath); if (roots.length === 0) throw new Error("installed bridge did not resolve its bundled Node types");`
+    ],
+    tempRoot
+  );
   const codexHome = path.join(tempRoot, "codex-home");
   run(installBin, ["--dry-run"], tempRoot, { CODEX_HOME: codexHome });
 } finally {
+  if (isolatedTargetRoot) fs.rmSync(isolatedTargetRoot, { recursive: true, force: true });
   fs.rmSync(tarballPath, { force: true });
   fs.rmSync(tempRoot, { recursive: true, force: true });
 }
@@ -47,9 +62,7 @@ function run(command, args, cwd, extraEnv = {}) {
     windowsVerbatimArguments: prepared.windowsVerbatimArguments
   });
   if (result.status !== 0) {
-    process.stderr.write(result.stderr);
-    process.stderr.write(result.stdout);
-    process.exit(result.status ?? 1);
+    throw new Error(`Command failed with status ${result.status ?? "unknown"}: ${command}\n${result.stderr ?? ""}${result.stdout ?? ""}`);
   }
   return result;
 }

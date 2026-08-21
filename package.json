@@ -6,12 +6,12 @@
   "author": "codex-lsp-bridge contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/shjeon-96/codex-lsp-bridge.git"
+    "url": "git+https://github.com/jbk1998/codex-lsp-bridge-windows.git"
   },
   "bugs": {
-    "url": "https://github.com/shjeon-96/codex-lsp-bridge/issues"
+    "url": "https://github.com/jbk1998/codex-lsp-bridge-windows/issues"
   },
-  "homepage": "https://github.com/shjeon-96/codex-lsp-bridge#readme",
+  "homepage": "https://github.com/jbk1998/codex-lsp-bridge-windows#readme",
   "type": "module",
   "bin": {
     "codex-lsp-bridge": "dist/index.js",
@@ -64,9 +64,10 @@
   "publishConfig": {
     "access": "public"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@types/node": "^22.15.0"
+  },
   "devDependencies": {
-    "@types/node": "^22.15.0",
     "@vitest/coverage-v8": "^3.1.0",
     "typescript": "^5.8.0",
     "vitest": "^3.1.0"

@@ -1,4 +1,7 @@
 import { describe, expect, it } from "vitest";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { LspManager } from "../src/core/lsp-manager.js";
 
 describe("LspManager", () => {
@@ -22,5 +25,35 @@ describe("LspManager", () => {
     manager.forLanguage("typescript");
 
     await expect(manager.dispose()).resolves.toBeUndefined();
+  });
+
+  it("keeps managers and providers isolated by workspace root", async () => {
+    const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-manager-first-"));
+    const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-manager-second-"));
+    const first = new LspManager(firstRoot);
+    const second = new LspManager(secondRoot);
+    try {
+      expect(first.forLanguage("typescript")).not.toBe(second.forLanguage("typescript"));
+    } finally {
+      await Promise.all([first.dispose(), second.dispose()]);
+      await Promise.all([
+        fs.rm(firstRoot, { recursive: true, force: true }),
+        fs.rm(secondRoot, { recursive: true, force: true })
+      ]);
+    }
+  });
+
+  it("does not reuse a manager after its root directory is replaced", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-manager-replaced-"));
+    const manager = new LspManager(root);
+    manager.forLanguage("typescript");
+    try {
+      await fs.rm(root, { recursive: true, force: true });
+      await fs.mkdir(root, { recursive: true });
+      expect(() => manager.forLanguage("typescript")).toThrow("root_replaced");
+    } finally {
+      await manager.dispose();
+      await fs.rm(root, { recursive: true, force: true });
+    }
   });
 });

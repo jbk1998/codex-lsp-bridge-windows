@@ -4,7 +4,8 @@ type: refactor
 date: 2026-08-18
 topic: lsp-bridge-process-reuse
 artifact_contract: ce-unified-plan/v1
-artifact_readiness: requirements-only
+artifact_readiness: implementation-ready
+deepened: 2026-08-18
 product_contract_source: ce-brainstorm
 execution: code
 decision: staged-a-plus-c-first
@@ -12,7 +13,7 @@ decision: staged-a-plus-c-first
 
 # LSP Bridge Process Reuse and Lifecycle Baseline - Plan
 
-This document records the design debate, the evidence used to resolve it, and the resulting requirements-only scope for reducing LSP bridge churn without creating a new always-on service. It is a decision record and product contract, not an implementation checklist.
+This document records the design debate, the evidence used to resolve it, and the resulting implementation-ready plan for reducing LSP bridge churn without creating a new always-on service. The Product Contract remains authoritative; the planning sections below add implementation units, verification contracts, sequencing, and explicit deferred boundaries without changing its meaning.
 
 ## Goal Capsule
 
@@ -290,29 +291,350 @@ flowchart TB
 - Installer, updater, and hook configuration paths can be changed or validated so they do not reintroduce a bare `node` or command-shim bridge launcher.
 - Materiality thresholds and the representative observation window will be approved before interpreting measurement data.
 
-### Outstanding Questions
+### Outstanding Questions and Planning Inputs
 
-#### Resolve Before Planning
+#### Maintainer inputs before baseline interpretation
 
 - What observation window and usage sample constitute representative Codex work?
 - What latency, launch-frequency, CPU, or memory thresholds make cold-start cost material?
 - Where should privacy-minimized local diagnostic artifacts be retained, and for how long?
 
-#### Deferred to Planning
+#### Resolved defaults and future-expansion boundary
 
-- Which failure should trigger automatic provider recovery versus an immediate user-visible error?
-- What bounded shutdown timeout and visible failure behavior should apply when a child does not exit cleanly?
-- What approval mechanism should gate any future PostToolUse reactivation?
-- If a broker evaluation becomes justified, what client-identity and workspace-isolation boundary must it enforce?
+- An in-flight operation that observes child exit returns an actionable server_exited or unavailable result; the next dependent operation may share one generation-scoped recovery and document-reopen attempt.
+- Shutdown uses the 1,000 ms request, 1,500 ms child-grace, and 3,000 ms shared aggregate defaults; observed exit is clean, and uncertain ownership or cleanup is non_clean with a reason code.
+- Future PostToolUse reactivation requires an explicit maintainer/release approval record and remains outside this implementation.
+- If a broker evaluation becomes justified, its future boundary is logical client plus canonical root plus language, with no shared state until a separate product decision.
 
 ### Sources / Research
 
 - `src/index.ts` and `src/core/lsp-manager.ts`: existing manager-per-root and provider-per-language reuse.
 - `src/core/json-rpc-lsp-client.ts`: lazy child start and shutdown behavior.
+- `src/transport/mcp.ts` and `src/index.ts`: serial stdio dispatch, EOF ownership, and manager disposal boundary.
+- `src/core/doctor.ts`: current hook/config readiness semantics and the need to separate explicit MCP readiness from hook state.
+- `src/core/workspace-root.ts` and `src/utils/uri.ts`: lexical/canonical root and URI boundary behavior.
 - `scripts/codex-lsp-post-tool-use.mjs`: per-file bridge CLI launch behavior.
+- `scripts/codex-lsp-post-tool-use-core.mjs`, `src/transport/ipc.ts`, and `tests/ipc.test.ts`: deferred IPC/cache artifacts and the inactive-boundary test disposition.
+- `package.json`, `tsconfig.build.json`, `scripts/verify-package.mjs`, and `scripts/smoke-package.mjs`: compiled-artifact and post-build package verification constraints.
 - `README.md`: documented standard Node launcher for the bridge MCP server.
 - User `.codex/config.toml`: disabled hook state, missing versioned bridge runtime, and specialized `node_repl.exe` configuration.
 - Local process observations from 2026-08-18: zero active bridge or language-server processes and 39 `node_repl.exe` processes associated with internal Code Mode.
 - [MCP transports](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports): stdio is a client-launched server subprocess; Streamable HTTP is the multi-client transport.
 - [MCP lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle): initialization, operation, shutdown, and bounded request timeouts.
+- [MCP transports, 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports): stdin closure, bounded stream behavior, and unexpected subprocess termination.
+- [MCP lifecycle, 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/basic/lifecycle): lifecycle ownership and shutdown expectations.
+- [Node child_process](https://nodejs.org/api/child_process.html): child lifecycle, exit observation, and kill semantics.
+- [Windows CreateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw): Windows process creation and ownership boundary considerations.
+- [npm folders](https://docs.npmjs.com/cli/v11/configuring-npm/folders) and [npm cmd-shim](https://github.com/npm/cmd-shim): package entrypoint and Windows shim behavior.
 - Debate record above: independent openings, chair response, final positions, concessions, and arbiter verdict.
+
+## Planning Contract
+
+### Product Contract preservation
+
+The Product Contract is unchanged. This enrichment preserves the meaning and stable identifiers of R1-R21, A1-A8, F1-F6, and AE1-AE14. It adds implementation detail only; it does not activate the deferred broker, idle-suspension, cross-connection, or automatic-hook scope. The Debate Record remains part of this artifact as the product decision record.
+
+### Plan depth and execution profile
+
+- **Depth:** Deep. The work crosses launcher generation, runtime validation, MCP stdio lifecycle, LSP child ownership, measurement privacy, packaging, and Windows process behavior.
+- **Execution profile:** Code. The plan is implementation-ready, but this ce-plan run does not modify source code, tests, package metadata, or runtime configuration.
+- **Primary sequencing rule:** Repair and validate launcher behavior and the explicit no-hook MCP baseline before interpreting measurements. Characterize existing lifecycle behavior before changing it.
+- **Stop conditions:** Do not add a broker, idle timer, resident service, cross-connection state, process-selection capability, or automatic-hook reactivation under this plan.
+- **Compatibility rule:** Preserve the existing MCP tool names, argument shapes, read-only behavior, diagnostic truth fields, and legacy protocol compatibility boundary unless a separate contract decision approves a change.
+
+### Key technical decisions
+
+- **KTD1 - One compiled native launch descriptor:** Define the canonical descriptor and validator in src/core/native-node-runtime.ts and consume its compiled dist/core/native-node-runtime.js artifact from packaged .mjs scripts. Keep generated launch-record validation separate from validation of the currently running Node identity. The descriptor resolves an absolute trusted native node.exe, rejects command shims and node_repl.exe, revalidates immediately before spawn, and returns stable actionable failure codes.
+- **KTD2 - Install-time materialization:** Static package metadata is a template-only surface because it cannot safely embed a machine-specific executable path. Installer-generated Codex configuration is the authoritative active launch record. Static plugin activation must either materialize that record first or report that installation is incomplete; it must not silently bypass the descriptor. Auto-update resolves or installs the package during an explicit update operation, then writes an immutable local bridge entrypoint; MCP startup never runs mutable npm exec, npx, latest, or network resolution.
+- **KTD3 - In-process boundary and canonical identity:** Retain manager-per-root and provider-per-language state only within one live MCP process. Canonicalize existing roots consistently across manager keys, providers, URI checks, and document state: realpath existing roots, normalize Windows separators and case, reject outside-root reparse targets, and use a normalized lexical identity only for roots that do not yet exist. Single-flight initialization and recovery are required invariants for R11/R12, not optional changes gated on characterization. Do not introduce a broker or shared state across MCP connections.
+- **KTD4 - One lifecycle owner and explicit states:** The transport lifecycle coordinator owns connection state and invokes idempotent manager disposal exactly once. Use open, closing, draining, clean, and non_clean states. When closing begins, reject new work, track active requests, propagate one absolute disposal deadline, bound the LSP shutdown request and child-exit confirmation, and report a reasoned non-clean result if ownership or exit cannot be verified.
+- **KTD5 - Generation-scoped recovery:** Model provider state as ready, exited, recovering, ready, or failed by child generation. Retain a reopen manifest for required documents, create one recovery promise per exit generation, let follower requests share that recovery, and never automatically retry the failed request. Recovery failure is actionable and never returns stale or partial success.
+- **KTD6 - Repository-local maintainer measurement:** Add a separate opt-in lifecycle harness kept in the repository and excluded from the published package. It externally launches the same materialized bridge record used by explicit Codex operation, observes only bridge-owned evidence, and remains outside the MCP tool surface, normal startup, and persistent state.
+- **KTD7 - Explicit attribution and receipt gate:** A schema-validated receipt must distinguish bridge-owned processes from Code Mode activity using a negative control and a simultaneous positive control. Missing workload, missing ownership evidence, incomplete controls, cleanup uncertainty, or missing required metrics produces INCONCLUSIVE and cannot support a load claim; startup or execution failure produces HARNESS_ERROR with no completed receipt.
+- **KTD8 - Baseline hook state is absent or disabled:** The default installer must not add or enable the managed PostToolUse hook. It may preserve and report an existing user-owned state, but it must not silently change it. The active per-file wrapper and separate batching/IPC helper remain future-only and are tested as different implementations. Any future gate must count total bridge CLI launches across mixed-language edits.
+- **KTD9 - MCP action and context parity:** Preserve the existing read-only MCP tool catalog, schemas, annotations, structured result fields, workspace-root resolution, language configuration, and source-revision semantics. lsp_status remains readiness-only and never exposes PIDs, telemetry, receipts, or process controls. New connections receive fresh ephemeral state and must reissue work; no checkpoint, broker, or resume surface is added.
+- **KTD10 - Trusted boundaries and safe failure:** Generated configuration writes are atomic and reparse-safe, structured arguments reject control characters and unsafe syntax, root containment is canonical and revalidated, and process termination requires handle-backed or identity-checked ownership. Stable bounded error codes distinguish missing, untrusted, unavailable, non-clean, inconclusive, and harness-error outcomes without returning raw paths, arguments, environment values, or child output.
+
+### High-level technical design
+
+```mermaid
+flowchart LR
+  A[Installer or updater] --> R[Native runtime descriptor]
+  P[Static package metadata] --> I[Install-time materialization]
+  H[Future hook generation] --> R
+  I --> R
+  R --> C[Codex MCP configuration]
+  C --> M[MCP stdio bridge]
+  M --> G[Root manager registry]
+  G --> L[Language provider]
+  L --> S[Language-server child]
+  S --> D[Explicit LSP result]
+  X[Repository-local maintainer controller] -. external spawn and observe .-> C
+  X --> E[Allowlisted receipt]
+```
+
+```mermaid
+flowchart TB
+  EOF[stdin EOF or connection close] --> Closing[Lifecycle owner: closing]
+  Closing --> Reject[Reject new work]
+  Reject --> Drain[draining with one absolute deadline]
+  Drain --> Dispose[Idempotent manager disposal]
+  Dispose --> Request[Bound LSP shutdown request]
+  Request --> Exit[Identity-checked child exit]
+  Exit -->|confirmed| Clean[clean]
+  Exit -->|not verified| NonClean[non_clean with reason code]
+```
+
+The descriptor is the only place that decides whether a runtime executable is acceptable. The compiled descriptor artifact is the shared boundary for TypeScript runtime code and packaged .mjs scripts. Static metadata is a template-only surface; activation requires install-time materialization. The bridge itself remains an MCP stdio server with the existing read-only tool catalog. The repository-local measurement controller externally launches the same materialized record used by explicit operation and has no production-runtime or MCP-facing dependency.
+
+The lifecycle owner must provide a single absolute deadline to manager, provider, and client disposal. A language-server wrapper is cleanly terminable only when the Windows ownership adapter proves the wrapper and descendants belong to this bridge instance. PID, parent PID, image name, or path alone is insufficient; uncertain or detached descendants produce non_clean rather than a broad tree kill.
+
+### System-wide impact
+
+| Area | Planned effect | Explicit non-effect |
+|---|---|---|
+| Bridge runtime | Validate its own native Node launch and harden root, provider, recovery, and shutdown boundaries. | No user process selection, attachment, or management. |
+| MCP transport and tools | Add one lifecycle owner around stdio EOF, preserve the exact read-only tool catalog and structured result truth fields, and fail closed on cross-root access. | No new tool, argument, protocol, process-control, telemetry, receipt-retrieval, checkpoint, or resume surface. |
+| Installer and updater | Materialize trusted native runtime paths, use an immutable local package entrypoint, write managed files atomically, and reject shim-based bridge launches. | No network/package resolution on MCP startup, persistent service installation, workspace migration, or broad rollback deletion. |
+| Package metadata | Preserve platform-neutral templates while requiring install-time materialization before activation and verifying the static/template boundary. | No machine-specific path committed to a cross-platform package manifest and no direct package-bin bypass of the descriptor. |
+| PostToolUse | Leave the managed hook absent or disabled by default, preserve existing user-owned state, and document future batching as a gate. | No silent hook activation, batching implementation, or claim that the helper satisfies the shipped path. |
+| Measurement | Add an opt-in repository-local controller that externally launches the materialized bridge and emits one allowlisted receipt. | No published measurement utility, source text, credentials, raw child output, unrelated process telemetry, resident collector, or MCP exposure. |
+| Documentation | Align launcher, lifecycle, measurement, and release guidance with the implemented contract. | No claim that synthetic fixtures are production acceptance. |
+
+### Planning inputs before baseline interpretation
+
+The representative observation window, materiality thresholds, and artifact-retention decision remain maintainer inputs to the measurement phase rather than hidden implementation assumptions. The harness must therefore:
+
+- record sample counts, workload identity at the level of operation class, and control completion;
+- emit raw lifecycle/resource evidence without deciding that a threshold is material;
+- emit one schema-validated receipt to stdout; any run-scoped temporary files are deleted on every completed path;
+- never require a resident directory, database, cache, IPC endpoint, or shared state;
+- require explicit maintainer opt-in to retain an artifact in a protected destination;
+- use a random per-run salt for root fingerprints and never reuse the deferred deterministic IPC/cache hash;
+- produce INCONCLUSIVE when the workload, controls, ownership, cleanup, or required metrics are incomplete, and HARNESS_ERROR when the harness cannot produce a completed receipt.
+
+### Sequencing and dependencies
+
+1. **S0 - Characterize and inventory:** Define the absent/disabled-hook baseline, MCP tool/catalog parity, current root identity, process-ownership capability, and historical IPC/cache boundary. Convert the broken IPC test into a runnable inactive-boundary fixture before treating ci:verify as a valid contract.
+2. **S1 - Repair the explicit launch boundary:** Implement and validate the compiled descriptor artifact, launch-surface matrix, atomic generated configuration, doctor status, default no-hook installation behavior, and post-build fresh-process replay. Do not begin baseline measurement until the generated configuration launches the intended trusted native runtime.
+3. **S2 - Harden confirmed lifecycle defects:** Exercise the transport lifecycle with tracked dispatch, fake or controlled language-server failures, and post-build smoke coverage. Fix confirmed defects in reuse, initialization serialization, document reopening, shutdown, process ownership, or result truthfulness.
+4. **S3 - Run the bounded measurement path:** Implement the repository-local external harness, redaction and attribution controls, schemaed receipt, cleanup, and INCONCLUSIVE/HARNESS_ERROR distinction. Keep the normal hook absent or disabled.
+5. **S4 - Package and hand off:** Update package verification to exclude the harness, smoke tests, docs, release notes, atomic rollback guidance, and future-only hook/IPC boundaries. Record what evidence would authorize R20/R21 expansion.
+
+Dependencies are the approved native Node source, the current MCP stdio ownership model, the existing workspace-root and language-detection contracts, Windows process inspection/termination behavior, and maintainer approval of the observation window and interpretation thresholds.
+
+### Risks and mitigations
+
+| Risk | Mitigation |
+|---|---|
+| A generated surface silently falls back to node, npm, or a shim. | Test every launch surface through one descriptor contract and replay a fresh installed process. |
+| A language-server .cmd/.bat wrapper leaves descendants alive. | Track the known wrapper PID, use a platform-specific owned-tree termination adapter, verify exit, and surface non-clean status. |
+| Shutdown changes deadlock active requests or hide failures. | Use explicit closing state, separate deadlines, injected unresponsive-server fixtures, and no false clean result. |
+| Recovery returns old diagnostics after a server exit. | Invalidate state on exit, serialize one recovery, reopen documents, and test source revisions and stale-result rejection. |
+| Code Mode load is attributed to the bridge. | Use negative and positive controls, bridge-owned lineage only, and INCONCLUSIVE on ownership failure. |
+| The measurement harness becomes a hidden service. | Keep it CLI-only, opt-in, run-scoped, stdout-first, and absent from normal MCP tools and package startup. |
+| Historical IPC/cache code is reactivated accidentally. | Mark it deferred-only, audit imports and generated hook paths, and do not add broker behavior or persistent state. |
+| Synthetic tests pass while Windows behavior fails. | Require manual native-Windows process and fresh-install evidence before claiming acceptance. |
+
+## Implementation Units
+
+### U1. Native bridge launch descriptor and generated configuration
+
+**Objective:** Make every active bridge launch path resolve and invoke a validated native node.exe while preserving the language-server .cmd/.bat exception.
+
+**Requirements and decisions:** Covers R1-R4 and R19. The canonical source module is src/core/native-node-runtime.ts and the packaged scripts consume only its compiled dist/core/native-node-runtime.js artifact after build validation. The module exposes separate checks for a generated launch record and the current process identity. The descriptor accepts only an absolute trusted native executable whose final path and file identity are revalidated immediately before spawn; it rejects command shims, node_repl.exe, unsafe reparse/UNC/device paths, control characters, and mutable package commands. process.execPath may be used only after identity validation and must not be persisted blindly.
+
+The baseline installer does not add or enable the managed PostToolUse hook. It preserves existing user-owned hook state and reports it, but an enabled existing hook requires explicit user action before measurement. The default and update operations materialize an immutable local package entrypoint and write a native-node command record. Package-manager work occurs only during an explicit install/update operation; MCP startup never runs npm exec, npx, latest, or network resolution. The installer process itself may be invoked by a package-manager wrapper, but the bridge command it emits is always inside the native-launch guarantee. Language-server launch resolution remains separate; a .cmd or .bat language-server command is accepted only under its explicit trust and process-ownership policy.
+
+**Files and surfaces:**
+
+- Add the canonical runtime descriptor and validator in src/core/native-node-runtime.ts.
+- Package dist/core/native-node-runtime.js and have scripts/install-codex.mjs and scripts/codex-lsp-post-tool-use.mjs consume that compiled artifact only after ensureBuilt validation.
+- Integrate current-process and launch-record validation into src/index.ts and src/core/doctor.ts so runtime and doctor report stable launcher codes without raw paths or child output.
+- Update scripts/install-codex.mjs to materialize the default no-hook state, preserve user-owned records, serialize structured TOML/JSON arguments, reject unsafe package/path values, and rollback managed files atomically on partial failure.
+- Treat .mcp.json, .codex-plugin/plugin.json, and hooks/hooks.json as template-only surfaces. Package activation must materialize the native record before use; package checks must prove that static package-bin commands cannot bypass it.
+- Update scripts/smoke-install.mjs, scripts/smoke-package.mjs, scripts/verify-package.mjs, package.json, and package-contract expectations for the compiled descriptor, direct native entrypoint, auto-update, no-hook, and package-template boundary.
+- Add tests/native-node-runtime.test.ts and extend tests/doctor.test.ts, tests/package-contract.test.ts, and the installer smoke fixtures.
+
+**Verification scenarios:**
+
+- Happy path: approved absolute native node.exe is accepted and appears in generated default and auto-update configuration.
+- Edge cases: missing path, stale path, non-executable path, fake node.exe, validation-to-spawn replacement, node.cmd, npm.cmd, npx, node_repl.exe, relative path, unsafe reparse/UNC/device path, control characters, and path containing spaces produce distinct actionable failures.
+- Compatibility: a language-server .cmd or .bat command remains accepted only at the language-server boundary and is wrapped safely.
+- Configuration safety: malformed or duplicate TOML/JSON, symlinked CODEX_HOME, concurrent writes, user-edited managed blocks, malicious package specs, and partial-write failure preserve unrelated settings and report rollback_complete or rollback_partial.
+- Hook baseline: a default temporary profile contains MCP configuration but no managed PostToolUse hook, and an existing disabled/enabled user-owned state is not silently changed.
+- Static/template matrix: package manifests, generated config.toml, generated hooks.json, local package-bin invocation, and update mode each report whether they are authoritative, materialized, or template-only; no active path bypasses the descriptor.
+- Fresh-process acceptance: post-build smoke against a temporary Codex profile starts the bridge with native node.exe and does not depend on the current shell's PATH.
+
+**Dependencies:** S0 inventory; the existing build-before-install contract; the approved native runtime source; package inclusion of dist/core/native-node-runtime.js; U2's explicit MCP status contract.
+
+**Exit evidence:** A launch-surface matrix is covered by tests and smoke output, the compiled descriptor is consumed by both TypeScript and packaged scripts, doctor distinguishes explicit MCP readiness from hook state and launcher failure, managed-file writes prove atomic rollback behavior, and a post-build fresh installed process replay confirms the generated command rather than only inspecting text.
+
+### U2. Explicit MCP baseline, reuse, recovery, and bounded shutdown
+
+**Objective:** Verify the existing in-process ownership boundary and repair only confirmed lifecycle defects so explicit LSP remains reliable when automatic diagnostics are absent.
+
+**Requirements and decisions:** Covers R3 and R5-R13. Preserve the existing read-only MCP tool catalog, names, schemas, annotations, language-selection behavior, structured result fields, and legacy protocol compatibility. Do not invent a language argument for symbol-only operations. Add exact tool-registry/dispatch parity coverage, and keep lsp_status limited to readiness, installation, build, and language-server availability. It must never expose PIDs, process trees, CPU, memory, telemetry, receipts, or process controls.
+
+Use one lifecycle coordinator in src/transport/mcp-lifecycle.ts. It owns open, closing, draining, clean, and non_clean states, tracks active dispatch promises, rejects new calls after EOF, and invokes manager disposal exactly once. The transport may dispatch parsed requests through tracked promises so EOF can be observed while a request is blocked; request IDs, not input ordering, determine responses. A completed request must be completed, failed, explicitly timed out, or explicitly marked incomplete; no detached work, job handle, checkpoint, or cross-connection resume exists.
+
+Root identity is canonical and consistent: existing roots realpath before manager-key creation, normalize Windows separators and case, coalesce equivalent symlink aliases when they resolve to the same trusted root, and revalidate root containment after target discovery and before file access. Lexical identity is used only for non-existent roots. Marker discovery selects a root but does not authorize boundary expansion. Cross-root access and outside-root junction/reparse targets fail closed.
+
+Serialize manager/provider initialization and document opening. Model provider state by child generation as ready, exited, recovering, ready, or failed. Retain a reopen manifest for documents needed by dependent operations. On unexpected language-server exit, fail the in-flight request with a stable server_exited or unavailable result, invalidate old state, and allow one recovery promise for that exit generation. Concurrent followers share the recovery result; the failed request is not automatically retried. Never return stale diagnostics or partial success.
+
+MCP EOF and LSP shutdown are separate. Use one absolute disposal deadline propagated through transport, manager, provider, and client. The planning defaults are 1,000 ms for the shutdown request, 1,500 ms for child-exit grace, and 3,000 ms for aggregate disposal; the aggregate budget is shared rather than multiplied per provider. If the child remains alive, use the process-ownership adapter, verify creation identity and actual exit, and report a non_clean reason code. Clean means observed exit, not a sent kill signal. If EOF leaves no response channel, clean EOF exits successfully; cleanup failure writes a sanitized status to stderr and exits nonzero.
+
+**Files and surfaces:**
+
+- Update src/index.ts, src/transport/mcp.ts, src/core/lsp-manager.ts, src/core/lsp-semantic-provider.ts, src/core/json-rpc-lsp-client.ts, and src/core/workspace-root.ts.
+- Add src/transport/mcp-lifecycle.ts and src/core/process-ownership.ts for the lifecycle coordinator and platform-specific owned-child boundary. The Windows adapter must prefer handle-backed or Job Object ownership; PID, parent PID, image name, or path alone cannot authorize termination. Detached/breakaway or uncertain descendants remain alive and produce non_clean; broad image-name or recursive tree killing is prohibited.
+- Add tests/mcp-lifecycle.test.ts for injected transport dispatch, no-hook explicit MCP operation, tool-registry parity, root/language orchestration, reconnect reinitialization, EOF during a blocked request, and lifecycle state/reason codes. Reserve actual dist-process replay for scripts/smoke-package.mjs and native Windows acceptance because ci:verify tests run before build.
+- Add tests/process-ownership.test.ts with injected Windows ownership, PID-reuse, unrelated same-image, wrapper/descendant, delayed-exit, permission, and detached-child cases.
+- Extend tests/lsp-manager.test.ts, tests/lsp-semantic-provider.test.ts, tests/json-rpc-lsp-client.test.ts, tests/workspace-root.test.ts, and tests/transport.test.ts.
+- Convert tests/ipc.test.ts into a runnable inactive-boundary test that proves no active MCP path imports or starts IPC; do not restore the missing startDiagnosticsIpcServer export or broker behavior.
+
+**Verification scenarios:**
+
+- Happy path: the source-level transport fixture and post-build smoke together prove that a stdio MCP process with no managed hook serves an explicit diagnostic request and reports explicit MCP ready / automatic diagnostics disabled.
+- Tool parity: tools/list remains the exact approved read-only catalog, legacy and MCP dispatch preserve schemas/annotations/result truth fields, and lsp_status exposes no process or measurement data.
+- Reuse: repeated requests for one canonical root and language use one manager/provider; two roots remain isolated; two languages in one root remain separate; equivalent Windows aliases coalesce only when canonical identity proves equivalence.
+- Concurrency: concurrent provider/manager first requests settle on one manager, one provider, one initialization promise, and one steady-state language-server child; transport coverage proves tracked dispatch and close behavior without requiring a built dist child.
+- Recovery: an injected child exit invalidates state; diagnostics, definition, references, symbols, and hover each require the generation's recovery/reopen barrier before returning current data.
+- Recovery failure: initialization or reopen failure returns a stable actionable server_exited/unavailable result, with no stale or partial result and no automatic retry of the failed call.
+- Shutdown edge case: an unresponsive server does not hold disposal forever; one shared aggregate deadline yields non_clean with a reason code.
+- Process-ownership edge case: an unavoidable language-server wrapper is terminable only through verified owned identity; PID reuse, unrelated same-image processes, detached descendants, or permission failure remain non_clean.
+- Boundary: requests arriving after closing begins are rejected, incomplete directory results are explicit, a reconnect starts fresh ephemeral state, and no MCP shutdown request or new public process/measurement tool is introduced.
+
+**Dependencies:** U1's validated launch path and no-hook profile; existing diagnostics truth fields including timedOut, stale, and sourceRevision; current MCP protocol compatibility; Windows child-process ownership capability; an injectable manager/client seam for concurrency and recovery tests.
+
+**Exit evidence:** Targeted lifecycle, parity, root-boundary, recovery, and process-ownership tests pass; post-build smoke covers real stdio EOF and fresh-process cleanup; explicit no-hook behavior is proven; and no lifecycle result claims clean shutdown without child-exit confirmation.
+
+### U3. Opt-in lifecycle measurement and attribution receipt
+
+**Objective:** Produce a bounded local evidence path for bridge-specific churn and resource use without creating a resident service, exposing process controls, or attributing Code Mode load to the bridge.
+
+**Requirements and decisions:** Covers R14-R16, R19, and R21. Add a separate repository-local scripts/measure-bridge-lifecycle.mjs harness rather than expanding the existing hook-latency benchmark. It is not included in package.json files, not registered as a bin, not shipped in npm pack output, and not callable through MCP. The harness externally launches the same materialized bridge record used by explicit Codex operation, observes bridge-owned process lineage, records allowlisted lifecycle/resource metrics, and emits one final receipt. It never starts, stops, terminates, or instruments Code Mode.
+
+The required receipt fields are schemaVersion, random runId, salted rootFingerprint, language, operationClass, monotonic timestamps and durations, bridgePid, ownedChildPid where proven, childLifetime, connectionDuration, initialization/coldStartDuration, requestLatency, bridgeOwnedCpu and bridgeOwnedMemory where available, restartCount, recoveryFailures, controlState, reasonCodes, and outcome. It excludes source contents, document text, credentials, command arguments, environment variables, raw root paths, child stdout/stderr, stack traces, and unrelated process inventories. Stdout contains exactly one schema-validated receipt. Temporary files are created in an atomically created non-reparse run directory, are deleted on every completed path without following substituted links, and are retained only through explicit maintainer opt-in to a protected destination.
+
+The harness must support a negative control with Code Mode activity but no bridge workload and a simultaneous positive control with bridge activity while Code Mode activity is present. Control activity is operator-provided or observed through the minimum boolean/count signal; the harness does not manage Code Mode. In automated tests, process inspection is injectable. On Windows, native manual evidence is required for CPU, memory, PID creation identity, process ownership, and simultaneous-control behavior. Missing workload, missing control, a non-simultaneous positive control, ambiguous ownership, PID reuse uncertainty, unavailable required metrics, cleanup uncertainty, or cancellation produces a completed receipt with outcome INCONCLUSIVE and reason codes. Startup, parse, or execution failure produces HARNESS_ERROR, nonzero exit, and no completed receipt.
+
+The controller must not change the workload it is measuring: use the same generated launch record and request classes as explicit operation, keep sampling bounded and configurable only by the maintainer, record harness overhead separately where it is measurable, and exclude any run whose instrumentation changes launch count, concurrency, or child lifetime from improvement interpretation.
+
+**Files and surfaces:**
+
+- Add scripts/measure-bridge-lifecycle.mjs and tests/measurement.test.ts.
+- Add only the smallest test seams needed for controlled lifecycle events; do not emit measurement data through MCP tools, tools/list, lsp_status, normal diagnostics, or persistent startup state.
+- Update scripts/verify-package.mjs, scripts/smoke-package.mjs, and tests/package-contract.test.ts to assert the harness is repository-local, absent from the package allowlist and npm pack output, and unreachable from package bins or MCP metadata.
+- Keep scripts/measure-hook-latency.mjs as a separate existing benchmark and do not treat it as lifecycle coverage.
+
+**Verification scenarios:**
+
+- Happy path: a controlled bridge workload emits one parseable receipt with allowlisted lifecycle metrics and a selected R21 outcome.
+- Redaction: fixture inputs containing source-like text, credentials, command arguments, environment values, child output, ANSI/CRLF, raw paths, oversized fields, and unrelated process data never appear in output.
+- Attribution negative control: Code Mode-only activity cannot produce a bridge-load claim.
+- Attribution positive control: simultaneous bridge and Code Mode activity records bridge-owned lineage separately; if the control is not simultaneous or ownership is ambiguous, the receipt is INCONCLUSIVE.
+- Incomplete run: no workload, missing control, missing owner evidence, PID reuse uncertainty, missing metrics, cancellation, or cleanup failure is INCONCLUSIVE rather than zero load or success.
+- Cleanup: no resident process, IPC endpoint, cache, predictable deferred-IPC name, or retained temporary artifact remains after a default run; precreated reparse links cannot redirect cleanup.
+- Failure contract: startup/parse/execution failure is HARNESS_ERROR with no receipt, while an insufficient but completed run is INCONCLUSIVE with a receipt.
+- Boundary: the harness is absent from package output, MCP tools/list, lsp_status, normal diagnostics, and active hook paths.
+
+**Dependencies:** U1 and U2 must establish a trusted launcher, bounded lifecycle, canonical root identity, and no-hook profile first. Maintainer must provide the observation window, interpretation thresholds, control activity, and any explicit artifact-retention decision.
+
+**Exit evidence:** The harness schema, privacy allowlist, control protocol, ownership/PID-reuse rule, cleanup behavior, package-local boundary, and INCONCLUSIVE/HARNESS_ERROR semantics are tested; native Windows manual evidence is recorded separately before interpreting results.
+
+### U4. Package, documentation, rollback, and future-hook boundary
+
+**Objective:** Make the shipped package, installer, documentation, and verification artifacts tell the same story as the active baseline and preserve the future-only hook and IPC boundaries.
+
+**Requirements and decisions:** Covers R17-R21 and the public-facing portions of R1-R4 and R19. The default installer leaves the managed PostToolUse hook absent or disabled and preserves an existing user-owned state without silently enabling, deleting, or rewriting it. An explicit enabled hook requires user action before baseline measurement. The active wrapper remains characterized as per-file and is not reactivated. The separate batching/IPC helper remains future-only; no current test may be presented as proof that the active hook launches once per mixed-language edit event.
+
+The future gate is documented as a total invocation rule: one edit event means no more than one bridge CLI launch across all files and languages, before any maxFiles cap. If a future implementation truncates the event, it must emit truncated and cannot claim complete event coverage. Its eventual test fixture must count total bridge invocations, not invocations per language, and must not use persistent IPC/cache state. This plan does not make that fixture a current acceptance result.
+
+Installer and updater writes are staged and atomic for all managed config, hook, and AGENTS content. On partial failure, restore only installer-owned records that remain unchanged and report rollback_complete or rollback_partial. Uninstall follows the same ownership rule and never deletes user-edited or unrelated content. The approval record for future hook reactivation and measurement retention is a maintainer/release gate, not an MCP capability.
+
+**Files and surfaces:**
+
+- Update README.md, CONTRIBUTING.md, docs/PROCESS-AND-LIFECYCLE.md, and docs/RELEASE.md for native launch, explicit no-hook baseline, lifecycle deadlines, measurement receipt, rollback, and future gates.
+- Update scripts/smoke-install.mjs, scripts/smoke-package.mjs, scripts/verify-package.mjs, and tests/package-contract.test.ts for packaged-file and fresh-process expectations.
+- Add tests/post-tool-use-wrapper.test.mjs for active-wrapper characterization and keep tests/post-tool-use.test.mjs explicitly helper-only/deferred. Review .mcp.json, .codex-plugin/plugin.json, hooks/hooks.json, scripts/codex-lsp-post-tool-use.mjs, scripts/codex-lsp-post-tool-use-core.mjs, src/transport/ipc.ts, tests/post-tool-use.test.mjs, and tests/ipc.test.ts for stale claims or accidental activation. Do not delete historical artifacts in this unit without a separate approved removal scope.
+
+**Verification scenarios:**
+
+- Documentation examples use the native launch contract and do not show bare node, npm, or a bridge shim.
+- Fresh package install and post-build fresh-process replay match the generated launcher and package contents; the repository-local harness is absent from npm pack output.
+- The intentional no-hook baseline is represented in smoke or lifecycle fixtures and doctor reports explicit MCP readiness separately from hook state.
+- Re-running install and uninstall is reversible and idempotent; staged partial failure reports rollback_complete or rollback_partial, preserves unrelated/user-edited content, and changes no workspace data.
+- Static inspection and runnable boundary tests confirm no active hook or IPC/cache path is enabled by this plan.
+- The active wrapper has characterization coverage separate from the helper; a future mixed-language total-call fixture, if retained, is clearly deferred and cannot be cited as current acceptance.
+- MCP tools/list, lsp_status, and normal diagnostics contain no measurement or process-management surface.
+
+**Dependencies:** U1-U3; package file list; current release process; no new runtime dependency.
+
+**Exit evidence:** User-facing docs, package verification, smoke tests, rollback behavior, and future-only boundaries are internally consistent.
+
+## Verification Contract
+
+### Test mapping
+
+| Contract area | Required test files and scenarios |
+|---|---|
+| Native runtime and launcher errors | tests/native-node-runtime.test.ts, tests/doctor.test.ts, tests/package-contract.test.ts; native path, compiled descriptor parity, shim, node_repl.exe, stale/replaced path, generated default, update, malformed config, atomic rollback, and idempotence cases. |
+| Explicit MCP with hook disabled | tests/mcp-lifecycle.test.ts, tests/transport.test.ts, tests/doctor.test.ts; source-level lifecycle harness plus post-build smoke with MCP present and managed hook absent or disabled. |
+| MCP action/context parity | tests/mcp-lifecycle.test.ts, tests/transport.test.ts, tests/diagnostics.test.ts; exact tools/list allowlist, stable schemas/annotations, lsp_status readiness-only, equivalent path/root context, structured truth fields, timeout/incomplete results, and no process/measurement surface. |
+| Root and language reuse | tests/lsp-manager.test.ts, tests/workspace-root.test.ts, tests/mcp-lifecycle.test.ts; repeated requests, two roots, two languages, Windows aliases, junction/symlink boundaries, root replacement, and canonical identity. |
+| Initialization and recovery | tests/lsp-semantic-provider.test.ts, tests/mcp-lifecycle.test.ts; single-flight initialization, unexpected exit, generation reopen manifest, concurrent follower recovery, recovery failure, stale diagnostics, and source revision. |
+| Bounded shutdown | tests/json-rpc-lsp-client.test.ts, tests/mcp-lifecycle.test.ts, tests/process-ownership.test.ts; unresponsive server, in-flight request, EOF, shared deadline, wrapper descendant, PID reuse, detached child, permission failure, and non-clean reason codes. |
+| Measurement privacy and attribution | tests/measurement.test.ts; schema allowlist, redaction, random identifiers/fingerprints, negative control, simultaneous positive control, INCONCLUSIVE reason codes, HARNESS_ERROR distinction, reparse-safe cleanup, and repository-local package exclusion. |
+| Hook and IPC boundary | tests/post-tool-use-wrapper.test.mjs, tests/post-tool-use.test.mjs, tests/ipc.test.ts, tests/package-contract.test.ts; default hook absent/disabled, active wrapper characterization, helper-only future status, and inactive IPC boundary. |
+| Package and fresh-process behavior | scripts/smoke-install.mjs, scripts/smoke-package.mjs, scripts/verify-package.mjs, tests/package-contract.test.ts; installed config, static/template matrix, package contents, harness exclusion, dry-run, uninstall, rollback, and fresh replay. |
+
+### Repository verification commands
+
+Run targeted tests before broader verification:
+
+    npm run test:run -- tests/native-node-runtime.test.ts tests/doctor.test.ts tests/package-contract.test.ts
+    npm run test:run -- tests/json-rpc-lsp-client.test.ts tests/lsp-manager.test.ts tests/lsp-semantic-provider.test.ts tests/workspace-root.test.ts tests/mcp-lifecycle.test.ts tests/process-ownership.test.ts
+    npm run test:run -- tests/measurement.test.ts tests/post-tool-use-wrapper.test.mjs tests/post-tool-use.test.mjs tests/ipc.test.ts
+
+Then run the repository contract:
+
+    npm run type-check
+    npm test
+    npm run build
+    npm run verify:package
+    npm run smoke:install
+    npm run smoke:package
+    npm run ci:verify
+
+The full ci:verify run is required before pushing because this plan touches source, tests, package metadata, scripts, hooks, installer behavior, and public documentation.
+
+### Native Windows acceptance
+
+Repository tests are readiness evidence, not sufficient production acceptance. A native Windows acceptance pass must:
+
+- install into an isolated temporary Codex profile and replay a fresh bridge process after build;
+- inspect the actual bridge PID and command identity, proving native node.exe rather than node.cmd, npm, npx, or node_repl.exe, including validation-to-spawn replacement behavior;
+- run an explicit MCP request with the managed PostToolUse hook absent or disabled and inspect the actual tools/list and lsp_status boundary;
+- exercise repeated root/language requests, two-root isolation, canonical aliases, root replacement, concurrent first requests, provider generation recovery, and EOF cleanup;
+- exercise an unresponsive language server and an unavoidable .cmd/.bat wrapper, proving shared-deadline non-clean failure, PID identity checks, and no unrelated-process termination;
+- run the repository-local measurement harness with both attribution controls, scan the one receipt for prohibited data, verify random fingerprints and default cleanup, and confirm the harness is absent from the package;
+- retain the manual evidence and record the R21 outcome only after the maintainer has approved the observation window and materiality thresholds.
+
+Any missing native evidence keeps the relevant result PENDING or INCONCLUSIVE. Passing synthetic fixtures must not be described as proof of Windows process behavior or bridge-load improvement.
+
+## Definition of Done
+
+- The plan is implementation-ready with artifact_readiness set to implementation-ready, while the Product Contract and stable IDs remain unchanged.
+- U1-U4 have concrete file ownership, dependencies, implementation decisions, happy-path and failure scenarios, and verification outcomes.
+- The bridge runtime and every generated active launch surface use the compiled validated native descriptor; static package metadata is template-only and cannot bypass install-time materialization; language-server .cmd/.bat compatibility remains isolated to its trust boundary.
+- Generated config, hook, and AGENTS writes are atomic, reparse-safe, structured, ownership-aware, and rollback-complete or explicitly rollback-partial; user-edited/unrelated records and workspace data are preserved.
+- Explicit MCP remains usable with the managed hook absent or disabled, doctor distinguishes explicitMcpReady from hookState, tools/list and lsp_status remain within their read-only readiness contract, and no process/measurement surface is exposed.
+- Root/language reuse, canonical identity, initialization single-flight, generation-scoped recovery, document reopening, stale-result rejection, and bounded shutdown are either proven by characterization or fixed only where a defect is reproduced.
+- Closing rejects new work, one lifecycle owner performs idempotent disposal under one shared deadline, ownership and actual child exit are verified, and any forced or uncertain termination is reported as non-clean with a stable reason code.
+- The repository-local measurement harness externally launches the materialized bridge record, is absent from package output and MCP, is privacy-allowlisted and attribution-controlled, emits one schemaed receipt, and distinguishes INCONCLUSIVE from HARNESS_ERROR.
+- No source contents, document text, credentials, command arguments, environment values, raw paths, child output, unrelated process inventory, resident service, persistent shared state, IPC broker, idle suspension, or Code Mode optimization is introduced.
+- The default PostToolUse hook remains absent or disabled for the baseline and existing user-owned state is not silently changed. The active wrapper, batching helper, IPC/cache artifacts, broker, and idle work are not reactivated or presented as completed requirements.
+- Package verification, smoke tests, post-build fresh-process replay, documentation, rollback guidance, and release notes agree with the implementation.
+- No dead launch rule, duplicate resolver, abandoned measurement seam, stale public example, unsafe cleanup path, or newly introduced unused artifact remains after implementation; historical IPC artifacts are not deleted without separate approval.
+- Verification reports distinguish passed tests, native manual evidence, PENDING checks, INCONCLUSIVE receipts, and HARNESS_ERROR. No bridge-load or improvement claim is made without representative workload and both attribution controls.

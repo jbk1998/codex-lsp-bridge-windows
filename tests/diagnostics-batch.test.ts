@@ -11,6 +11,7 @@ describe("batch diagnostics", () => {
         message: "LSP diagnostics were returned for this request.",
         timedOut: false,
         stale: false,
+        configurationIssues: [],
         total: 1,
         bySeverity: { error: 1, warning: 0, information: 0, hint: 0 },
         items: [
@@ -30,6 +31,7 @@ describe("batch diagnostics", () => {
         message: "Diagnostics timed out before fresh LSP results arrived; do not treat this as type-check passed.",
         timedOut: true,
         stale: false,
+        configurationIssues: [],
         total: 0,
         bySeverity: { error: 0, warning: 0, information: 0, hint: 0 },
         items: [],
@@ -58,6 +60,7 @@ describe("batch diagnostics", () => {
       message: "Diagnostics are unavailable; do not treat this as type-check passed.",
       timedOut: false,
       stale: false,
+      configurationIssues: [],
       unavailableReason: "Failed to start LSP server",
       total: 0,
       bySeverity: { error: 0, warning: 0, information: 0, hint: 0 },

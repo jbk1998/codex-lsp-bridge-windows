@@ -12,15 +12,19 @@ describe("package contract", () => {
   it("publishes every Codex plugin surface needed for one-command use", () => {
     const pkg = readJson<{
       bin: Record<string, string>;
+      dependencies: Record<string, string>;
       files: string[];
       scripts: Record<string, string>;
     }>("package.json");
 
+    expect(pkg.dependencies["@types/node"]).toBe("^22.15.0");
     expect(pkg.bin).toMatchObject({
       "codex-lsp-bridge": "dist/index.js",
       "codex-lsp-bridge-install": "scripts/install-codex.mjs",
       "codex-lsp-bridge-uninstall": "scripts/uninstall-codex.mjs"
     });
+    expect(Object.values(pkg.bin).some((value) => value.includes("measure-bridge-lifecycle"))).toBe(false);
+    expect(pkg.files).not.toContain("scripts/measure-bridge-lifecycle.mjs");
     expect(pkg.files).toEqual(
       expect.arrayContaining([
         "dist/index.js",
@@ -58,6 +62,7 @@ describe("package contract", () => {
       hooks: string;
     }>(".codex-plugin/plugin.json");
     const mcp = readJson<{ mcpServers: Record<string, { command: string; args: string[] }> }>(".mcp.json");
+    const hooks = readJson<{ hooks: Record<string, unknown> }>("hooks/hooks.json");
 
     expect(plugin.mcpServers["codex-lsp-bridge"]).toEqual({
       command: "codex-lsp-bridge",
@@ -66,7 +71,9 @@ describe("package contract", () => {
     expect(mcp.mcpServers["codex-lsp-bridge"]).toEqual(plugin.mcpServers["codex-lsp-bridge"]);
     expect(plugin.skills).toEqual(["skills/lsp/SKILL.md"]);
     expect(plugin.hooks).toBe("hooks/hooks.json");
+    expect(hooks.hooks).toEqual({});
     expect(fs.existsSync(path.join(packageRoot, plugin.skills[0]))).toBe(true);
     expect(fs.existsSync(path.join(packageRoot, plugin.hooks))).toBe(true);
+    expect(fs.readFileSync(path.join(packageRoot, "src", "transport", "mcp.ts"), "utf8")).not.toContain("measure-bridge-lifecycle");
   });
 });

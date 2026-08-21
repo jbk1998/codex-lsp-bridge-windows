@@ -29,7 +29,7 @@ they are available.
 - After editing supported source files, run `lsp_diagnostics` on the touched files before broader verification.
 - For refactors, use `rg` to locate the declaration or usage, then call `lsp_references` at the exact occurrence before editing.
 - For unfamiliar code, use `lsp_definition` and `lsp_hover` to verify real types instead of inferring from names.
-- For every target outside the current task workspace, pass the nearest workspace `root` explicitly with `file` or `dir`. The bridge auto-detects an absolute outside target as a fallback, but explicit `root` is deterministic.
+- Treat `lsp_status`'s context-derived `seedFile` as informational, not target selection. For every target outside the current task workspace, pass the nearest workspace `root` explicitly with `file` or `dir`. The bridge auto-detects an absolute outside target as a fallback, but explicit `root` is deterministic.
 - For Codex skill code, use the skill folder containing `SKILL.md` as `root`. A shared `.codex\skills` parent with `package.json` also works.
 - If a code folder has no recognized marker, use its nearest marked parent or add an empty `.lsp-root` sentinel inside that user-owned workspace. Never broaden `root` to `C:\` or the full user profile just to bypass containment.
 

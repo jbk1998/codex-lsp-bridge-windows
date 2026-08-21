@@ -16,7 +16,11 @@ describe("doctor", () => {
           supportLevel: "primary",
           installHint: "npm install -g typescript-language-server typescript"
         }),
-        expect.objectContaining({ language: "rust", command: "rust-analyzer", supportLevel: "experimental" }),
+        expect.objectContaining({
+          language: "rust",
+          command: expect.stringContaining("rust-analyzer"),
+          supportLevel: "experimental"
+        }),
         expect.objectContaining({
           language: "python",
           command: expect.stringContaining("pyright-langserver"),
@@ -29,7 +33,10 @@ describe("doctor", () => {
     expect(result.codex).toEqual(
       expect.objectContaining({
         mcpConfigured: expect.any(Boolean),
+        explicitMcpReady: expect.any(Boolean),
         hookConfigured: expect.any(Boolean),
+        hookState: expect.stringMatching(/^(absent|disabled|enabled|invalid)$/),
+        launcher: expect.objectContaining({ status: expect.stringMatching(/^(ready|unavailable)$/) }),
         instructionsConfigured: expect.any(Boolean)
       })
     );
@@ -52,5 +59,44 @@ describe("doctor", () => {
     expect(inspectBuildFreshness(packageRoot)).toEqual({ distExists: true, stale: false });
 
     fs.rmSync(packageRoot, { recursive: true, force: true });
+  });
+
+  it("separates explicit native MCP readiness from managed hook state", () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-lsp-doctor-"));
+    const previousHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      fs.writeFileSync(
+        path.join(codexHome, "config.toml"),
+        [
+          "[mcp_servers.codex-lsp-bridge]",
+          `command = ${JSON.stringify(process.execPath)}`,
+          'args = ["dist/index.js", "mcp"]',
+          ""
+        ].join("\r\n")
+      );
+      fs.writeFileSync(
+        path.join(codexHome, "hooks.json"),
+        JSON.stringify({
+          hooks: {
+            PostToolUse: [
+              {
+                enabled: false,
+                hooks: [{ id: "codex-lsp-bridge:post-tool-diagnostics", type: "command", command: "future-only" }]
+              }
+            ]
+          }
+        })
+      );
+
+      const result = runDoctor(process.cwd());
+      expect(result.codex.explicitMcpReady).toBe(true);
+      expect(result.codex.hookState).toBe("disabled");
+      expect(result.codex.hookConfigured).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousHome;
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
   });
 });

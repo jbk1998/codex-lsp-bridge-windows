@@ -1,3 +1,5 @@
+import type { DisposalDeadline, ProcessTerminationResult } from "./process-ownership.js";
+
 export type Severity = "error" | "warning" | "information" | "hint";
 
 export interface Position {
@@ -72,7 +74,7 @@ export interface SemanticProvider {
   symbols(query: string): Promise<SymbolMatch[]>;
   hover(symbol: string): Promise<HoverInfo>;
   hoverAt(position: DocumentPosition): Promise<HoverInfo>;
-  dispose(): Promise<void>;
+  dispose(deadline?: DisposalDeadline): Promise<ProcessTerminationResult | void>;
 }
 
 export interface DiagnosticSummary {

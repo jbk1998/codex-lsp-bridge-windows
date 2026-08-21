@@ -1,12 +1,14 @@
 import { EventEmitter } from "node:events";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LspSemanticProvider } from "../src/core/lsp-semantic-provider.js";
 import { JsonRpcLspClient } from "../src/core/json-rpc-lsp-client.js";
 import type { LspClient, ServerProcessConfig } from "../src/core/json-rpc-lsp-client.js";
 import { filePathToUri } from "../src/utils/uri.js";
+import { canonicalizeTargetPathSync } from "../src/core/workspace-root.js";
 
 class FakeClient extends EventEmitter implements LspClient {
   readonly requests: Array<{ method: string; params?: unknown }> = [];
@@ -17,11 +19,20 @@ class FakeClient extends EventEmitter implements LspClient {
   referencesResult: unknown[] = [];
   hoverResult: unknown = null;
   stopped = false;
+  initializeDelayMs = 0;
+  initializeError: Error | undefined;
+  requestFailure?: (method: string) => Error | undefined;
   onNotify?: (method: string, params?: unknown) => void;
 
   request<T>(method: string, params?: unknown): Promise<T> {
     this.requests.push({ method, params });
-    if (method === "initialize") return Promise.resolve({} as T);
+    const requestFailure = this.requestFailure?.(method);
+    if (requestFailure) return Promise.reject(requestFailure);
+    if (method === "initialize") {
+      if (this.initializeError) return Promise.reject(this.initializeError);
+      if (this.initializeDelayMs === 0) return Promise.resolve({} as T);
+      return new Promise<T>((resolve) => setTimeout(() => resolve({} as T), this.initializeDelayMs));
+    }
     if (method === "workspace/symbol") return Promise.resolve(this.symbolResults as T);
     if (method === "workspace/executeCommand") return Promise.resolve(this.sourceDefinitionResult as T);
     if (method === "textDocument/definition") return Promise.resolve(this.definitionResult as T);
@@ -65,7 +76,7 @@ describe("LspSemanticProvider", () => {
       server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
       workspaceSeedFiles: ["src/editor.ts"],
       workspaceSeedExtensions: [".ts", ".tsx"],
-      diagnosticsTimeoutMs: 20,
+      diagnosticsTimeoutMs: 500,
       diagnosticsStabilityMs: 5,
       clientFactory: (_config: ServerProcessConfig) => client
     });
@@ -100,6 +111,298 @@ describe("LspSemanticProvider", () => {
     });
     expect(client.requests.filter((request) => request.method === "initialize")).toHaveLength(1);
     expect(client.notifications.some((notification) => notification.method === "textDocument/didOpen")).toBe(true);
+    const initialize = client.requests.find((request) => request.method === "initialize");
+    expect(initialize?.params).toMatchObject({
+      workspaceFolders: [{ uri: filePathToUri(rootPath), name: path.basename(rootPath) }],
+      capabilities: { workspace: { workspaceFolders: true } }
+    });
+  });
+
+  it("uses one timeout budget across slow startup and diagnostics freshness", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+    client.initializeDelayMs = 250;
+    let allowFreshDiagnostics = false;
+    client.onNotify = (method, params) => {
+      if (!allowFreshDiagnostics || (method !== "textDocument/didOpen" && method !== "textDocument/didChange")) return;
+      client.emit("notification", "textDocument/publishDiagnostics", {
+        uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+        diagnostics: []
+      });
+    };
+
+    const startedAt = Date.now();
+    await expect(provider.diagnostics(uri, { timeoutMs: 15 })).resolves.toMatchObject({
+      status: "timed_out",
+      timedOut: true,
+      stale: true
+    });
+    expect(Date.now() - startedAt).toBeLessThan(100);
+
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    allowFreshDiagnostics = true;
+    await fs.writeFile(filePath, "export const Editor = 2;\n", "utf8");
+    await expect(provider.diagnostics(uri, { timeoutMs: 1000 })).resolves.toMatchObject({
+      status: "ok",
+      timedOut: false,
+      stale: false,
+      items: []
+    });
+  });
+
+  it("keeps sequential diagnostics isolated between distinct roots", async () => {
+    const secondRoot = path.join(rootPath, "second-root");
+    const secondFile = path.join(secondRoot, "src", "other.ts");
+    await fs.mkdir(path.dirname(secondFile), { recursive: true });
+    await fs.writeFile(secondFile, "export const Other = 1;\n", "utf8");
+    const secondClient = new FakeClient();
+    const firstProvider = createProvider();
+    const secondProvider = new LspSemanticProvider({
+      rootPath: secondRoot,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: secondRoot },
+      workspaceSeedFiles: ["src/other.ts"],
+      workspaceSeedExtensions: [".ts"],
+      diagnosticsTimeoutMs: 500,
+      diagnosticsStabilityMs: 1,
+      clientFactory: () => secondClient
+    });
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      client.emit("notification", "textDocument/publishDiagnostics", {
+        uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+        diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: "first root" }]
+      });
+    };
+    secondClient.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      secondClient.emit("notification", "textDocument/publishDiagnostics", {
+        uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+        diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: "second root" }]
+      });
+    };
+
+    await expect(firstProvider.diagnostics(filePathToUri(filePath))).resolves.toMatchObject({ items: [{ message: "first root" }] });
+    await expect(secondProvider.diagnostics(filePathToUri(secondFile))).resolves.toMatchObject({ items: [{ message: "second root" }] });
+    await expect(firstProvider.diagnostics(filePathToUri(filePath))).resolves.toMatchObject({ items: [{ message: "first root" }] });
+    await expect(secondProvider.diagnostics(filePathToUri(secondFile))).resolves.toMatchObject({ items: [{ message: "second root" }] });
+  });
+
+  it("keeps concurrent diagnostics isolated between distinct roots", async () => {
+    const secondRoot = path.join(rootPath, "concurrent-root");
+    const secondFile = path.join(secondRoot, "src", "other.ts");
+    await fs.mkdir(path.dirname(secondFile), { recursive: true });
+    await fs.writeFile(secondFile, "export const Other = 1;\n", "utf8");
+    const secondClient = new FakeClient();
+    const firstProvider = createProvider();
+    const secondProvider = new LspSemanticProvider({
+      rootPath: secondRoot,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: secondRoot },
+      workspaceSeedFiles: ["src/other.ts"],
+      workspaceSeedExtensions: [".ts"],
+      diagnosticsTimeoutMs: 500,
+      diagnosticsStabilityMs: 1,
+      clientFactory: () => secondClient
+    });
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      setTimeout(() => client.emit("notification", "textDocument/publishDiagnostics", {
+        uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+        diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: "first concurrent root" }]
+      }), 5);
+    };
+    secondClient.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      setTimeout(() => secondClient.emit("notification", "textDocument/publishDiagnostics", {
+        uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+        diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: "second concurrent root" }]
+      }), 5);
+    };
+
+    const [first, second] = await Promise.all([
+      firstProvider.diagnostics(filePathToUri(filePath), { timeoutMs: 500 }),
+      secondProvider.diagnostics(filePathToUri(secondFile), { timeoutMs: 500 })
+    ]);
+    expect(first).toMatchObject({ status: "ok", stale: false, items: [{ message: "first concurrent root" }] });
+    expect(second).toMatchObject({ status: "ok", stale: false, items: [{ message: "second concurrent root" }] });
+  });
+
+  it("single-flights concurrent initialization and workspace opening", async () => {
+    const provider = createProvider();
+    client.initializeDelayMs = 20;
+    client.symbolResults = [{ name: "Editor", location: { uri: filePathToUri(filePath), range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } } } }];
+
+    await Promise.all([provider.symbols("Editor"), provider.symbols("Editor")]);
+
+    expect(client.requests.filter((request) => request.method === "initialize")).toHaveLength(1);
+    expect(client.notifications.filter((notification) => notification.method === "textDocument/didOpen")).toHaveLength(1);
+  });
+
+  it("accepts diagnostics that stabilize before the freshness waiter is registered", async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = createProvider();
+      const uri = filePathToUri(filePath);
+      client.onNotify = (method, params) => {
+        if (method !== "textDocument/didOpen") return;
+        client.emit("notification", "textDocument/publishDiagnostics", {
+          uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+          diagnostics: []
+        });
+        vi.advanceTimersByTime(5);
+      };
+
+      await expect(provider.diagnostics(uri)).resolves.toMatchObject({ status: "ok", stale: false });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("recovers one child generation and reopens the document manifest", async () => {
+    const firstClient = client;
+    const secondClient = new FakeClient();
+    const clients = [firstClient, secondClient];
+    firstClient.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      firstClient.emit("notification", "textDocument/publishDiagnostics", {
+        uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+        diagnostics: []
+      });
+    };
+    secondClient.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      secondClient.emit("notification", "textDocument/publishDiagnostics", {
+        uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+        diagnostics: [{
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          message: "current generation",
+          source: "ts"
+        }]
+      });
+    };
+    const provider = new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
+      workspaceSeedFiles: ["src/editor.ts"],
+      workspaceSeedExtensions: [".ts"],
+      diagnosticsTimeoutMs: 500,
+      diagnosticsStabilityMs: 1,
+      clientFactory: () => clients.shift()!
+    });
+    const uri = filePathToUri(filePath);
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({ status: "ok", stale: false });
+    firstClient.emit("exit", { code: 1, signal: null });
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({ status: "ok", stale: false });
+
+    firstClient.emit("notification", "textDocument/publishDiagnostics", {
+      uri,
+      diagnostics: [{
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+        message: "stale generation",
+        source: "ts"
+      }]
+    });
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+      status: "ok",
+      stale: false,
+      items: [{ message: "current generation" }]
+    });
+
+    expect(secondClient.requests.filter((request) => request.method === "initialize")).toHaveLength(1);
+    expect(secondClient.notifications.filter((notification) => notification.method === "textDocument/didOpen")).toHaveLength(1);
+  });
+
+  it("retries a request once when the client exits after initialization", async () => {
+    const firstClient = client;
+    const secondClient = new FakeClient();
+    const clients = [firstClient, secondClient];
+    const uri = filePathToUri(filePath);
+    firstClient.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      firstClient.emit("notification", "textDocument/publishDiagnostics", {
+        uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+        diagnostics: []
+      });
+    };
+    secondClient.sourceDefinitionResult = [
+      {
+        uri,
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }
+      }
+    ];
+    let failed = false;
+    firstClient.requestFailure = (method) => {
+      if (method !== "workspace/executeCommand" || failed) return undefined;
+      failed = true;
+      firstClient.emit("exit", { code: 1, signal: null });
+      return new Error("request raced with exit");
+    };
+
+    const provider = new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
+      workspaceSeedFiles: ["src/editor.ts"],
+      workspaceSeedExtensions: [".ts"],
+      diagnosticsTimeoutMs: 500,
+      diagnosticsStabilityMs: 1,
+      clientFactory: () => clients.shift()!
+    });
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({ status: "ok", stale: false });
+    await expect(provider.definitionAt({ file: filePath, line: 1, character: 1 })).resolves.toMatchObject({
+      file: filePath,
+      line: 1,
+      character: 1
+    });
+    expect(firstClient.requests.filter((request) => request.method === "workspace/executeCommand")).toHaveLength(1);
+    expect(secondClient.requests.filter((request) => request.method === "workspace/executeCommand")).toHaveLength(1);
+    expect(secondClient.notifications.filter((notification) => notification.method === "textDocument/didOpen")).toHaveLength(1);
+  });
+
+  it("returns a stable unavailable result after recovery fails without retrying the request", async () => {
+    const firstClient = client;
+    const failedClient = new FakeClient();
+    failedClient.initializeError = new Error("initialize failed");
+    const clients = [firstClient, failedClient];
+    firstClient.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      firstClient.emit("notification", "textDocument/publishDiagnostics", {
+        uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+        diagnostics: []
+      });
+    };
+    const provider = new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
+      workspaceSeedFiles: ["src/editor.ts"],
+      workspaceSeedExtensions: [".ts"],
+      diagnosticsTimeoutMs: 500,
+      diagnosticsStabilityMs: 1,
+      clientFactory: () => clients.shift()!
+    });
+    const uri = filePathToUri(filePath);
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({ status: "ok", stale: false });
+    firstClient.emit("exit", { code: 1, signal: null });
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+      status: "unavailable",
+      stale: false,
+      unavailableReason: expect.stringContaining("server_exited"),
+      items: []
+    });
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+      status: "unavailable",
+      unavailableReason: expect.stringContaining("server_exited"),
+      items: []
+    });
+    expect(failedClient.requests.filter((request) => request.method === "initialize")).toHaveLength(1);
+    expect(clients).toHaveLength(0);
   });
 
   it("matches diagnostics published with a lower-case encoded Windows drive URI", async () => {
@@ -168,6 +471,66 @@ describe("LspSemanticProvider", () => {
     expect(client.notifications.filter((notification) => notification.method === "textDocument/didChange")).toHaveLength(1);
   });
 
+  it("serializes concurrent document edits and preserves monotonic versions", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen" && method !== "textDocument/didChange") return;
+      const textDocument = (params as { textDocument: { uri: string; version: number } }).textDocument;
+      if (method === "textDocument/didChange" && textDocument.version === 2) {
+        fsSync.writeFileSync(filePath, "export const Editor = 1;\n", "utf8");
+      }
+    };
+
+    await provider.diagnostics(uri, { timeoutMs: 1000 });
+    await fs.writeFile(filePath, "export const Editor = 2;\n", "utf8");
+    await Promise.all([provider.diagnostics(uri, { timeoutMs: 1000 }), provider.diagnostics(uri, { timeoutMs: 1000 })]);
+
+    const transitions = client.notifications.filter(
+      (notification) => notification.method === "textDocument/didOpen" || notification.method === "textDocument/didChange"
+    );
+    expect(transitions.map((notification) => (notification.params as { textDocument: { version: number } }).textDocument.version)).toEqual([
+      1,
+      2,
+      3
+    ]);
+  });
+
+  it("does not mark a diagnostic notification current before its stability barrier", async () => {
+    const provider = new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
+      workspaceSeedFiles: ["src/editor.ts"],
+      workspaceSeedExtensions: [".ts"],
+      diagnosticsTimeoutMs: 1000,
+      diagnosticsStabilityMs: 500,
+      clientFactory: () => client
+    });
+    const uri = filePathToUri(filePath);
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      client.emit("notification", "textDocument/publishDiagnostics", {
+        uri: (params as { textDocument: { uri: string } }).textDocument.uri,
+        diagnostics: []
+      });
+    };
+
+    await expect(provider.diagnostics(uri, { timeoutMs: 250 })).resolves.toMatchObject({
+      status: "timed_out",
+      timedOut: true,
+      stale: true
+    });
+    await new Promise((resolve) => setTimeout(resolve, 35));
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+      status: "ok",
+      timedOut: false,
+      stale: false,
+      sourceRevision: 1
+    });
+  });
+
   it("marks diagnostics as timed out instead of returning an indistinguishable empty success", async () => {
     const provider = createProvider();
     const uri = filePathToUri(filePath);
@@ -188,7 +551,7 @@ describe("LspSemanticProvider", () => {
       server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
       workspaceSeedFiles: ["src/editor.ts"],
       workspaceSeedExtensions: [".ts", ".tsx"],
-      diagnosticsTimeoutMs: 100,
+      diagnosticsTimeoutMs: 500,
       diagnosticsStabilityMs: 5,
       inferredProjectCompilerOptions: {
         types: ["node"],
@@ -240,7 +603,7 @@ describe("LspSemanticProvider", () => {
       changedPublish = () => {
         client.emit("notification", "textDocument/publishDiagnostics", { uri: textDocument.uri, diagnostics: [] });
       };
-      setTimeout(() => changedPublish?.(), 35);
+      setTimeout(() => changedPublish?.(), 200);
     };
 
     await expect(provider.diagnostics(uri)).resolves.toMatchObject({
@@ -250,19 +613,57 @@ describe("LspSemanticProvider", () => {
       items: []
     });
     await fs.writeFile(filePath, "export const Editor = 2;\n", "utf8");
-    await expect(provider.diagnostics(uri, { timeoutMs: 5 })).resolves.toMatchObject({
+    await expect(provider.diagnostics(uri, { timeoutMs: 150 })).resolves.toMatchObject({
       status: "timed_out",
       timedOut: true,
       stale: true,
-      sourceRevision: 2,
       items: []
     });
-    await expect(provider.diagnostics(uri, { timeoutMs: 100 })).resolves.toMatchObject({
+    await expect(provider.diagnostics(uri, { timeoutMs: 500 })).resolves.toMatchObject({
       status: "ok",
       timedOut: false,
       stale: false,
       sourceRevision: 2,
       items: []
+    });
+  });
+
+  it("does not let a late notification replace committed diagnostics", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen" && method !== "textDocument/didChange") return;
+      const textDocument = (params as { textDocument: { uri: string; version: number } }).textDocument;
+      if (method === "textDocument/didOpen") {
+        client.emit("notification", "textDocument/publishDiagnostics", { uri: textDocument.uri, version: 1, diagnostics: [] });
+        setTimeout(() => {
+          client.emit("notification", "textDocument/publishDiagnostics", {
+            uri: textDocument.uri,
+            version: 1,
+            diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: "late old result" }]
+          });
+        }, 30);
+        return;
+      }
+      client.emit("notification", "textDocument/publishDiagnostics", {
+        uri: textDocument.uri,
+        version: textDocument.version,
+        diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }, message: "fresh result" }]
+      });
+    };
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({ status: "ok", stale: false, items: [] });
+    await fs.writeFile(filePath, "export const Editor = 2;\n", "utf8");
+    await expect(provider.diagnostics(uri, { timeoutMs: 500 })).resolves.toMatchObject({
+      status: "ok",
+      stale: false,
+      items: [{ message: "fresh result" }]
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await expect(provider.diagnostics(uri, { timeoutMs: 500 })).resolves.toMatchObject({
+      status: "ok",
+      stale: false,
+      items: [{ message: "fresh result" }]
     });
   });
 
@@ -281,7 +682,7 @@ describe("LspSemanticProvider", () => {
       }, 35);
     };
 
-    await expect(provider.diagnostics(uri, { timeoutMs: 80 })).resolves.toMatchObject({
+    await expect(provider.diagnostics(uri, { timeoutMs: 1000 })).resolves.toMatchObject({
       status: "ok",
       timedOut: false,
       items: []
@@ -295,7 +696,7 @@ describe("LspSemanticProvider", () => {
       server: { command: path.join(os.tmpdir(), "codex-lsp-missing-server"), args: [], cwd: rootPath },
       workspaceSeedFiles: ["src/editor.ts"],
       workspaceSeedExtensions: [".ts", ".tsx"],
-      diagnosticsTimeoutMs: 20,
+      diagnosticsTimeoutMs: 500,
       clientFactory: (server) => new JsonRpcLspClient(server)
     });
 
@@ -329,6 +730,27 @@ describe("LspSemanticProvider", () => {
       if (symlinkCreated) {
         await expect(provider.diagnostics(filePathToUri(symlinkPath))).rejects.toThrow("outside workspace root");
       }
+    } finally {
+      await fs.rm(outsideDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an LSP result location outside the provider workspace root", async () => {
+    const outsideDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-result-outside-"));
+    const outsidePath = path.join(outsideDirectory, "outside.ts");
+    await fs.writeFile(outsidePath, "export const outside = 1;\n", "utf8");
+    try {
+      const provider = createProvider();
+      client.sourceDefinitionResult = [
+        {
+          uri: filePathToUri(outsidePath),
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } }
+        }
+      ];
+
+      await expect(provider.definitionAt({ file: filePath, line: 1, character: 1 })).rejects.toThrow(
+        "outside workspace root"
+      );
     } finally {
       await fs.rm(outsideDirectory, { recursive: true, force: true });
     }
@@ -407,7 +829,7 @@ describe("LspSemanticProvider", () => {
     expect(didOpen).toMatchObject({
       params: {
         textDocument: {
-          uri: filePathToUri(await fs.realpath(filePath))
+          uri: filePathToUri(canonicalizeTargetPathSync(await fs.realpath(filePath)))
         }
       }
     });
@@ -425,6 +847,31 @@ describe("LspSemanticProvider", () => {
     ];
 
     await expect(provider.definition("Editor")).rejects.toThrow("Symbol is ambiguous");
+  });
+
+  it("cancels pending diagnostics waiters during disposal", async () => {
+    const provider = new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      server: { command: "typescript-language-server", args: ["--stdio"], cwd: rootPath },
+      workspaceSeedFiles: ["src/editor.ts"],
+      workspaceSeedExtensions: [".ts", ".tsx"],
+      diagnosticsTimeoutMs: 5000,
+      diagnosticsStabilityMs: 5,
+      clientFactory: (_config: ServerProcessConfig) => client
+    });
+    const uri = filePathToUri(filePath);
+    client.onNotify = (method) => {
+      if (method === "textDocument/didOpen") setTimeout(() => void provider.dispose(), 0);
+    };
+
+    const startedAt = Date.now();
+    await expect(provider.diagnostics(uri, { timeoutMs: 5000 })).resolves.toMatchObject({
+      status: "timed_out",
+      timedOut: true
+    });
+    expect(Date.now() - startedAt).toBeLessThan(1000);
+    await provider.dispose();
   });
 
   it("disposes the backing client", async () => {

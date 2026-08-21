@@ -36,6 +36,7 @@ export function mergeBatchDiagnosticSummaries(files: string[], summaries: Diagno
     timedOut: summaries.some((summary) => summary.timedOut),
     stale: summaries.some((summary) => summary.stale),
     ...(unavailableReason ? { unavailableReason } : {}),
+    configurationIssues: [...new Set(summaries.flatMap((summary) => summary.configurationIssues))],
     total: items.length,
     bySeverity,
     items,

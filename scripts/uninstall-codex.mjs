@@ -49,8 +49,10 @@ function readJson(filePath) {
 }
 
 function removeMcpConfig(config) {
+  const newline = config.includes("\r\n") ? "\r\n" : "\n";
+  const normalized = config.replace(/\r\n?/g, "\n");
   const pattern = /\n?\[mcp_servers\.codex-lsp-bridge\]\n[\s\S]*?(?=\n\[|$)/;
-  return `${config.trimEnd().replace(pattern, "")}\n`;
+  return convertNewlines(`${normalized.trimEnd().replace(pattern, "")}\n`, newline);
 }
 
 function removePostToolUseHook(config) {
@@ -75,7 +77,13 @@ function removePostToolUseHook(config) {
 }
 
 function removeAgentInstructions(content) {
+  const newline = content.includes("\r\n") ? "\r\n" : "\n";
+  const normalized = content.replace(/\r\n?/g, "\n");
   const pattern = /\n?<!-- BEGIN codex-lsp-bridge -->[\s\S]*?<!-- END codex-lsp-bridge -->/;
-  const result = content.trimEnd().replace(pattern, "");
-  return result.length > 0 ? `${result}\n` : "";
+  const result = normalized.trimEnd().replace(pattern, "");
+  return result.length > 0 ? convertNewlines(`${result}\n`, newline) : "";
+}
+
+function convertNewlines(content, newline) {
+  return newline === "\n" ? content : content.replace(/\n/g, newline);
 }

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10,6 +10,7 @@ const workspaceRootMarkers = [
   "SKILL.md",
   "package.json",
   "tsconfig.json",
+  "jsconfig.json",
   "deno.json",
   "deno.jsonc",
   "Cargo.toml",
@@ -25,16 +26,17 @@ const workspaceRootMarkers = [
 export function resolveRequestedRootSync(fallbackRoot: string, params: Record<string, unknown>): string {
   if (typeof params.root === "string") return resolveExplicitWorkspaceRootSync(params.root);
 
-  const resolvedFallbackRoot = path.resolve(fallbackRoot);
+  const resolvedFallbackRoot = canonicalizeWorkspaceRootSync(fallbackRoot);
   const target = readAbsoluteWorkspaceTarget(params);
-  if (!target || isInsideRoot(target.path, resolvedFallbackRoot)) return resolvedFallbackRoot;
+  if (!target) return resolvedFallbackRoot;
 
-  return findWorkspaceRootSync(target.startDirectory) ?? resolvedFallbackRoot;
+  return findWorkspaceRootSync(target.startDirectory) ??
+    (isDirectorySync(target.startDirectory) ? canonicalizeWorkspaceRootSync(target.startDirectory) : resolvedFallbackRoot);
 }
 
 export function resolveExplicitWorkspaceRootSync(root: string): string {
-  const resolvedRoot = path.resolve(root);
-  if (!isWorkspaceRootSync(resolvedRoot)) {
+  const resolvedRoot = canonicalizeWorkspaceRootSync(root);
+  if (!isDirectorySync(resolvedRoot)) {
     throw new Error(`Workspace root is not recognized: ${resolvedRoot}`);
   }
   return resolvedRoot;
@@ -44,11 +46,70 @@ export function findWorkspaceRootSync(startDirectory: string): string | undefine
   let current = path.resolve(startDirectory);
 
   while (true) {
-    if (isWorkspaceRootSync(current)) return current;
+    if (isWorkspaceRootSync(current)) return canonicalizeWorkspaceRootSync(current);
     const parent = path.dirname(current);
     if (parent === current) return undefined;
     current = parent;
   }
+}
+
+export function canonicalizeWorkspaceRootSync(rootPath: string): string {
+  const resolvedRoot = path.resolve(rootPath);
+  try {
+    return normalizePathForAccess(realpathSync(resolvedRoot));
+  } catch {
+    return normalizePathForAccess(resolvedRoot);
+  }
+}
+
+export function canonicalizeTargetPathSync(targetPath: string): string {
+  const resolvedTarget = path.resolve(targetPath);
+  try {
+    return normalizePathForAccess(realpathSync(resolvedTarget));
+  } catch {
+    return normalizePathForAccess(resolvedTarget);
+  }
+}
+
+export function resolvePathInsideWorkspaceRootSync(rootPath: string, targetPath: string): string {
+  const resolvedRoot = canonicalizeWorkspaceRootSync(rootPath);
+  const normalizedTargetPath = normalizeInputPathSeparators(targetPath);
+  const resolvedTarget = path.isAbsolute(normalizedTargetPath)
+    ? path.resolve(normalizedTargetPath)
+    : path.resolve(resolvedRoot, normalizedTargetPath);
+  const canonicalTarget = canonicalizeTargetPathSync(resolvedTarget);
+  if (!isPathInsideWorkspaceRootSync(canonicalTarget, resolvedRoot)) {
+    throw new Error(`Path is outside workspace root: ${resolvedTarget}`);
+  }
+  return canonicalTarget;
+}
+
+export function workspaceRootIdentitySync(rootPath: string): string {
+  return normalizePathIdentity(realPathForIdentitySync(rootPath));
+}
+
+/**
+ * Returns a stable identity for the current directory instance, not just its
+ * canonical path. Mutable metadata timestamps are deliberately excluded so
+ * ordinary activity inside a workspace cannot look like delete/recreate.
+ */
+export function workspaceRootInstanceIdentitySync(rootPath: string): string {
+  const canonicalRoot = workspaceRootIdentitySync(rootPath);
+  try {
+    const stats = statSync(canonicalRoot);
+    const stableFileId = `${stats.dev}:${stats.ino}`;
+    const creationEvidence = Number.isFinite(stats.birthtimeMs) ? stats.birthtimeMs : 0;
+    return `${canonicalRoot}\u0000${stableFileId}:${creationEvidence}`;
+  } catch {
+    return `${canonicalRoot}\u0000missing`;
+  }
+}
+
+export function isPathInsideWorkspaceRootSync(targetPath: string, rootPath: string): boolean {
+  const target = normalizePathIdentity(realPathForIdentitySync(targetPath));
+  const root = workspaceRootIdentitySync(rootPath);
+  const relative = path.relative(root, target);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 export function shouldSelectWorkspaceService(params: Record<string, unknown>): boolean {
@@ -57,6 +118,14 @@ export function shouldSelectWorkspaceService(params: Record<string, unknown>): b
 
 function isWorkspaceRootSync(directory: string): boolean {
   return workspaceRootMarkers.some((marker) => existsSync(path.join(directory, marker)));
+}
+
+function isDirectorySync(directory: string): boolean {
+  try {
+    return statSync(directory).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function readAbsoluteWorkspaceTarget(
@@ -81,7 +150,40 @@ function readAbsoluteWorkspaceTarget(
   return undefined;
 }
 
-function isInsideRoot(targetPath: string, rootPath: string): boolean {
-  const relative = path.relative(rootPath, targetPath);
-  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+function normalizePathIdentity(targetPath: string): string {
+  const normalized = normalizePathForAccess(targetPath);
+  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function normalizePathForAccess(targetPath: string): string {
+  const normalized = path.normalize(targetPath);
+  /* c8 ignore next -- Darwin's /private/var namespace alias is not reachable on other CI hosts. */
+  if (process.platform === "darwin" && normalized.startsWith("/private/var/")) {
+    return normalized.slice("/private".length);
+  }
+  return normalized;
+}
+
+function normalizeInputPathSeparators(targetPath: string): string {
+  return process.platform === "win32" ? targetPath : targetPath.replaceAll("\\", "/");
+}
+
+function realPathForIdentitySync(targetPath: string): string {
+  let current = path.resolve(targetPath);
+  const missingSegments: string[] = [];
+  try {
+    while (true) {
+      try {
+        const resolvedCurrent = realpathSync.native(current);
+        return path.join(resolvedCurrent, ...missingSegments.reverse());
+      } catch {
+        const parent = path.dirname(current);
+        if (parent === current) return path.resolve(targetPath);
+        missingSegments.push(path.basename(current));
+        current = parent;
+      }
+    }
+  } catch {
+    return path.resolve(targetPath);
+  }
 }

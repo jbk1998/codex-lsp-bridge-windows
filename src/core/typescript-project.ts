@@ -1,5 +1,13 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
+
+const bridgeRequire = createRequire(import.meta.url);
+
+interface TypeRootResolution {
+  typeRoots: string[];
+  primaryRoots: string[];
+}
 
 export interface InferredTypeScriptProjectOptions {
   typeRoots: string[];
@@ -13,21 +21,17 @@ export interface InferredTypeScriptProjectOptions {
  * instead of hard-coding a user or install path.
  */
 export function resolveNodeTypeRoots(rootPath: string, runtimePath = process.execPath): string[] {
-  const candidates = [
-    ...ancestorTypeRoots(rootPath),
-    ...runtimeTypeRoots(runtimePath)
-  ];
-  return uniquePaths(candidates.filter(hasNodeTypePackage));
+  return resolveTypeRoots(rootPath, runtimePath).typeRoots.filter(hasNodeTypePackage);
 }
 
 export function resolveInferredTypeScriptProjectOptions(
   rootPath: string,
   runtimePath = process.execPath
 ): InferredTypeScriptProjectOptions | undefined {
-  const typeRoots = resolveTypeRoots(rootPath, runtimePath);
-  if (typeRoots.length === 0) return undefined;
-
-  const types = uniqueStrings(typeRoots.flatMap(listTypePackages));
+  const resolution = resolveTypeRoots(rootPath, runtimePath);
+  const typeRoots = resolution.typeRoots;
+  const types = uniqueStrings(resolution.primaryRoots.flatMap(listTypePackages));
+  if (typeRoots.some(hasNodeTypePackage) && !types.includes("node")) types.push("node");
   if (!types.includes("node")) return undefined;
 
   return {
@@ -53,11 +57,18 @@ export function resolveInferredTypeScriptProjectOptions(
   };
 }
 
-function resolveTypeRoots(rootPath: string, runtimePath: string): string[] {
-  return uniquePaths([
+function resolveTypeRoots(rootPath: string, runtimePath: string): TypeRootResolution {
+  const primaryCandidates = [
     ...ancestorTypeRoots(rootPath),
     ...runtimeTypeRoots(runtimePath)
-  ].filter((candidate) => hasTypePackages(candidate)));
+  ];
+  const primaryRoots = uniquePaths(primaryCandidates.filter((candidate) => hasTypePackages(candidate)));
+  if (primaryRoots.some(hasNodeTypePackage)) return { typeRoots: primaryRoots, primaryRoots };
+
+  return {
+    typeRoots: uniquePaths([...primaryRoots, ...bridgeTypeRoots()].filter((candidate) => hasTypePackages(candidate))),
+    primaryRoots
+  };
 }
 
 function ancestorTypeRoots(rootPath: string): string[] {
@@ -75,12 +86,40 @@ function ancestorTypeRoots(rootPath: string): string[] {
 }
 
 function runtimeTypeRoots(runtimePath: string): string[] {
-  const runtimeDirectory = path.dirname(path.resolve(runtimePath));
-  return [
-    path.join(runtimeDirectory, "node_modules", "@types"),
-    path.join(runtimeDirectory, "..", "node_modules", "@types"),
-    path.join(runtimeDirectory, "..", "..", "node_modules", "@types")
-  ];
+  let current = path.dirname(path.resolve(runtimePath));
+
+  while (true) {
+    const nodeModulesPath = path.join(current, "node_modules");
+    if (isDirectory(nodeModulesPath)) {
+      // The nearest node_modules directory is the runtime package boundary.
+      const typeRoot = path.join(nodeModulesPath, "@types");
+      return hasTypePackages(typeRoot) ? [typeRoot] : [];
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+
+  return [];
+}
+
+function bridgeTypeRoots(): string[] {
+  // @types/node is a runtime dependency so this fallback also works in an installed package.
+  try {
+    const packageJsonPath = bridgeRequire.resolve("@types/node/package.json");
+    return [path.dirname(path.dirname(packageJsonPath))];
+  } catch {
+    return [];
+  }
+}
+
+function isDirectory(directory: string): boolean {
+  try {
+    return fs.statSync(directory).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function hasNodeTypePackage(typeRoot: string): boolean {
