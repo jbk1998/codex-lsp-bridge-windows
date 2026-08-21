@@ -125,14 +125,10 @@ export class McpLifecycleCoordinator {
       const remainingMs = Math.max(0, deadlineAt - Date.now());
       if (remainingMs === 0) return false;
       const active = [...this.activeRequests];
-      await Promise.race([Promise.allSettled(active), delay(remainingMs)]);
+      if (!(await settleBeforeDeadline(active, remainingMs))) return false;
     }
     return true;
   }
-}
-
-function delay(timeoutMs: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, timeoutMs));
 }
 
 type DisposalObservation<T> =
@@ -140,9 +136,23 @@ type DisposalObservation<T> =
   | { kind: "rejected"; error: unknown }
   | { kind: "timeout" };
 
+function settleBeforeDeadline(promises: Promise<unknown>[], timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (completed: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(completed);
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    void Promise.allSettled(promises).then(() => finish(true));
+  });
+}
+
 function observeDisposal<T>(promise: Promise<T>, deadlineAt: number): Promise<DisposalObservation<T>> {
   const remainingMs = Math.max(0, deadlineAt - Date.now());
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve) => {
     if (remainingMs === 0) {
       resolve({ kind: "timeout" });
       return;
