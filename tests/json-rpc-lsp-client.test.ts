@@ -37,6 +37,11 @@ function identityProvider(token: string | (() => string) = "launch"): ProcessIde
   };
 }
 
+function lspFrame(message: unknown): Buffer {
+  const body = Buffer.from(JSON.stringify(message), "utf8");
+  return Buffer.concat([Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`, "utf8"), body]);
+}
+
 async function flushAsyncWork(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }
@@ -62,6 +67,36 @@ describe("JsonRpcLspClient", () => {
     const request = client.request("initialize");
 
     child.stdout.write(Buffer.from("Not-A-Length: 2\r\n\r\n{}", "utf8"));
+
+    await expect(request).rejects.toThrow("Invalid LSP protocol");
+    await flushAsyncWork();
+    expect(child.killCalls).toBe(1);
+  });
+
+  it("rejects duplicate Content-Length headers as ambiguous", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+    const request = client.request("initialize");
+
+    child.stdout.write(Buffer.from("Content-Length: 2\r\nContent-Length: 2\r\n\r\n{}", "utf8"));
+
+    await expect(request).rejects.toThrow("Invalid LSP protocol");
+    await flushAsyncWork();
+    expect(child.killCalls).toBe(1);
+  });
+
+  it("rejects malformed JSON without escaping the stdout event callback", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+    const request = client.request("initialize");
+
+    child.stdout.write(Buffer.from("Content-Length: 1\r\n\r\n{", "utf8"));
 
     await expect(request).rejects.toThrow("Invalid LSP protocol");
     await flushAsyncWork();
@@ -96,6 +131,44 @@ describe("JsonRpcLspClient", () => {
     await expect(request).rejects.toThrow("Invalid LSP protocol");
     await flushAsyncWork();
     expect(child.killCalls).toBe(1);
+  });
+
+  it("accepts a valid response split at every byte boundary", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+    const request = client.request<{ ready: boolean }>("initialize");
+    const frame = lspFrame({ jsonrpc: "2.0", id: 1, result: { ready: true } });
+
+    for (let index = 0; index < frame.byteLength; index += 1) {
+      child.stdout.write(frame.subarray(index, index + 1));
+    }
+
+    await expect(request).resolves.toEqual({ ready: true });
+    await client.stop(createDisposalDeadline(Date.now(), 100, 1, 20));
+  });
+
+  it("accepts multiple complete LSP frames in one chunk", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+    const first = client.request<{ value: number }>("first");
+    const second = client.request<{ value: number }>("second");
+
+    child.stdout.write(
+      Buffer.concat([
+        lspFrame({ jsonrpc: "2.0", id: 1, result: { value: 1 } }),
+        lspFrame({ jsonrpc: "2.0", id: 2, result: { value: 2 } })
+      ])
+    );
+
+    await expect(first).resolves.toEqual({ value: 1 });
+    await expect(second).resolves.toEqual({ value: 2 });
+    await client.stop(createDisposalDeadline(Date.now(), 100, 1, 20));
   });
 
   it("prepares Windows shell shims through cmd.exe", () => {
