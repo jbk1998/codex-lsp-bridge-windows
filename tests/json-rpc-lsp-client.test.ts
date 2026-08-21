@@ -4,7 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-import { createServerRequestResponse, JsonRpcLspClient, prepareSpawnCommand } from "../src/core/json-rpc-lsp-client.js";
+import {
+  createServerRequestResponse,
+  JsonRpcLspClient,
+  maxLspContentBytes,
+  maxLspHeaderBytes,
+  prepareSpawnCommand
+} from "../src/core/json-rpc-lsp-client.js";
 import { createDisposalDeadline, type ProcessIdentityProvider } from "../src/core/process-ownership.js";
 import { filePathToUri } from "../src/utils/uri.js";
 
@@ -31,6 +37,10 @@ function identityProvider(token: string | (() => string) = "launch"): ProcessIde
   };
 }
 
+async function flushAsyncWork(): Promise<void> {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
 describe("JsonRpcLspClient", () => {
   it("rejects requests instead of crashing when the language server command is missing", async () => {
     const client = new JsonRpcLspClient({
@@ -41,6 +51,51 @@ describe("JsonRpcLspClient", () => {
 
     await expect(client.request("initialize")).rejects.toThrow("Failed to start LSP server");
     await expect(client.stop()).resolves.toBeUndefined();
+  });
+
+  it("contains malformed protocol frames and terminates the owned child", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+    const request = client.request("initialize");
+
+    child.stdout.write(Buffer.from("Not-A-Length: 2\r\n\r\n{}", "utf8"));
+
+    await expect(request).rejects.toThrow("Invalid LSP protocol");
+    await flushAsyncWork();
+    expect(child.killCalls).toBe(1);
+  });
+
+  it("rejects oversized Content-Length before buffering the body", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+    const request = client.request("initialize");
+
+    child.stdout.write(Buffer.from(`Content-Length: ${maxLspContentBytes + 1}\r\n\r\n`, "utf8"));
+
+    await expect(request).rejects.toThrow("Invalid LSP protocol");
+    await flushAsyncWork();
+    expect(child.killCalls).toBe(1);
+  });
+
+  it("rejects an unterminated oversized header instead of growing the receive buffer", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+    const request = client.request("initialize");
+
+    child.stdout.write(Buffer.alloc(maxLspHeaderBytes + 1, 0x61));
+
+    await expect(request).rejects.toThrow("Invalid LSP protocol");
+    await flushAsyncWork();
+    expect(child.killCalls).toBe(1);
   });
 
   it("prepares Windows shell shims through cmd.exe", () => {
