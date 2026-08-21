@@ -156,7 +156,7 @@ describe("workspace root resolution", () => {
     await fs.writeFile(file, "export const value = 1;\n");
     await fs.writeFile(file, "export const value = 2;\n");
     await fs.rm(file);
-    await fs.rm(nested);
+    await fs.rm(nested, { recursive: true, force: true });
 
     expect(workspaceRootInstanceIdentitySync(root)).toBe(originalIdentity);
   });
