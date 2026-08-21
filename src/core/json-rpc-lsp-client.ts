@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   createDisposalDeadline,
   createProcessOwnership,
+  defaultChildExitGraceMs,
   type DisposalDeadline,
   type OwnedChildProcess,
   type ProcessIdentityProvider,
@@ -13,6 +14,10 @@ import {
 } from "./process-ownership.js";
 import { validateNativeNodeRuntime } from "./native-node-runtime.js";
 import { filePathToUri } from "../utils/uri.js";
+
+export const maxLspHeaderBytes = 8 * 1024;
+export const maxLspContentBytes = 16 * 1024 * 1024;
+export const maxLspReceiveBufferBytes = maxLspHeaderBytes + maxLspContentBytes + 4;
 
 export interface JsonRpcMessage {
   jsonrpc: "2.0";
@@ -59,6 +64,7 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   private closing = false;
   private stopPromise: Promise<ProcessTerminationResult | void> | undefined;
   private ownership: ProcessOwnership | undefined;
+  private protocolFailurePromise: Promise<void> | undefined;
   private readonly pending = new Map<
     number | string,
     { resolve: (value: unknown) => void; reject: (reason: Error) => void }
@@ -96,7 +102,7 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
           verifyDescendants: this.options.verifyDescendants
         });
 
-    this.process.stdout.on("data", (chunk: Buffer) => this.readChunk(chunk));
+    this.process.stdout.on("data", (chunk: Buffer) => this.handleStdoutChunk(chunk));
     this.process.stderr.on("data", (chunk: Buffer) => {
       this.emit("stderr", chunk.toString("utf8"));
     });
@@ -206,22 +212,79 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
     this.pending.clear();
   }
 
+  private handleStdoutChunk(chunk: Buffer): void {
+    try {
+      this.readChunk(chunk);
+    } catch (cause) {
+      this.handleProtocolFailure(cause instanceof Error ? cause : new Error(String(cause)));
+    }
+  }
+
+  private handleProtocolFailure(cause: Error): void {
+    if (this.protocolFailurePromise) return;
+    const error = new Error(`Invalid LSP protocol from "${this.config.command}": ${cause.message}`);
+    this.buffer = Buffer.alloc(0);
+    this.rejectPending(error);
+    this.emit("stderr", `${error.message}\n`);
+
+    const process = this.process;
+    const ownership = this.ownership;
+    if (!process || !ownership) return;
+    this.closing = true;
+    const terminate = ownership.terminate(Date.now() + defaultChildExitGraceMs);
+    this.protocolFailurePromise = terminate.then(
+      (result) => {
+        if (!result.clean && this.process === process) this.retireFailedProtocolClient(process);
+      },
+      () => {
+        if (this.process === process) this.retireFailedProtocolClient(process);
+      }
+    ).finally(() => {
+      this.protocolFailurePromise = undefined;
+    });
+  }
+
+  private retireFailedProtocolClient(process: ChildProcessWithoutNullStreams): void {
+    if (this.process !== process) return;
+    this.process = undefined;
+    this.ownership = undefined;
+    this.closing = false;
+    this.emit("exit", { code: null, signal: null });
+  }
+
   private readChunk(chunk: Buffer): void {
+    if (chunk.byteLength > maxLspReceiveBufferBytes - this.buffer.byteLength) {
+      throw new Error(`receive buffer exceeded ${maxLspReceiveBufferBytes} bytes`);
+    }
     this.buffer = Buffer.concat([this.buffer, chunk]);
 
     while (true) {
       const headerEnd = this.buffer.indexOf("\r\n\r\n");
-      if (headerEnd === -1) return;
+      if (headerEnd === -1) {
+        if (this.buffer.byteLength > maxLspHeaderBytes) {
+          throw new Error(`header exceeded ${maxLspHeaderBytes} bytes`);
+        }
+        return;
+      }
+      if (headerEnd > maxLspHeaderBytes) {
+        throw new Error(`header exceeded ${maxLspHeaderBytes} bytes`);
+      }
 
       const header = this.buffer.subarray(0, headerEnd).toString("utf8");
-      const match = /Content-Length:\s*(\d+)/i.exec(header);
+      const match = /(?:^|\r\n)Content-Length:\s*(\d+)\s*(?:\r\n|$)/i.exec(header);
       if (!match) {
-        throw new Error(`Invalid LSP message header: ${header}`);
+        throw new Error(`invalid message header: ${header}`);
       }
 
       const length = Number(match[1]);
+      if (!Number.isSafeInteger(length) || length < 0 || length > maxLspContentBytes) {
+        throw new Error(`invalid Content-Length: ${match[1]}`);
+      }
       const bodyStart = headerEnd + 4;
       const bodyEnd = bodyStart + length;
+      if (bodyEnd > maxLspReceiveBufferBytes) {
+        throw new Error(`message exceeded ${maxLspReceiveBufferBytes} bytes`);
+      }
       if (this.buffer.byteLength < bodyEnd) return;
 
       const rawBody = this.buffer.subarray(bodyStart, bodyEnd).toString("utf8");
