@@ -271,9 +271,15 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
       }
 
       const header = this.buffer.subarray(0, headerEnd).toString("utf8");
-      const match = /(?:^|\r\n)Content-Length:\s*(\d+)\s*(?:\r\n|$)/i.exec(header);
+      const contentLengthLines = header
+        .split("\r\n")
+        .filter((line) => /^Content-Length\s*:/i.test(line));
+      if (contentLengthLines.length !== 1) {
+        throw new Error(`expected exactly one Content-Length header, found ${contentLengthLines.length}`);
+      }
+      const match = /^Content-Length:\s*(\d+)\s*$/i.exec(contentLengthLines[0]);
       if (!match) {
-        throw new Error(`invalid message header: ${header}`);
+        throw new Error(`invalid Content-Length header: ${contentLengthLines[0]}`);
       }
 
       const length = Number(match[1]);
