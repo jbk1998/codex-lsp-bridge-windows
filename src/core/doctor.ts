@@ -34,6 +34,9 @@ export interface DoctorResult {
     distExists: boolean;
     stale: boolean;
   };
+  connection: {
+    idleTimeoutMs: number | null;
+  };
   diagnostics: ResolvedDiagnosticsTimeout;
   recommendations: string[];
 }
@@ -70,10 +73,14 @@ export function runDoctor(rootPath: string): DoctorResult {
     launcher
   };
   const build = inspectBuildFreshness(packageRoot);
+  const connection = {
+    idleTimeoutMs: config.mcpIdleTimeoutMs ?? null
+  };
   return {
     languages,
     codex,
     build,
+    connection,
     diagnostics,
     recommendations: buildRecommendations(languages, codex, build)
   };
@@ -117,12 +124,11 @@ function inspectCurrentLauncher(): DoctorResult["codex"]["launcher"] {
 function inspectExplicitMcpConfig(config: string): boolean {
   const normalized = config.replace(/\r\n?/g, "\n");
   const section = normalized.match(/(?:^|\n)\[mcp_servers\.codex-lsp-bridge\]\n([\s\S]*?)(?=\n\[|$)/)?.[1] ?? "";
-  const command = section.match(/^command\s*=\s*("(?:\\.|[^"\\])*")\s*$/m)?.[1];
+  const command = section.match(/^command\s*=\s*((?:"(?:\\.|[^"\\])*")|'[^'\r\n]*')\s*$/m)?.[1];
   const args = section.match(/^args\s*=\s*\[([\s\S]*?)\]\s*$/m)?.[1];
   if (!command || args === undefined) return false;
   try {
-    const value = JSON.parse(command);
-    if (typeof value !== "string") return false;
+    const value = parseTomlString(command);
     const parsedArgs = parseTomlStringArray(args);
     validateNativeNodeLaunchRecord({ version: 1, runtime: "native-node", command: value, args: parsedArgs });
     return true;
@@ -131,15 +137,20 @@ function inspectExplicitMcpConfig(config: string): boolean {
   }
 }
 
+function parseTomlString(token: string): string {
+  if (token.startsWith("'") && token.endsWith("'")) return token.slice(1, -1);
+  const value = JSON.parse(token);
+  if (typeof value !== "string") throw new Error("invalid TOML string value");
+  return value;
+}
+
 function parseTomlStringArray(content: string): string[] {
   const values: string[] = [];
   let remaining = content.trim();
   while (remaining.length > 0) {
-    const match = remaining.match(/^("(?:\\.|[^"\\])*")\s*(,|$)/);
+    const match = remaining.match(/^((?:"(?:\\.|[^"\\])*")|'[^'\r\n]*')\s*(,|$)/);
     if (!match) throw new Error("invalid TOML string array");
-    const value = JSON.parse(match[1]);
-    if (typeof value !== "string") throw new Error("invalid TOML string array value");
-    values.push(value);
+    values.push(parseTomlString(match[1]));
     remaining = remaining.slice(match[0].length).trim();
   }
   return values;

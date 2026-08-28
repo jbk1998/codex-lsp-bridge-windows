@@ -21,7 +21,8 @@ repository fixtures do not establish production load improvement.
   such. None of these states is a clean type-check result.
 - The bridge keeps state within a live MCP process: one manager per workspace
   root and one provider per language. The contract does not promise reuse across
-  separate MCP connections.
+  separate MCP connections. A configured idle timeout suspends bridge-owned
+  language-server resources while leaving the MCP connection open.
 
 ## Workspace identity and selection
 
@@ -80,13 +81,17 @@ repository fixtures do not establish production load improvement.
 - Shutdown stops new work, disposes bridge-owned state, and confirms within a
   bounded timeout that no bridge-owned child remains. A timeout is a visible
   failure, not silent success.
+- The MCP stdio transport accepts `mcpIdleTimeoutMs` from the global or
+  workspace `lsp-client.json`. It resets on each non-empty incoming message,
+  defaults to disabled when omitted, and defers suspension until active requests
+  settle. A value of `0` disables the timeout. The MCP process remains open and
+  the next request rehydrates providers lazily.
 - On Windows, a language-server `.cmd` or `.bat` wrapper is not treated as an
   owned process group from a parent-PID snapshot. Without a handle-backed or
   Job Object boundary, wrapper teardown fails closed with a non-clean result;
   the bridge never recursively kills an unproven descendant tree.
-- Idle suspension, a persistent broker, cross-connection reuse, and shared
-  persistent state remain deferred until measurement justifies a separate
-  scope decision.
+- A persistent broker, cross-connection reuse, and shared persistent state
+  remain deferred until measurement justifies a separate scope decision.
 
 ## Measurement rules
 
@@ -117,7 +122,8 @@ The four permitted baseline outcomes are:
 
 1. Retain the baseline.
 2. Repeat or extend measurement because evidence is inconclusive.
-3. Evaluate conditional idle suspension if material idle LSP memory is proven.
+3. Measure idle suspension's memory reduction and cold-start tradeoff after it is
+   enabled.
 4. Evaluate a narrow broker only if frequent MCP reconnections and costly cold
    starts remain after the baseline.
 

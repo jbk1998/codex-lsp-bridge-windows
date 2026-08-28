@@ -23,6 +23,7 @@ export interface LspManagerOptions {
 
 export class LspManager {
   private readonly providers = new Map<SupportedLanguage, SemanticProvider>();
+  private suspendPromise: Promise<ProcessTerminationResult | void> | undefined;
   private disposePromise: Promise<ProcessTerminationResult | void> | undefined;
   private disposed = false;
 
@@ -67,18 +68,42 @@ export class LspManager {
     return this.forLanguage(detectLanguageFromFile(filePath));
   }
 
-  async dispose(deadline?: DisposalDeadline): Promise<ProcessTerminationResult | void> {
+  async suspend(deadline?: DisposalDeadline): Promise<ProcessTerminationResult | void> {
     if (this.disposePromise) return this.disposePromise;
-    this.disposed = true;
+    if (this.suspendPromise) return this.suspendPromise;
+
     const sharedDeadline = deadline ?? createDisposalDeadline();
-    this.disposePromise = Promise.allSettled(
-      [...this.providers.values()].map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline)))
+    const providers = [...this.providers.values()];
+    this.providers.clear();
+    const suspension = Promise.allSettled(
+      providers.map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline)))
     ).then((settled) => {
-      this.providers.clear();
       const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
       const rejectedCount = settled.filter((entry) => entry.status === "rejected").length;
       return aggregateTerminationResults(results, rejectedCount);
     });
+    this.suspendPromise = suspension.finally(() => {
+      this.suspendPromise = undefined;
+    });
+    return this.suspendPromise;
+  }
+
+  async dispose(deadline?: DisposalDeadline): Promise<ProcessTerminationResult | void> {
+    if (this.disposePromise) return this.disposePromise;
+    this.disposed = true;
+    const sharedDeadline = deadline ?? createDisposalDeadline();
+    const suspension = this.suspendPromise;
+    this.disposePromise = (async () => {
+      if (suspension) await suspension;
+      const providers = [...this.providers.values()];
+      this.providers.clear();
+      const settled = await Promise.allSettled(
+        providers.map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline)))
+      );
+      const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
+      const rejectedCount = settled.filter((entry) => entry.status === "rejected").length;
+      return aggregateTerminationResults(results, rejectedCount);
+    })();
     return this.disposePromise;
   }
 }

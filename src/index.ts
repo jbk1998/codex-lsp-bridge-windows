@@ -74,13 +74,20 @@ async function main(): Promise<void> {
   const retiredManagers = new Set<LspManager>();
   const sourceFileListCache = new Map<string, SourceFileListCacheEntry>();
   let mcpOwnsDisposal = false;
+  const allManagers = () => [...new Set([
+    ...[...managers.values()].map((entry) => entry.manager),
+    ...retiredManagers
+  ])];
   const disposeManagers = async (deadline: DisposalDeadline): Promise<ProcessTerminationResult | void> => {
-    const settled = await Promise.allSettled(
-      [...new Set([
-        ...[...managers.values()].map((entry) => entry.manager),
-        ...retiredManagers
-      ])].map((manager) => Promise.resolve().then(() => manager.dispose(deadline)))
+    const settled = await Promise.allSettled(allManagers().map((manager) => Promise.resolve().then(() => manager.dispose(deadline))));
+    const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
+    return aggregateTerminationResults(
+      results,
+      settled.filter((entry) => entry.status === "rejected").length
     );
+  };
+  const suspendManagers = async (deadline: DisposalDeadline): Promise<ProcessTerminationResult | void> => {
+    const settled = await Promise.allSettled(allManagers().map((manager) => Promise.resolve().then(() => manager.suspend(deadline))));
     const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
     return aggregateTerminationResults(
       results,
@@ -121,6 +128,8 @@ async function main(): Promise<void> {
 
     if (args[0] === "mcp") {
       await runStdioMcp(service, {
+        idleTimeoutMs: config.mcpIdleTimeoutMs,
+        suspend: (deadline) => suspendManagers(deadline),
         dispose: (deadline) => {
           mcpOwnsDisposal = true;
           return disposeManagers(deadline);

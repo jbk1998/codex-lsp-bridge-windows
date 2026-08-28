@@ -27,8 +27,9 @@ export interface McpLifecycleOptions {
  * Owns one MCP stdio connection's request and disposal boundary.
  *
  * The coordinator deliberately has no persistence or cancellation API. Work
- * that has started remains tracked until it settles; EOF only prevents new
- * work and starts one bounded disposal sequence.
+ * that has started remains tracked until it settles; EOF starts one bounded
+ * disposal sequence, while a transport idle timeout may suspend LSP resources
+ * without closing the MCP connection.
  */
 export class McpLifecycleCoordinator {
   private readonly activeRequests = new Set<Promise<unknown>>();

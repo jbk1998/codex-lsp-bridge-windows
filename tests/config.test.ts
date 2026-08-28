@@ -24,7 +24,7 @@ describe("config", () => {
     await fs.mkdir(path.join(rootPath, ".codex"), { recursive: true });
     await fs.writeFile(
       path.join(process.env.CODEX_HOME, "lsp-client.json"),
-      JSON.stringify({ diagnosticsTimeoutMs: 3000, hook: { maxFiles: 9 }, defaultLanguage: "python" })
+      JSON.stringify({ diagnosticsTimeoutMs: 3000, mcpIdleTimeoutMs: 1800000, hook: { maxFiles: 9 }, defaultLanguage: "python" })
     );
     await fs.writeFile(
       path.join(rootPath, ".codex", "lsp-client.json"),
@@ -34,6 +34,7 @@ describe("config", () => {
     expect(loadConfig(rootPath)).toMatchObject({
       defaultLanguage: "typescript",
       diagnosticsTimeoutMs: 3000,
+      mcpIdleTimeoutMs: 1800000,
       hook: { maxFiles: 9, verbosePending: true }
     });
   });
@@ -46,6 +47,19 @@ describe("config", () => {
     expect(loadConfig(rootPath)).toMatchObject({
       diagnosticsTimeoutMs: 15000
     });
+  });
+
+  it("accepts zero to disable the MCP idle timeout and rejects invalid values", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
+    homePath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-home-"));
+    process.env.CODEX_HOME = path.join(homePath, ".codex");
+    await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
+    await fs.writeFile(path.join(process.env.CODEX_HOME, "lsp-client.json"), JSON.stringify({ mcpIdleTimeoutMs: 0 }));
+
+    expect(loadConfig(rootPath).mcpIdleTimeoutMs).toBe(0);
+
+    await fs.writeFile(path.join(process.env.CODEX_HOME, "lsp-client.json"), JSON.stringify({ mcpIdleTimeoutMs: 1.5 }));
+    expect(loadConfig(rootPath).mcpIdleTimeoutMs).toBeUndefined();
   });
 
   it("accepts auto diagnostics timeout policy", async () => {

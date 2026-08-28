@@ -7,6 +7,8 @@ import type { SupportedLanguage } from "../adapters/language-config.js";
 export interface LspClientConfig {
   defaultLanguage: SupportedLanguage;
   diagnosticsTimeoutMs: DiagnosticsTimeoutPolicy;
+  /** Close an idle MCP stdio connection after this many milliseconds; zero disables it. */
+  mcpIdleTimeoutMs?: number;
   hook: {
     maxFiles: number;
     verbosePending: boolean;
@@ -42,6 +44,7 @@ function mergeConfig(...configs: Partial<LspClientConfig>[]): LspClientConfig {
     (merged, config) => ({
       defaultLanguage: isSupportedLanguage(config.defaultLanguage) ? config.defaultLanguage : merged.defaultLanguage,
       diagnosticsTimeoutMs: readDiagnosticsTimeoutPolicy(config.diagnosticsTimeoutMs, merged.diagnosticsTimeoutMs),
+      mcpIdleTimeoutMs: readNonNegativeInteger(config.mcpIdleTimeoutMs, merged.mcpIdleTimeoutMs),
       hook: {
         maxFiles: readPositiveNumber(config.hook?.maxFiles, merged.hook.maxFiles),
         verbosePending: typeof config.hook?.verbosePending === "boolean" ? config.hook.verbosePending : merged.hook.verbosePending
@@ -57,6 +60,10 @@ function mergeConfig(...configs: Partial<LspClientConfig>[]): LspClientConfig {
 
 function readPositiveNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function readNonNegativeInteger(value: unknown, fallback: number | undefined): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647 ? value : fallback;
 }
 
 function isSupportedLanguage(value: unknown): value is SupportedLanguage {

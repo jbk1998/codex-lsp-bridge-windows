@@ -38,8 +38,9 @@ checks in those documents pass.
 - Explicit MCP tools remain available when automatic `PostToolUse` diagnostics
   are disabled. Users do not select or manage bridge processes.
 - Within one live MCP process, the bridge reuses one manager per workspace root
-  and one provider per language. Cross-connection reuse, idle suspension, and a
-  persistent broker remain deferred.
+  and one provider per language. Cross-connection reuse and a persistent broker
+  remain deferred. A configured idle period suspends bridge-owned language-server
+  resources while keeping the MCP connection open.
 - Performance measurement is opt-in and local. A failed process-attribution or
   representative-workload check is `INCONCLUSIVE` and cannot support a load
   improvement claim.
@@ -661,6 +662,24 @@ codex-lsp-bridge diagnostics --file src/file.ts --timeout-ms 30000 --root .
 For MCP tool calls, pass `timeoutMs` on `lsp_diagnostics`. Directory diagnostics
 use `timeoutBudgetMs` instead because they have a scan-wide wall-clock budget.
 
+To release bridge-owned language-server resources after a connection has been
+left open without requests, set `mcpIdleTimeoutMs` in
+`~/.codex/lsp-client.json`. The value is milliseconds; `0` disables the timeout.
+The timeout resets on incoming MCP messages and waits for active requests to
+finish before suspending the language-server resources. The MCP stdio process
+stays open, and the next LSP request cold-starts the provider as needed. The
+current Windows setup uses a 30-minute idle timeout:
+
+```json
+{
+  "diagnosticsTimeoutMs": 30000,
+  "mcpIdleTimeoutMs": 1800000
+}
+```
+
+`codex-lsp-bridge doctor --root .` reports the configured value as
+`connection.idleTimeoutMs`.
+
 For TypeScript, a workspace-local
 `node_modules/.bin/typescript-language-server` is preferred when present, then
 the configured command or PATH command is used. Rust uses the configured
@@ -687,13 +706,20 @@ For best results, use these rules in global or project instructions:
 
 ```md
 When codex-lsp-bridge MCP tools are available, use them proactively for
-semantic feedback from supported source files. After editing supported source
-files, call `lsp_diagnostics` for touched files before broader verification.
-Before renames, moves, signature changes, or multi-file semantic refactors,
-call `lsp_definition` and `lsp_references`. Prefer file-position inputs over
-symbol-only inputs when the occurrence is known. If LSP is unavailable, stale,
-timed out, or ambiguous, say so and fall back to the narrowest repo-native
-verification command.
+semantic feedback from supported source files. After substantial edits or
+during code review, audit, or investigation, call `lsp_diagnostics` for every
+touched or changed supported source file before broader verification or final
+findings. Pass explicit absolute `root` and `file` paths. Before renames, moves,
+signature changes, import rewrites, or multi-file semantic refactors, call
+`lsp_definition` and `lsp_references` at the relevant file position with
+explicit absolute `root` and `file` paths. Trust diagnostics as current only
+when `status` is `"ok"`, `timedOut` is `false`, and `stale` is `false`. Treat
+`status: "timed_out"`, `stale: true`, `status: "unavailable"`, or
+`conclusion: "inconclusive"` as inconclusive LSP evidence, not a reason to stop.
+The same applies to a missing language server or unresolved
+`configurationIssues`. Report it once, continue with the narrowest repo-native
+verification command, and retry LSP only if the target, root, configuration, or
+language-server state changes. Do not call the LSP result clean.
 ```
 
 ## Smoke Test
@@ -721,8 +747,9 @@ The generated Codex bridge configuration must use that direct runtime as well.
 
 - The bridge is read-only.
 - The bridge uses one manager per workspace root and one provider per language
-  within a live MCP process. Language-server children start lazily and are
-  disposed on connection shutdown; cross-connection reuse is not promised.
+  within a live MCP process. Language-server children start lazily, are
+  suspended at the configured idle timeout, and are disposed on final
+  connection shutdown; cross-connection reuse is not promised.
 - Process and load measurement is opt-in and local. It uses negative and
   positive attribution controls to distinguish bridge activity from Codex Code
   Mode's `node_repl.exe` processes. An attribution or workload failure is

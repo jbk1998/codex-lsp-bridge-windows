@@ -27,6 +27,16 @@ describe("LspManager", () => {
     await expect(manager.dispose()).resolves.toBeUndefined();
   });
 
+  it("suspends providers while keeping the manager reusable", async () => {
+    const manager = new LspManager(process.cwd());
+    const firstProvider = manager.forLanguage("typescript");
+
+    await expect(manager.suspend()).resolves.toBeUndefined();
+    expect(manager.forLanguage("typescript")).not.toBe(firstProvider);
+
+    await manager.dispose();
+  });
+
   it("keeps managers and providers isolated by workspace root", async () => {
     const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-manager-first-"));
     const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-manager-second-"));

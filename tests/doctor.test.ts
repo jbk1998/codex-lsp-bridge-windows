@@ -41,6 +41,7 @@ describe("doctor", () => {
       })
     );
     expect(result.build).toEqual(expect.objectContaining({ distExists: expect.any(Boolean), stale: expect.any(Boolean) }));
+    expect(result.connection.idleTimeoutMs === null || typeof result.connection.idleTimeoutMs === "number").toBe(true);
     expect(result.diagnostics).toEqual(
       expect.objectContaining({
         timeoutMs: expect.any(Number),
@@ -93,6 +94,29 @@ describe("doctor", () => {
       expect(result.codex.explicitMcpReady).toBe(true);
       expect(result.codex.hookState).toBe("disabled");
       expect(result.codex.hookConfigured).toBe(true);
+    } finally {
+      if (previousHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousHome;
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts TOML literal strings in explicit MCP config", () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-lsp-doctor-literal-"));
+    const previousHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      fs.writeFileSync(
+        path.join(codexHome, "config.toml"),
+        [
+          "[mcp_servers.codex-lsp-bridge]",
+          `command = '${process.execPath}'`,
+          "args = ['dist/index.js', 'mcp']",
+          ""
+        ].join("\r\n")
+      );
+
+      expect(runDoctor(process.cwd()).codex.explicitMcpReady).toBe(true);
     } finally {
       if (previousHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = previousHome;

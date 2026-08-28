@@ -24,6 +24,26 @@ assert(!hooks.includes("codex-lsp-bridge:post-tool-diagnostics"), "install unexp
 assert(hooks.includes("user-owned"), "install did not preserve user-owned hooks");
 assert(!config.match(/command\s*=\s*"(?:node|npm|npx)"/), "install used a mutable runtime command");
 assert(agents.includes("BEGIN codex-lsp-bridge"), "install did not write AGENTS instructions");
+assert(
+  agents.includes("for every touched or changed supported source file"),
+  "install did not require diagnostics for every changed supported source file"
+);
+assert(
+  agents.includes("Pass explicit absolute `root` and `file` paths."),
+  "install did not require explicit root and file paths"
+);
+assert(
+  agents.includes('`status` is `"ok"`, `timedOut` is `false`, and `stale` is `false`'),
+  "install did not define the current diagnostics trust state"
+);
+assert(
+  agents.includes('`status: "timed_out"`') && agents.includes('`conclusion: "inconclusive"`'),
+  "install did not preserve unresolved diagnostics states"
+);
+assert(
+  agents.includes("Report it once") && agents.includes("retry LSP only if"),
+  "install did not bound unresolved diagnostics handling"
+);
 assert(agents.includes("User-owned instructions"), "install did not preserve user-owned AGENTS content");
 
 const crlfConfig = config.replace(/\r\n?/g, "\n").replace(/\n/g, "\r\n");

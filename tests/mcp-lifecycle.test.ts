@@ -1,5 +1,5 @@
 import { PassThrough, Readable } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { CommandService } from "../src/core/command-service.js";
 import { createDisposalDeadline } from "../src/core/process-ownership.js";
 import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
@@ -161,6 +161,258 @@ describe("MCP lifecycle coordinator", () => {
 });
 
 describe("MCP stdio lifecycle", () => {
+  it("resets the idle timeout when a message arrives", async () => {
+    vi.useFakeTimers();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    let disposeCalls = 0;
+
+    try {
+      const runPromise = runStdioMcp(new CommandService(new TestProvider()), {
+        input,
+        output,
+        errorOutput,
+        idleTimeoutMs: 1000,
+        dispose: async () => {
+          disposeCalls += 1;
+        }
+      });
+
+      await vi.advanceTimersByTimeAsync(750);
+      input.write(`${JSON.stringify({ id: 1, method: "initialize" })}\n`);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(disposeCalls).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
+      expect(disposeCalls).toBe(1);
+    } finally {
+      input.destroy();
+      output.destroy();
+      errorOutput.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes an idle connection when no suspension callback is provided", async () => {
+    vi.useFakeTimers();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    const errors: Buffer[] = [];
+    errorOutput.on("data", (chunk) => errors.push(Buffer.from(chunk)));
+    let disposeCalls = 0;
+
+    try {
+      const runPromise = runStdioMcp(new CommandService(new TestProvider()), {
+        input,
+        output,
+        errorOutput,
+        idleTimeoutMs: 1000,
+        dispose: async () => {
+          disposeCalls += 1;
+        }
+      });
+
+      await vi.advanceTimersByTimeAsync(999);
+      expect(disposeCalls).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+
+      await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
+      expect(disposeCalls).toBe(1);
+      expect(Buffer.concat(errors).toString("utf8")).toContain("idle");
+    } finally {
+      input.destroy();
+      output.destroy();
+      errorOutput.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it("suspends idle LSP resources without closing the MCP connection", async () => {
+    vi.useFakeTimers();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    const errors: Buffer[] = [];
+    errorOutput.on("data", (chunk) => errors.push(Buffer.from(chunk)));
+    let suspendCalls = 0;
+    let disposeCalls = 0;
+
+    try {
+      const runPromise = runStdioMcp(new CommandService(new TestProvider()), {
+        input,
+        output,
+        errorOutput,
+        idleTimeoutMs: 1000,
+        suspend: async () => {
+          suspendCalls += 1;
+        },
+        dispose: async () => {
+          disposeCalls += 1;
+        }
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(suspendCalls).toBe(1);
+      expect(disposeCalls).toBe(0);
+
+      input.write(`${JSON.stringify({ id: 9, method: "initialize" })}\n`);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(suspendCalls).toBe(1);
+      expect(disposeCalls).toBe(0);
+
+      await vi.advanceTimersByTimeAsync(1);
+      expect(suspendCalls).toBe(2);
+      expect(disposeCalls).toBe(0);
+
+      input.end();
+      await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
+      expect(disposeCalls).toBe(1);
+      expect(Buffer.concat(errors).toString("utf8")).toContain("suspended LSP resources");
+    } finally {
+      input.destroy();
+      output.destroy();
+      errorOutput.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for an active request before suspending idle LSP resources", async () => {
+    vi.useFakeTimers();
+    const provider = new BlockingProvider();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    const lifecycle = new McpLifecycleCoordinator({
+      createDeadline: () => createDisposalDeadline(Date.now(), 500, 10, 10),
+      dispose: async () => undefined
+    });
+    let suspendCalls = 0;
+
+    try {
+      const runPromise = runStdioMcp(new CommandService(provider), {
+        input,
+        output,
+        errorOutput,
+        lifecycle,
+        idleTimeoutMs: 1000,
+        suspend: async () => {
+          suspendCalls += 1;
+        }
+      });
+      input.write(`${JSON.stringify({ id: 10, method: "tools/call", params: { name: "lsp_diagnostics", arguments: {} } })}\n`);
+      await Promise.resolve();
+      expect(lifecycle.activeRequestCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(suspendCalls).toBe(0);
+      expect(lifecycle.state).toBe("open");
+
+      provider.release();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(suspendCalls).toBe(1);
+      expect(lifecycle.state).toBe("open");
+
+      input.end();
+      await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
+    } finally {
+      input.destroy();
+      output.destroy();
+      errorOutput.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for an in-flight suspension before dispatching the next request", async () => {
+    vi.useFakeTimers();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    const chunks: Buffer[] = [];
+    output.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    let markSuspensionStarted: (() => void) | undefined;
+    let releaseSuspension: (() => void) | undefined;
+    const suspensionStarted = new Promise<void>((resolve) => {
+      markSuspensionStarted = resolve;
+    });
+
+    try {
+      const runPromise = runStdioMcp(new CommandService(new TestProvider()), {
+        input,
+        output,
+        errorOutput,
+        idleTimeoutMs: 1000,
+        suspend: async () => {
+          markSuspensionStarted?.();
+          await new Promise<void>((resolve) => {
+            releaseSuspension = resolve;
+          });
+        },
+        dispose: async () => undefined
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await suspensionStarted;
+
+      input.write(`${JSON.stringify({ id: 11, method: "initialize" })}\n`);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(chunks).toHaveLength(0);
+
+      releaseSuspension?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(Buffer.concat(chunks).toString("utf8")).toContain('"id":11');
+
+      input.end();
+      await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
+    } finally {
+      input.destroy();
+      output.destroy();
+      errorOutput.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not close an idle connection while a request is active", async () => {
+    vi.useFakeTimers();
+    const provider = new BlockingProvider();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    const lifecycle = new McpLifecycleCoordinator({
+      createDeadline: () => createDisposalDeadline(Date.now(), 500, 10, 10),
+      dispose: async () => undefined
+    });
+
+    try {
+      const runPromise = runStdioMcp(new CommandService(provider), {
+        input,
+        output,
+        errorOutput,
+        lifecycle,
+        idleTimeoutMs: 1000
+      });
+      input.write(`${JSON.stringify({ id: 8, method: "tools/call", params: { name: "lsp_diagnostics", arguments: {} } })}\n`);
+      await Promise.resolve();
+      expect(lifecycle.activeRequestCount).toBe(1);
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(lifecycle.state).toBe("open");
+      expect(lifecycle.activeRequestCount).toBe(1);
+
+      provider.release();
+      await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
+    } finally {
+      input.destroy();
+      output.destroy();
+      errorOutput.destroy();
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the approved read-only tool catalog and reports readiness without process telemetry", async () => {
     const input = Readable.from([
       `${JSON.stringify({ id: 1, method: "initialize" })}\n`,

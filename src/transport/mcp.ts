@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
 import { stderr, stdin as input, stdout as output } from "node:process";
 import type { CommandService, WorkspaceCommandService } from "../core/command-service.js";
-import type { DisposalDeadline, ProcessTerminationResult } from "../core/process-ownership.js";
+import { createDisposalDeadline, type DisposalDeadline, type ProcessTerminationResult } from "../core/process-ownership.js";
 import { McpLifecycleCoordinator, type McpLifecycleResult } from "./mcp-lifecycle.js";
 import { resolvePathInsideWorkspaceRootSync, shouldSelectWorkspaceService } from "../core/workspace-root.js";
 import { filePathToUri } from "../utils/uri.js";
@@ -18,6 +18,10 @@ export interface McpRuntime {
   output?: NodeJS.WritableStream;
   errorOutput?: NodeJS.WritableStream;
   setExitCode?: (code: number) => void;
+  /** Suspend bridge-owned LSP resources after this many milliseconds without input. */
+  idleTimeoutMs?: number;
+  /** Suspend bridge-owned LSP resources while keeping the MCP stdio connection open. */
+  suspend?: (deadline: DisposalDeadline) => Promise<ProcessTerminationResult | void>;
 }
 
 interface Request {
@@ -175,21 +179,105 @@ export async function runStdioMcp(service: LspCommandService, runtime: McpRuntim
   const errorOutput = runtime.errorOutput ?? stderr;
   const lifecycle = runtime.lifecycle ?? new McpLifecycleCoordinator({ dispose: runtime.dispose });
   const rl = createInterface({ input: runtime.input ?? input, crlfDelay: Infinity });
+  const idleTimeoutMs = normalizeIdleTimeoutMs(runtime.idleTimeoutMs);
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let idleClosePending = false;
+  let idleCloseRequested = false;
+  let idleSuspendPending = false;
+  let idleSuspensionPromise: Promise<ProcessTerminationResult | void> | undefined;
+
+  const clearIdleTimer = () => {
+    if (idleTimer === undefined) return;
+    clearTimeout(idleTimer);
+    idleTimer = undefined;
+  };
+  const closeWhenIdle = () => {
+    if (idleCloseRequested) return;
+    if (lifecycle.activeRequestCount > 0) {
+      idleClosePending = true;
+      return;
+    }
+    idleCloseRequested = true;
+    clearIdleTimer();
+    errorOutput.write(`MCP connection idle for ${idleTimeoutMs}ms; closing.\n`);
+    rl.close();
+  };
+  const suspendWhenIdle = () => {
+    if (!runtime.suspend || idleSuspensionPromise) return;
+    idleSuspendPending = false;
+    clearIdleTimer();
+    const suspension = Promise.resolve().then(() => runtime.suspend!(createDisposalDeadline()));
+    idleSuspensionPromise = suspension.then(
+      (result) => {
+        if (result && !result.clean) {
+          errorOutput.write(`MCP idle suspension ended non-cleanly: ${result.reasonCode}.\n`);
+        } else {
+          errorOutput.write(`MCP connection idle for ${idleTimeoutMs}ms; suspended LSP resources.\n`);
+        }
+        return result;
+      },
+      (error) => {
+        errorOutput.write(`MCP idle suspension failed: ${error instanceof Error ? error.message : "Unknown error"}.\n`);
+        return undefined;
+      }
+    ).finally(() => {
+      idleSuspensionPromise = undefined;
+    });
+  };
+  const requestIdleAction = () => {
+    if (runtime.suspend) {
+      if (lifecycle.activeRequestCount > 0) {
+        idleSuspendPending = true;
+        return;
+      }
+      suspendWhenIdle();
+      return;
+    }
+    closeWhenIdle();
+  };
+  const armIdleTimer = () => {
+    if (idleTimeoutMs === undefined || idleCloseRequested) return;
+    clearIdleTimer();
+    idleClosePending = false;
+    idleSuspendPending = false;
+    idleTimer = setTimeout(requestIdleAction, idleTimeoutMs);
+  };
+  const closeAfterPendingIdleTimeout = () => {
+    if (lifecycle.activeRequestCount > 0) return;
+    if (runtime.suspend) {
+      if (idleSuspendPending) suspendWhenIdle();
+      return;
+    }
+    if (idleClosePending) closeWhenIdle();
+  };
+
+  armIdleTimer();
 
   let dispatchFailure: unknown;
   rl.on("line", (line) => {
     if (line.trim().length === 0) return;
-    void lifecycle
-      .dispatch(async () => {
-        const response = await handleJsonRpcLine(service, line, runtime);
-        if (response) await writeMcpLine(outputStream, JSON.stringify(response));
-      })
-      .catch((error) => {
+    armIdleTimer();
+    const suspensionToAwait = idleSuspensionPromise;
+    const dispatchPromise = lifecycle.dispatch(async () => {
+      if (suspensionToAwait) await suspensionToAwait;
+      const response = await handleJsonRpcLine(service, line, runtime);
+      if (response) await writeMcpLine(outputStream, JSON.stringify(response));
+    });
+    void dispatchPromise.then(
+      () => closeAfterPendingIdleTimeout(),
+      (error) => {
         dispatchFailure ??= error;
-      });
+        closeAfterPendingIdleTimeout();
+      }
+    );
   });
 
-  await new Promise<void>((resolve) => rl.once("close", resolve));
+  try {
+    await new Promise<void>((resolve) => rl.once("close", resolve));
+  } finally {
+    clearIdleTimer();
+    if (idleSuspensionPromise) await idleSuspensionPromise;
+  }
   const result = await lifecycle.close();
   if (dispatchFailure || !result.clean) {
     const reason = result.reasonCode ?? "dispatch_failed";
@@ -197,6 +285,10 @@ export async function runStdioMcp(service: LspCommandService, runtime: McpRuntim
     runtime.setExitCode?.(1);
   }
   return result;
+}
+
+function normalizeIdleTimeoutMs(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 && value <= 2_147_483_647 ? value : undefined;
 }
 
 async function writeMcpLine(outputStream: NodeJS.WritableStream, line: string): Promise<void> {
