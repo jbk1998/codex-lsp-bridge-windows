@@ -258,7 +258,12 @@ export function buildWindowsProcessIdentityCommand(pid: number): string {
   // creation timestamp without requiring the process performance handle.
   return [
     `$target = Get-CimInstance Win32_Process -Filter 'ProcessId = ${String(pid)}' -ErrorAction Stop`,
-    "$target.CreationDate.ToUniversalTime().Ticks"
+    "if ($null -eq $target) { throw 'process not found' }",
+    // CreationDate is exposed as a DMTF string by Win32_Process on Windows
+    // PowerShell. Keep that opaque value as the token: calling DateTime
+    // methods on it is version-dependent and can make an otherwise healthy
+    // process look unowned on hosted runners.
+    "[Console]::Out.Write([string]$target.CreationDate)"
   ].join("; ");
 }
 
@@ -267,10 +272,10 @@ function readWindowsProcessIdentity(pid: number): ProcessIdentity | undefined {
   const output = execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-    // Starting PowerShell plus the CIM provider can exceed one second on a
-    // fresh hosted Windows runner. Keep the probe bounded, but leave enough
-    // room for normal startup so a healthy owned child is not rejected.
-    timeout: 3000,
+    // Starting PowerShell plus the CIM provider can take several seconds on
+    // a fresh hosted Windows runner. Keep the probe bounded, but leave enough
+    // room for normal WMI startup so a healthy owned child is not rejected.
+    timeout: 5000,
     windowsHide: true
   }).trim();
   const normalizedOutput = output.replace(/^\uFEFF/, "").trim();

@@ -219,7 +219,20 @@ function readAbsoluteWorkspaceTarget(params: Record<string, unknown>): { path: s
 
 function normalizePathIdentity(targetPath: string): string {
   const normalized = normalizePathForAccess(targetPath);
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  if (process.platform !== "win32") return normalized;
+
+  // Windows can return an ordinary drive path from fs.realpath() and an
+  // extended-length path from realpathSync.native(). They identify the same
+  // directory, but path.relative() treats the extended-length namespace as a
+  // different root. Normalize the aliases only for identity/containment
+  // comparisons; callers still use the original path for filesystem access.
+  let comparable = normalized.replaceAll("/", "\\\\");
+  if (comparable.startsWith("\\\\?\\UNC\\")) {
+    comparable = `\\\\${comparable.slice("\\\\?\\UNC\\".length)}`;
+  } else if (comparable.startsWith("\\\\?\\")) {
+    comparable = comparable.slice("\\\\?\\".length);
+  }
+  return path.win32.normalize(comparable).toLowerCase();
 }
 
 function assertCanonicalTargetInsideRoot(canonicalTargetPath: string, canonicalRootPath: string, displayTargetPath: string): void {

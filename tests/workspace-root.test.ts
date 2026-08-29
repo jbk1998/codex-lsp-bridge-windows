@@ -197,6 +197,21 @@ describe("workspace root resolution", () => {
     );
   });
 
+  it("accepts ordinary and extended-length Windows aliases for the same workspace", async () => {
+    if (process.platform !== "win32") return;
+
+    const root = await makeTemporaryDirectory("codex-lsp-read-windows-alias-");
+    const target = path.join(root, "source.ts");
+    await fs.writeFile(target, "export const source = 1;\n", "utf8");
+    const canonicalRoot = await fs.realpath(root);
+    const canonicalTarget = await fs.realpath(target);
+    const extendedRoot = toExtendedWindowsPath(canonicalRoot);
+    const extendedTarget = toExtendedWindowsPath(canonicalTarget);
+
+    await expect(readVerifiedWorkspaceFileUtf8(root, extendedRoot, canonicalTarget)).resolves.toBe("export const source = 1;\n");
+    await expect(readVerifiedWorkspaceFileUtf8(root, canonicalRoot, extendedTarget)).resolves.toBe("export const source = 1;\n");
+  });
+
   it("revalidates a canonical target before descriptor open when it becomes a symlink escape", async () => {
     const root = await makeTemporaryDirectory("codex-lsp-read-symlink-");
     const outside = await makeTemporaryDirectory("codex-lsp-read-outside-");
@@ -222,3 +237,8 @@ describe("workspace root resolution", () => {
     }
   });
 });
+
+function toExtendedWindowsPath(filePath: string): string {
+  if (filePath.startsWith("\\\\")) return `\\\\?\\UNC\\${filePath.slice(2)}`;
+  return `\\\\?\\${filePath}`;
+}

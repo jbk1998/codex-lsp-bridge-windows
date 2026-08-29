@@ -316,7 +316,6 @@ function terminateProcessTree(pid: number): void {
 }
 
 function readWorkingSet(pid: number): number {
-  if (!isProcessAlive(pid)) return 0;
   try {
     const output = execFileSync(
       "powershell.exe",
@@ -325,11 +324,35 @@ function readWorkingSet(pid: number): number {
         "-NoProfile",
         "-NonInteractive",
         "-Command",
-        `$p = Get-Process -Id ${String(pid)} -ErrorAction Stop; [int64]$p.WorkingSet64`
+        `$p = Get-Process -Id ${String(pid)} -ErrorAction Stop; [Console]::Out.Write(([int64]$p.WorkingSet64).ToString([Globalization.CultureInfo]::InvariantCulture))`
       ],
       { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 2_000, windowsHide: true }
     ).trim();
     const value = Number(output);
+    if (Number.isSafeInteger(value) && value > 0) return value;
+  } catch {
+    // Fall through to tasklist if PowerShell is unavailable.
+  }
+
+  // Get-Process may be unavailable while the hosted runner is initializing
+  // PowerShell. tasklist is a native Windows fallback and reports the same
+  // process working set in KiB; use it only for this acceptance probe.
+  try {
+    const output = execFileSync("tasklist.exe", ["/FI", `PID eq ${String(pid)}`, "/FO", "CSV", "/NH"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2_000,
+      windowsHide: true
+    });
+    const row = output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line.length > 0 && !/^INFO:/i.test(line));
+    if (!row) return 0;
+    const fields = [...row.matchAll(/"([^"]*)"/g)].map((match) => match[1]);
+    if (Number(fields[1]) !== pid) return 0;
+    const memory = fields[4]?.replaceAll(",", "").match(/^(\d+)\s*K$/i);
+    const value = memory ? Number(memory[1]) * 1024 : 0;
     return Number.isSafeInteger(value) && value > 0 ? value : 0;
   } catch {
     return 0;

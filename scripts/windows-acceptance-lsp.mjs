@@ -13,7 +13,6 @@ if (typeof eventsPath !== "string" || eventsPath.length === 0 || !Number.isFinit
 // Touch every page so the working-set sample observes a real allocation rather
 // than a lazily committed virtual address range.
 const allocation = Buffer.alloc(Math.ceil(allocationMb * 1024 * 1024), 0xa5);
-void allocation;
 
 function appendEvent(event) {
   fs.appendFileSync(eventsPath, `${JSON.stringify(event)}\n`, "utf8");
@@ -51,7 +50,12 @@ process.stdin.on("data", (chunk) => {
   }
 });
 process.stdin.resume();
-setInterval(() => undefined, 1_000);
+// Keep the touched pages observably live for the lifetime of the fixture.
+// Merely allocating a buffer is insufficient because V8 may prove an otherwise
+// unused module binding dead and allow its backing store to be reclaimed.
+setInterval(() => {
+  allocation[0] ^= 1;
+}, 1_000);
 
 function handleMessage(message) {
   if (message && message.id !== undefined && message.method) {
