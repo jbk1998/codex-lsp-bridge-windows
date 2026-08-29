@@ -88,9 +88,7 @@ describe("CommandService", () => {
     await expect(service.definition(" ")).rejects.toThrow("symbol is required");
     await expect(service.symbols("")).rejects.toThrow("query is required");
     await expect(service.definitionAt({ file: "", line: 1, character: 1 })).rejects.toThrow("file is required");
-    await expect(service.definitionAt({ file: "src/a.ts", line: 0, character: 1 })).rejects.toThrow(
-      "line must be a positive integer"
-    );
+    await expect(service.definitionAt({ file: "src/a.ts", line: 0, character: 1 })).rejects.toThrow("line must be a positive integer");
   });
 
   it("delegates read-only semantic commands to the provider", async () => {

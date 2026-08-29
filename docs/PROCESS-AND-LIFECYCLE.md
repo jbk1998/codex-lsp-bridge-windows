@@ -75,9 +75,11 @@ repository fixtures do not establish production load improvement.
   or already-committed source revision cannot publish into a later result.
   A subsequent request can use a completed recovery or receive an explicit
   unavailable result if recovery failed.
-- Failed writes, process exits, and shutdown reject and clear outstanding JSON
-  RPC requests. Shutdown is shared and bounded, so repeated close or root-switch
-  paths do not create duplicate child teardown or orphaned request state.
+- Failed writes, including asynchronous stdin `EPIPE` events, process exits, and
+  shutdown reject and clear outstanding JSON-RPC requests for the matching
+  process generation. Shutdown is shared and bounded, so repeated close or
+  root-switch paths do not create duplicate child teardown or orphaned request
+  state.
 - Shutdown stops new work, disposes bridge-owned state, and confirms within a
   bounded timeout that no bridge-owned child remains. A timeout is a visible
   failure, not silent success.
@@ -85,7 +87,12 @@ repository fixtures do not establish production load improvement.
   workspace `lsp-client.json`. It resets on each non-empty incoming message,
   defaults to disabled when omitted, and defers suspension until active requests
   settle. A value of `0` disables the timeout. The MCP process remains open and
-  the next request rehydrates providers lazily.
+  the next request rehydrates providers lazily. The startup root supplies the
+  timer for the connection; later root selection does not replace it.
+- MCP newline-delimited input is capped at 1 MiB and 64 active request handlers.
+  LSP content is capped at 16 MiB in both directions. Workspace source is read
+  through a descriptor whose root, canonical path, and identity are revalidated
+  before and after the read.
 - On Windows, a language-server `.cmd` or `.bat` wrapper is not treated as an
   owned process group from a parent-PID snapshot. Without a handle-backed or
   Job Object boundary, wrapper teardown fails closed with a non-clean result;

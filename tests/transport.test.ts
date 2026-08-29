@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import path from "node:path";
 import { createRequire } from "node:module";
-import { dispatch, handleJsonRpcLine, handleRequest } from "../src/transport/mcp.js";
+import {
+  dispatch,
+  handleJsonRpcLine,
+  handleRequest,
+  maxDirectoryDiagnosticConcurrency,
+  maxDirectoryDiagnosticFiles,
+  maxDirectoryDiagnosticTimeoutBudgetMs
+} from "../src/transport/mcp.js";
 import { CommandService } from "../src/core/command-service.js";
 import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
 
@@ -322,7 +329,14 @@ describe("MCP dispatch", () => {
           method: "tools/call",
           params: {
             name: "lsp_diagnostics",
-            arguments: { dir: "/tmp/pr-review/src", root: "/tmp/pr-review", severity: "error", maxFiles: 3, timeoutBudgetMs: 1000, concurrency: 2 }
+            arguments: {
+              dir: "/tmp/pr-review/src",
+              root: "/tmp/pr-review",
+              severity: "error",
+              maxFiles: 3,
+              timeoutBudgetMs: 1000,
+              concurrency: 2
+            }
           }
         },
         {
@@ -349,13 +363,20 @@ describe("MCP dispatch", () => {
       { dir: "src", maxFiles: 0 },
       { dir: "src", timeoutBudgetMs: 1.5 },
       { dir: "src", concurrency: -1 },
+      { dir: "src", maxFiles: maxDirectoryDiagnosticFiles + 1 },
+      { dir: "src", timeoutBudgetMs: maxDirectoryDiagnosticTimeoutBudgetMs + 1 },
+      { dir: "src", concurrency: maxDirectoryDiagnosticConcurrency + 1 },
       { dir: "src", severity: "fatal" }
     ]) {
       await expect(
-        dispatch(service, {
-          method: "tools/call",
-          params: { name: "lsp_diagnostics", arguments: argumentsValue }
-        }, runtime)
+        dispatch(
+          service,
+          {
+            method: "tools/call",
+            params: { name: "lsp_diagnostics", arguments: argumentsValue }
+          },
+          runtime
+        )
       ).rejects.toThrow(/parameter must be/);
     }
   });

@@ -27,28 +27,20 @@ describe("diagnostics timeout policy", () => {
     await fs.writeFile(
       path.join(rootPath, "tsconfig.json"),
       JSON.stringify({
-        references: [
-          { path: "packages/a" },
-          { path: "packages/b" },
-          { path: "packages/c" }
-        ]
+        references: [{ path: "packages/a" }, { path: "packages/b" }, { path: "packages/c" }]
       })
     );
 
     expect(resolveDiagnosticsTimeout(rootPath, "auto")).toMatchObject({
       timeoutMs: 28000,
       policy: "auto",
-      reasons: expect.arrayContaining([
-        "base 15000ms",
-        "monorepo marker +10000ms",
-        "tsconfig references 3 +3000ms"
-      ])
+      reasons: expect.arrayContaining(["base 15000ms", "monorepo marker +10000ms", "tsconfig references 3 +3000ms"])
     });
   });
 
   it("increases auto timeout for Cargo workspaces", async () => {
     rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-timeout-"));
-    await fs.writeFile(path.join(rootPath, "Cargo.toml"), "[workspace]\nmembers = [\"crates/*\"]\n");
+    await fs.writeFile(path.join(rootPath, "Cargo.toml"), '[workspace]\nmembers = ["crates/*"]\n');
 
     expect(resolveDiagnosticsTimeout(rootPath, "auto")).toMatchObject({
       timeoutMs: 25000,
@@ -61,9 +53,7 @@ describe("diagnostics timeout policy", () => {
     rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-timeout-"));
     const srcPath = path.join(rootPath, "src");
     await fs.mkdir(srcPath);
-    await Promise.all(
-      Array.from({ length: 501 }, (_, index) => fs.writeFile(path.join(srcPath, `mod_${index}.rs`), "fn main() {}\n"))
-    );
+    await Promise.all(Array.from({ length: 501 }, (_, index) => fs.writeFile(path.join(srcPath, `mod_${index}.rs`), "fn main() {}\n")));
 
     expect(resolveDiagnosticsTimeout(rootPath, "auto")).toMatchObject({
       timeoutMs: 25000,

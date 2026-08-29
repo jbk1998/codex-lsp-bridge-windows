@@ -620,7 +620,9 @@ Status request:
 Optional JSON config is read from `~/.codex/lsp-client.json` and then
 `<workspace>/.codex/lsp-client.json`. Workspace config wins for behavioral
 settings, but executable `languageServers` overrides are accepted only from the
-trusted global config.
+trusted global config. A present config file must contain valid JSON and valid
+field types; malformed global or workspace config blocks the operation with an
+error naming the exact file and field instead of silently falling back.
 
 Use global config for your personal default and workspace config for large
 repos that need longer language-server warmup. For a Rust-first workspace:
@@ -678,6 +680,8 @@ left open without requests, set `mcpIdleTimeoutMs` in
 The timeout resets on incoming MCP messages and waits for active requests to
 finish before suspending the language-server resources. The MCP stdio process
 stays open, and the next LSP request cold-starts the provider as needed. The
+value is captured from the startup workspace for the lifetime of that MCP stdio
+connection; selecting another root does not replace the connection timer. The
 current Windows setup uses a 30-minute idle timeout:
 
 ```json
@@ -811,6 +815,13 @@ the changes.
 
 Language servers are external executables. Install them from trusted sources.
 
+Workspace file contents are opened through a read-only descriptor and the root,
+canonical path, and file identity are revalidated before and after the read.
+The MCP transport accepts at most 1 MiB per newline-delimited request and 64
+simultaneous request handlers. LSP frames are capped at 16 MiB in both
+directions, and asynchronous stdin failures reject the affected process
+generation instead of escaping as uncaught stream errors.
+
 ## Development
 
 ```bash
@@ -818,10 +829,12 @@ npm install
 npm run ci:verify
 ```
 
-`ci:verify` runs type-checking, coverage tests, build, package file
+`ci:verify` runs type-checking, ESLint, Prettier verification, coverage tests, build, package file
 verification, install/uninstall smoke tests, and a real tarball install smoke.
 GitHub Actions runs the same command on Node 22 and 24 across Ubuntu and
-Windows.
+Windows. Separate required jobs run seven pinned real TypeScript/Pyright tests
+with zero skips and native Windows `.cmd`/`.bat`, process-identity, idle-memory,
+and cold-start acceptance coverage.
 
 Release preparation is documented in [docs/RELEASE.md](./docs/RELEASE.md).
 

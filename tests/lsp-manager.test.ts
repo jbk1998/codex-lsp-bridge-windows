@@ -11,14 +11,30 @@ class DisposalSequenceProvider implements SemanticProvider {
 
   constructor(private readonly results: Array<ProcessTerminationResult | void>) {}
 
-  diagnostics(): Promise<DiagnosticReport> { return Promise.resolve({ status: "ok", timedOut: false, stale: false, items: [] }); }
-  definition(): Promise<Location> { return Promise.reject(new Error("unused")); }
-  definitionAt(): Promise<Location> { return Promise.reject(new Error("unused")); }
-  references(): Promise<Location[]> { return Promise.resolve([]); }
-  referencesAt(): Promise<Location[]> { return Promise.resolve([]); }
-  symbols(): Promise<SymbolMatch[]> { return Promise.resolve([]); }
-  hover(): Promise<HoverInfo> { return Promise.reject(new Error("unused")); }
-  hoverAt(): Promise<HoverInfo> { return Promise.reject(new Error("unused")); }
+  diagnostics(): Promise<DiagnosticReport> {
+    return Promise.resolve({ status: "ok", timedOut: false, stale: false, items: [] });
+  }
+  definition(): Promise<Location> {
+    return Promise.reject(new Error("unused"));
+  }
+  definitionAt(): Promise<Location> {
+    return Promise.reject(new Error("unused"));
+  }
+  references(): Promise<Location[]> {
+    return Promise.resolve([]);
+  }
+  referencesAt(): Promise<Location[]> {
+    return Promise.resolve([]);
+  }
+  symbols(): Promise<SymbolMatch[]> {
+    return Promise.resolve([]);
+  }
+  hover(): Promise<HoverInfo> {
+    return Promise.reject(new Error("unused"));
+  }
+  hoverAt(): Promise<HoverInfo> {
+    return Promise.reject(new Error("unused"));
+  }
   dispose(_deadline?: DisposalDeadline): Promise<ProcessTerminationResult | void> {
     const result = this.results[Math.min(this.disposeCalls, this.results.length - 1)];
     this.disposeCalls += 1;
@@ -79,6 +95,19 @@ describe("LspManager", () => {
     expect(second.disposeCalls).toBe(1);
   });
 
+  it("retries a non-clean final disposal instead of caching it forever", async () => {
+    const provider = new DisposalSequenceProvider([
+      { clean: false, reasonCode: "exit_unconfirmed" },
+      { clean: true, reasonCode: "owned_child_exit" }
+    ]);
+    const manager = new LspManager(process.cwd(), { providerFactory: () => provider });
+    manager.forLanguage("typescript");
+
+    await expect(manager.dispose()).resolves.toMatchObject({ clean: false, reasonCode: "exit_unconfirmed" });
+    await expect(manager.dispose()).resolves.toMatchObject({ clean: true, reasonCode: "owned_child_exit" });
+    expect(provider.disposeCalls).toBe(2);
+  });
+
   it("keeps managers and providers isolated by workspace root", async () => {
     const firstRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-manager-first-"));
     const secondRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-manager-second-"));
@@ -88,10 +117,7 @@ describe("LspManager", () => {
       expect(first.forLanguage("typescript")).not.toBe(second.forLanguage("typescript"));
     } finally {
       await Promise.all([first.dispose(), second.dispose()]);
-      await Promise.all([
-        fs.rm(firstRoot, { recursive: true, force: true }),
-        fs.rm(secondRoot, { recursive: true, force: true })
-      ]);
+      await Promise.all([fs.rm(firstRoot, { recursive: true, force: true }), fs.rm(secondRoot, { recursive: true, force: true })]);
     }
   });
 

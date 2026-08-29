@@ -84,18 +84,18 @@ export class LspManager {
     const providers = [...this.providers.values()];
     this.providers.clear();
     for (const provider of providers) this.retiredProviders.add(provider);
-    const suspension = Promise.allSettled(
-      providers.map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline)))
-    ).then((settled) => {
-      settled.forEach((entry, index) => {
-        if (entry.status === "fulfilled" && (!entry.value || entry.value.clean)) {
-          this.retiredProviders.delete(providers[index]);
-        }
-      });
-      const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
-      const rejectedCount = settled.filter((entry) => entry.status === "rejected").length;
-      return aggregateTerminationResults(results, rejectedCount);
-    });
+    const suspension = Promise.allSettled(providers.map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline)))).then(
+      (settled) => {
+        settled.forEach((entry, index) => {
+          if (entry.status === "fulfilled" && (!entry.value || entry.value.clean)) {
+            this.retiredProviders.delete(providers[index]);
+          }
+        });
+        const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
+        const rejectedCount = settled.filter((entry) => entry.status === "rejected").length;
+        return aggregateTerminationResults(results, rejectedCount);
+      }
+    );
     this.suspendPromise = suspension.finally(() => {
       this.suspendPromise = undefined;
     });
@@ -107,13 +107,12 @@ export class LspManager {
     this.disposed = true;
     const sharedDeadline = deadline ?? createDisposalDeadline();
     const suspension = this.suspendPromise;
-    this.disposePromise = (async () => {
+    const disposal = (async () => {
       if (suspension) await suspension;
       const providers = [...new Set([...this.providers.values(), ...this.retiredProviders])];
       this.providers.clear();
-      const settled = await Promise.allSettled(
-        providers.map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline)))
-      );
+      for (const provider of providers) this.retiredProviders.add(provider);
+      const settled = await Promise.allSettled(providers.map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline))));
       settled.forEach((entry, index) => {
         if (entry.status === "fulfilled" && (!entry.value || entry.value.clean)) {
           this.retiredProviders.delete(providers[index]);
@@ -123,6 +122,15 @@ export class LspManager {
       const rejectedCount = settled.filter((entry) => entry.status === "rejected").length;
       return aggregateTerminationResults(results, rejectedCount);
     })();
-    return this.disposePromise;
+    this.disposePromise = disposal;
+    void disposal.then(
+      (result) => {
+        if (result && !result.clean && this.disposePromise === disposal) this.disposePromise = undefined;
+      },
+      () => {
+        if (this.disposePromise === disposal) this.disposePromise = undefined;
+      }
+    );
+    return disposal;
   }
 }

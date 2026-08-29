@@ -1,4 +1,5 @@
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { constants as fsConstants, existsSync, realpathSync, statSync } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -23,6 +24,11 @@ const workspaceRootMarkers = [
   "go.work"
 ] as const;
 
+export interface WorkspaceFileIdentity {
+  dev: number;
+  ino: number;
+}
+
 export function resolveRequestedRootSync(fallbackRoot: string, params: Record<string, unknown>): string {
   if (typeof params.root === "string") return resolveExplicitWorkspaceRootSync(params.root);
 
@@ -30,8 +36,10 @@ export function resolveRequestedRootSync(fallbackRoot: string, params: Record<st
   const target = readAbsoluteWorkspaceTarget(params);
   if (!target) return resolvedFallbackRoot;
 
-  return findWorkspaceRootSync(target.startDirectory) ??
-    (isDirectorySync(target.startDirectory) ? canonicalizeWorkspaceRootSync(target.startDirectory) : resolvedFallbackRoot);
+  return (
+    findWorkspaceRootSync(target.startDirectory) ??
+    (isDirectorySync(target.startDirectory) ? canonicalizeWorkspaceRootSync(target.startDirectory) : resolvedFallbackRoot)
+  );
 }
 
 export function resolveExplicitWorkspaceRootSync(root: string): string {
@@ -84,6 +92,67 @@ export function resolvePathInsideWorkspaceRootSync(rootPath: string, targetPath:
   return canonicalTarget;
 }
 
+/**
+ * Read a workspace file through a descriptor whose target is revalidated
+ * immediately before and after the read.
+ *
+ * Path containment checks alone are vulnerable to a replacement between the
+ * check and a later path-based read. Opening the expected canonical path and
+ * comparing the descriptor identity with the still-canonical path prevents a
+ * substituted file (including a symlink/junction escape) from reaching an
+ * LSP notification.
+ */
+export async function readVerifiedWorkspaceFileUtf8(
+  rootPath: string,
+  expectedRootPath: string,
+  expectedTargetPath: string,
+  expectedTargetIdentity?: WorkspaceFileIdentity
+): Promise<string> {
+  const canonicalRootPath = normalizePathIdentity(expectedRootPath);
+  const canonicalTargetPath = normalizePathIdentity(expectedTargetPath);
+  assertCanonicalTargetInsideRoot(canonicalTargetPath, canonicalRootPath, expectedTargetPath);
+
+  const initialTargetStats = await revalidateWorkspaceFilePath(rootPath, canonicalRootPath, canonicalTargetPath);
+  if (expectedTargetIdentity && !sameFileIdentity(initialTargetStats, expectedTargetIdentity)) {
+    throw new Error(`Workspace file changed while reading: ${canonicalTargetPath}`);
+  }
+  const readFlags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+  let fileHandle: fs.FileHandle | undefined;
+
+  try {
+    try {
+      fileHandle = await fs.open(expectedTargetPath, readFlags);
+    } catch (error) {
+      // A final-component symlink can be rejected by O_NOFOLLOW before the
+      // asynchronous revalidation below gets a chance to report the boundary
+      // violation. Re-run validation to preserve the fail-closed path error.
+      await revalidateWorkspaceFilePath(rootPath, canonicalRootPath, canonicalTargetPath);
+      throw error;
+    }
+
+    await assertOpenedWorkspaceFile(
+      fileHandle,
+      rootPath,
+      canonicalRootPath,
+      canonicalTargetPath,
+      initialTargetStats,
+      expectedTargetIdentity
+    );
+    const text = await fileHandle.readFile("utf8");
+    await assertOpenedWorkspaceFile(
+      fileHandle,
+      rootPath,
+      canonicalRootPath,
+      canonicalTargetPath,
+      initialTargetStats,
+      expectedTargetIdentity
+    );
+    return text;
+  } finally {
+    await fileHandle?.close();
+  }
+}
+
 export function workspaceRootIdentitySync(rootPath: string): string {
   return normalizePathIdentity(realPathForIdentitySync(rootPath));
 }
@@ -128,9 +197,7 @@ function isDirectorySync(directory: string): boolean {
   }
 }
 
-function readAbsoluteWorkspaceTarget(
-  params: Record<string, unknown>
-): { path: string; startDirectory: string } | undefined {
+function readAbsoluteWorkspaceTarget(params: Record<string, unknown>): { path: string; startDirectory: string } | undefined {
   if (typeof params.file === "string" && path.isAbsolute(params.file)) {
     const filePath = path.resolve(params.file);
     return { path: filePath, startDirectory: path.dirname(filePath) };
@@ -153,6 +220,73 @@ function readAbsoluteWorkspaceTarget(
 function normalizePathIdentity(targetPath: string): string {
   const normalized = normalizePathForAccess(targetPath);
   return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function assertCanonicalTargetInsideRoot(canonicalTargetPath: string, canonicalRootPath: string, displayTargetPath: string): void {
+  if (!isCanonicalPathInsideRoot(canonicalTargetPath, canonicalRootPath)) {
+    throw new Error(`File is outside workspace root: ${displayTargetPath}`);
+  }
+}
+
+async function revalidateWorkspaceFilePath(
+  rootPath: string,
+  canonicalRootPath: string,
+  canonicalTargetPath: string
+): Promise<import("node:fs").Stats> {
+  const currentRootPath = normalizePathIdentity(await fs.realpath(rootPath));
+  if (currentRootPath !== canonicalRootPath) {
+    throw new Error(`Workspace root changed while reading: ${rootPath}`);
+  }
+
+  const currentTargetPath = normalizePathIdentity(await fs.realpath(canonicalTargetPath));
+  assertCanonicalTargetInsideRoot(currentTargetPath, canonicalRootPath, canonicalTargetPath);
+  if (currentTargetPath !== canonicalTargetPath) {
+    throw new Error(`Workspace file changed while reading: ${canonicalTargetPath}`);
+  }
+
+  const targetStats = await fs.stat(canonicalTargetPath);
+  if (!targetStats.isFile()) {
+    throw new Error(`Workspace target is not a file: ${canonicalTargetPath}`);
+  }
+  if (!hasStableFileIdentity(targetStats)) {
+    throw new Error(`Unable to verify workspace file identity: ${canonicalTargetPath}`);
+  }
+  return targetStats;
+}
+
+async function assertOpenedWorkspaceFile(
+  fileHandle: fs.FileHandle,
+  rootPath: string,
+  canonicalRootPath: string,
+  canonicalTargetPath: string,
+  initialTargetStats: import("node:fs").Stats,
+  expectedTargetIdentity?: WorkspaceFileIdentity
+): Promise<void> {
+  const currentTargetStats = await revalidateWorkspaceFilePath(rootPath, canonicalRootPath, canonicalTargetPath);
+  const openedTargetStats = await fileHandle.stat();
+  if (
+    !sameFileIdentity(openedTargetStats, initialTargetStats) ||
+    !sameFileIdentity(openedTargetStats, currentTargetStats) ||
+    (expectedTargetIdentity !== undefined && !sameFileIdentity(openedTargetStats, expectedTargetIdentity))
+  ) {
+    throw new Error(`Workspace file changed while reading: ${canonicalTargetPath}`);
+  }
+}
+
+function hasStableFileIdentity(stats: import("node:fs").Stats): boolean {
+  return Number.isFinite(stats.dev) && Number.isFinite(stats.ino) && stats.dev !== 0 && stats.ino !== 0;
+}
+
+function sameFileIdentity(
+  left: import("node:fs").Stats | WorkspaceFileIdentity,
+  right: import("node:fs").Stats | WorkspaceFileIdentity
+): boolean {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function isCanonicalPathInsideRoot(targetPath: string, rootPath: string): boolean {
+  const relative = path.relative(rootPath, targetPath);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
 function normalizePathForAccess(targetPath: string): string {

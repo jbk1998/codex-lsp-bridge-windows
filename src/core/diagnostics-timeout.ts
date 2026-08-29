@@ -21,7 +21,10 @@ export function readDiagnosticsTimeoutPolicy(value: unknown, fallback: Diagnosti
   return fallback;
 }
 
-export function resolveDiagnosticsTimeout(rootPath: string, policy: DiagnosticsTimeoutPolicy = defaultDiagnosticsTimeoutMs): ResolvedDiagnosticsTimeout {
+export function resolveDiagnosticsTimeout(
+  rootPath: string,
+  policy: DiagnosticsTimeoutPolicy = defaultDiagnosticsTimeoutMs
+): ResolvedDiagnosticsTimeout {
   if (policy !== "auto") {
     return {
       timeoutMs: policy,
@@ -120,7 +123,7 @@ function isSourceFile(fileName: string): boolean {
 function readJson(filePath: string): Record<string, unknown> | undefined {
   try {
     const value = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-    return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
   } catch {
     return undefined;
   }

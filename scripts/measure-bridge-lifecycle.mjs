@@ -89,7 +89,8 @@ export async function runMeasurement(options = {}) {
       const validatedLaunchRecord = await revalidateLaunchRecord(launchRecord);
       const launch = options.launcher ?? launchMaterializedBridge;
       try {
-        const diagnosticsTarget = operationClass === "diagnostics" ? selectDiagnosticTarget(fsImpl, root, language, options.diagnosticsFile) : undefined;
+        const diagnosticsTarget =
+          operationClass === "diagnostics" ? selectDiagnosticTarget(fsImpl, root, language, options.diagnosticsFile) : undefined;
         bridge = await launch(validatedLaunchRecord, {
           root,
           language,
@@ -119,7 +120,11 @@ export async function runMeasurement(options = {}) {
         const exited = (await bridge.waitForExit?.(options.timeoutMs ?? 5000)) ?? true;
         if (!exited) {
           const identityBeforeForceClose = await inspectBridge(processInspector, bridge, "force_close");
-          if (!bridgeSampleBefore?.identity || !identityBeforeForceClose || !sameIdentity(bridgeSampleBefore.identity, identityBeforeForceClose.identity)) {
+          if (
+            !bridgeSampleBefore?.identity ||
+            !identityBeforeForceClose ||
+            !sameIdentity(bridgeSampleBefore.identity, identityBeforeForceClose.identity)
+          ) {
             cleanupUncertain = true;
           } else {
             const forced = (await bridge.forceClose?.(bridgeSampleBefore.identity, processInspector)) ?? false;
@@ -341,9 +346,7 @@ export async function launchMaterializedBridge(record, context) {
       const initializationDurationMs = monotonicNow(clock) - initializationStarted;
       child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized", params: {} })}\n`);
       const requestStarted = monotonicNow(clock);
-      const toolArguments = context.operationClass === "diagnostics"
-        ? { file: context.diagnosticsTarget, root: context.root }
-        : {};
+      const toolArguments = context.operationClass === "diagnostics" ? { file: context.diagnosticsTarget, root: context.root } : {};
       const toolName = context.operationClass === "diagnostics" ? "lsp_diagnostics" : "lsp_status";
       await request(2, "tools/call", { name: toolName, arguments: toolArguments });
       return {
@@ -392,7 +395,14 @@ async function inspectBridge(inspector, bridge, phase) {
   if (!Number.isInteger(bridge?.pid) || bridge.pid <= 0) return undefined;
   try {
     const sample = await effectiveInspector.snapshot(bridge.pid, { phase });
-    if (!sample || sample.pid !== undefined && sample.pid !== bridge.pid || sample.identityObserved !== true || sample.identity === null || sample.identity === undefined) return undefined;
+    if (
+      !sample ||
+      (sample.pid !== undefined && sample.pid !== bridge.pid) ||
+      sample.identityObserved !== true ||
+      sample.identity === null ||
+      sample.identity === undefined
+    )
+      return undefined;
     if (sample.descendants && !Array.isArray(sample.descendants)) sample.descendants = [sample.descendants];
     return sample;
   } catch {
@@ -402,8 +412,14 @@ async function inspectBridge(inspector, bridge, phase) {
 
 function observableOwnedChild(sample) {
   if (!Array.isArray(sample?.descendants)) return undefined;
-  const children = sample.descendants.filter((candidate) =>
-    candidate && Number.isInteger(candidate.pid) && candidate.pid > 0 && candidate.identityObserved === true && candidate.identity !== null && candidate.identity !== undefined
+  const children = sample.descendants.filter(
+    (candidate) =>
+      candidate &&
+      Number.isInteger(candidate.pid) &&
+      candidate.pid > 0 &&
+      candidate.identityObserved === true &&
+      candidate.identity !== null &&
+      candidate.identity !== undefined
   );
   return children.length === 1 ? children[0] : undefined;
 }
@@ -441,7 +457,8 @@ function findDiagnosticCandidates(fsImpl, root, language) {
     for (const entry of entries) {
       const candidate = path.join(current.directory, entry.name);
       if (entry.isFile() && hasLanguageExtension(candidate, language)) results.push(candidate);
-      else if (entry.isDirectory() && current.depth < 3 && !ignoredDirectories.has(entry.name)) pending.push({ directory: candidate, depth: current.depth + 1 });
+      else if (entry.isDirectory() && current.depth < 3 && !ignoredDirectories.has(entry.name))
+        pending.push({ directory: candidate, depth: current.depth + 1 });
       if (results.length >= 32) break;
     }
   }
@@ -467,7 +484,12 @@ function isPathInsideRoot(root, candidate) {
 }
 
 async function inspectWindowsProcess(pid) {
-  const script = "$p = Get-Process -Id " + pid + " -ErrorAction Stop; $all = @(); try { $all = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId,ParentProcessId,CreationDate) } catch {}; $desc = @(); $frontier = @( " + pid + "); while ($frontier.Count -gt 0) { $next = @(); foreach ($item in $all) { if ($frontier -contains [int]$item.ParentProcessId) { $desc += [pscustomobject]@{ pid = [int]$item.ProcessId; identity = \"$($item.ProcessId):$($item.CreationDate)\"; identityObserved = $true }; $next += [int]$item.ProcessId } } $frontier = $next }; [pscustomobject]@{ pid = [int]$p.Id; identity = \"$($p.Id):$($p.StartTime.ToUniversalTime().Ticks)\"; identityObserved = $true; alive = $true; cpuMs = [double]$p.TotalProcessorTime.TotalMilliseconds; memoryBytes = [int64]$p.WorkingSet64; descendants = @($desc) } | ConvertTo-Json -Compress";
+  const script =
+    "$p = Get-Process -Id " +
+    pid +
+    " -ErrorAction Stop; $all = @(); try { $all = @(Get-CimInstance Win32_Process -ErrorAction Stop | Select-Object ProcessId,ParentProcessId,CreationDate) } catch {}; $desc = @(); $frontier = @( " +
+    pid +
+    '); while ($frontier.Count -gt 0) { $next = @(); foreach ($item in $all) { if ($frontier -contains [int]$item.ParentProcessId) { $desc += [pscustomobject]@{ pid = [int]$item.ProcessId; identity = "$($item.ProcessId):$($item.CreationDate)"; identityObserved = $true }; $next += [int]$item.ProcessId } } $frontier = $next }; [pscustomobject]@{ pid = [int]$p.Id; identity = "$($p.Id):$($p.StartTime.ToUniversalTime().Ticks)"; identityObserved = $true; alive = $true; cpuMs = [double]$p.TotalProcessorTime.TotalMilliseconds; memoryBytes = [int64]$p.WorkingSet64; descendants = @($desc) } | ConvertTo-Json -Compress';
   return runProcessInspector("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script]);
 }
 
@@ -528,7 +550,11 @@ function randomHex(randomBytesImpl, size) {
 }
 
 function sameIdentity(left, right) {
-  return left !== null && left !== undefined && (left === right || typeof left === "string" && left === right || typeof left === "number" && left === right);
+  return (
+    left !== null &&
+    left !== undefined &&
+    (left === right || (typeof left === "string" && left === right) || (typeof left === "number" && left === right))
+  );
 }
 
 function finiteOrNull(value) {

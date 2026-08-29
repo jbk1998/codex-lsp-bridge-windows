@@ -7,7 +7,8 @@ import {
 
 export type McpLifecycleState = "open" | "closing" | "draining" | "clean" | "non_clean";
 
-export type McpLifecycleReasonCode = ProcessOwnershipReasonCode | "active_requests_timeout" | "disposal_failed" | "disposal_timeout";
+export type McpLifecycleReasonCode =
+  ProcessOwnershipReasonCode | "active_requests_timeout" | "disposal_failed" | "disposal_timeout" | "transport_failed";
 
 export interface McpLifecycleResult {
   state: "clean" | "non_clean";
@@ -132,10 +133,7 @@ export class McpLifecycleCoordinator {
   }
 }
 
-type DisposalObservation<T> =
-  | { kind: "fulfilled"; value: T }
-  | { kind: "rejected"; error: unknown }
-  | { kind: "timeout" };
+type DisposalObservation<T> = { kind: "fulfilled"; value: T } | { kind: "rejected"; error: unknown } | { kind: "timeout" };
 
 function settleBeforeDeadline(promises: Promise<unknown>[], timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {

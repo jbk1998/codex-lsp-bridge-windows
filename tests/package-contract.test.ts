@@ -13,11 +13,16 @@ describe("package contract", () => {
     const pkg = readJson<{
       bin: Record<string, string>;
       dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
       files: string[];
       scripts: Record<string, string>;
     }>("package.json");
 
     expect(pkg.dependencies["@types/node"]).toBe("^22.15.0");
+    expect(pkg.devDependencies).toMatchObject({
+      pyright: "1.1.413",
+      "typescript-language-server": "6.0.0"
+    });
     expect(pkg.bin).toMatchObject({
       "codex-lsp-bridge": "dist/index.js",
       "codex-lsp-bridge-install": "scripts/install-codex.mjs",
@@ -48,10 +53,13 @@ describe("package contract", () => {
       ])
     );
     expect(pkg.scripts).toMatchObject({
+      lint: "eslint .",
+      "test:integration": "node scripts/run-integration-tests.mjs",
       "verify:package": "node scripts/verify-package.mjs",
       "smoke:install": "node scripts/smoke-install.mjs",
       "smoke:package": "node scripts/smoke-package.mjs",
-      "ci:verify": "npm run type-check && npm test && npm run build && npm run verify:package && npm run smoke:install && npm run smoke:package"
+      "ci:verify":
+        "npm run type-check && npm run lint && npm run format:check && npm test && npm run build && npm run verify:package && npm run smoke:install && npm run smoke:package"
     });
   });
 

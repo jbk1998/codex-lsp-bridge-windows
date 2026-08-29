@@ -4,7 +4,7 @@ import { CommandService } from "../src/core/command-service.js";
 import { createDisposalDeadline } from "../src/core/process-ownership.js";
 import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
 import { McpLifecycleCoordinator } from "../src/transport/mcp-lifecycle.js";
-import { mcpTools, runStdioMcp } from "../src/transport/mcp.js";
+import { maxMcpInputLineBytes, maxMcpPendingOutputWrites, mcpTools, runStdioMcp } from "../src/transport/mcp.js";
 
 class TestProvider implements SemanticProvider {
   diagnostics(): Promise<DiagnosticReport> {
@@ -600,5 +600,137 @@ describe("MCP stdio lifecycle", () => {
 
     await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
     expect(lifecycle.activeRequestCount).toBe(0);
+  });
+
+  it("bounds fragmented input lines, discards the oversized line, and resynchronizes", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    const chunks: Buffer[] = [];
+    output.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    const runPromise = runStdioMcp(new CommandService(new TestProvider()), {
+      input,
+      output,
+      errorOutput,
+      maxInputLineBytes: 64,
+      dispose: async () => undefined
+    });
+
+    for (const byte of `${"x".repeat(80)}\n`) input.write(byte);
+    input.write(`${JSON.stringify({ id: 44, method: "initialize" })}\n`);
+    input.end();
+
+    await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
+    const responses = Buffer.concat(chunks)
+      .toString("utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(responses).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: null, error: expect.objectContaining({ message: expect.stringContaining("exceeds") }) }),
+        expect.objectContaining({ id: 44, result: expect.objectContaining({ serverInfo: expect.any(Object) }) })
+      ])
+    );
+    expect(maxMcpInputLineBytes).toBe(1024 * 1024);
+  });
+
+  it("rejects work above the in-flight request cap without starting it", async () => {
+    const provider = new BlockingProvider();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    const chunks: Buffer[] = [];
+    output.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    const lifecycle = new McpLifecycleCoordinator({
+      createDeadline: () => createDisposalDeadline(Date.now(), 500, 10, 10),
+      dispose: async () => undefined
+    });
+    const runPromise = runStdioMcp(new CommandService(provider), {
+      input,
+      output,
+      errorOutput,
+      lifecycle,
+      maxInFlightRequests: 1
+    });
+
+    input.write(`${JSON.stringify({ id: 1, method: "tools/call", params: { name: "lsp_diagnostics", arguments: {} } })}\n`);
+    input.write(`${JSON.stringify({ id: 2, method: "initialize" })}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(lifecycle.activeRequestCount).toBe(1);
+    provider.release();
+    input.end();
+
+    await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
+    const responses = Buffer.concat(chunks)
+      .toString("utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(responses.some((response) => response.id === 2)).toBe(false);
+    expect(responses).toContainEqual(
+      expect.objectContaining({
+        id: null,
+        error: expect.objectContaining({ message: "MCP in-flight request limit of 1 exceeded" })
+      })
+    );
+  });
+
+  it("reports an input stream failure as a non-clean transport result", async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    let exitCode: number | undefined;
+    const runPromise = runStdioMcp(new CommandService(new TestProvider()), {
+      input,
+      output,
+      errorOutput,
+      setExitCode: (code) => {
+        exitCode = code;
+      },
+      dispose: async () => undefined
+    });
+
+    input.emit("error", new Error("fixture input failed"));
+
+    await expect(runPromise).resolves.toMatchObject({
+      state: "non_clean",
+      clean: false,
+      reasonCode: "transport_failed"
+    });
+    expect(exitCode).toBe(1);
+  });
+
+  it("bounds rejected-response writes and closes instead of growing an unbounded queue", async () => {
+    const provider = new BlockingProvider();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    const lifecycle = new McpLifecycleCoordinator({
+      createDeadline: () => createDisposalDeadline(Date.now(), 500, 10, 10),
+      dispose: async () => undefined
+    });
+    const runPromise = runStdioMcp(new CommandService(provider), {
+      input,
+      output,
+      errorOutput,
+      lifecycle,
+      maxInFlightRequests: 1
+    });
+
+    input.write(`${JSON.stringify({ id: 1, method: "tools/call", params: { name: "lsp_diagnostics", arguments: {} } })}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+    const rejected = Array.from({ length: maxMcpPendingOutputWrites + 2 }, (_, index) =>
+      JSON.stringify({ id: index + 2, method: "initialize" })
+    ).join("\n");
+    input.write(`${rejected}\n`);
+    await new Promise((resolve) => setImmediate(resolve));
+    provider.release();
+
+    await expect(runPromise).resolves.toMatchObject({
+      state: "non_clean",
+      clean: false,
+      reasonCode: "transport_failed"
+    });
   });
 });

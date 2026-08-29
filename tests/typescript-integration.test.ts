@@ -12,67 +12,95 @@ import { filePathToUri } from "../src/utils/uri.js";
 const hasTypeScriptLanguageServer = await commandExists("typescript-language-server");
 const hasPyrightLanguageServer = await commandExists("pyright-langserver");
 const hasBundledNodeTypeRoot = resolveNodeTypeRoots(path.join(os.tmpdir(), "codex-lsp-no-project"), process.execPath).length > 0;
+const requirePinnedIntegrations = process.env.CODEX_LSP_REQUIRE_TYPESCRIPT_PYRIGHT_INTEGRATION === "1";
+
+if (requirePinnedIntegrations) {
+  const missing = [
+    !hasTypeScriptLanguageServer ? "typescript-language-server" : undefined,
+    !hasPyrightLanguageServer ? "pyright-langserver" : undefined,
+    !hasBundledNodeTypeRoot ? "bundled @types/node root" : undefined
+  ].filter((value): value is string => value !== undefined);
+  if (missing.length > 0) {
+    throw new Error(`Required integration prerequisites are missing: ${missing.join(", ")}`);
+  }
+}
 
 describe.skipIf(!hasTypeScriptLanguageServer)("TypeScript language server integration", () => {
-  it.skipIf(!hasBundledNodeTypeRoot)("resolves Node built-ins for a standalone .mjs skill without masking JSDoc diagnostics", async () => {
-    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-skill-fixture-"));
-    const filePath = path.join(rootPath, "scripts", "probe.mjs");
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(path.join(rootPath, "SKILL.md"), "# Standalone skill\n", "utf8");
-    await fs.writeFile(
-      filePath,
-      "// @ts-check\nimport assert from 'node:assert/strict';\nimport { readFileSync } from 'node:fs';\nassert.equal(typeof readFileSync, 'function');\nconst value = 1;\nvalue.toUpperCase();\n",
-      "utf8"
-    );
+  it.skipIf(!hasBundledNodeTypeRoot)(
+    "resolves Node built-ins for a standalone .mjs skill without masking JSDoc diagnostics",
+    async () => {
+      const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-skill-fixture-"));
+      const filePath = path.join(rootPath, "scripts", "probe.mjs");
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(path.join(rootPath, "SKILL.md"), "# Standalone skill\n", "utf8");
+      await fs.writeFile(
+        filePath,
+        "// @ts-check\nimport assert from 'node:assert/strict';\nimport { readFileSync } from 'node:fs';\nassert.equal(typeof readFileSync, 'function');\nconst value = 1;\nvalue.toUpperCase();\n",
+        "utf8"
+      );
 
-    const manager = new LspManager(rootPath);
-    try {
-      const report = await manager.forFile(filePath).diagnostics(filePathToUri(filePath));
-      expect(report.status).toBe("ok");
-      expect(report.timedOut).toBe(false);
-      expect(report.stale).toBe(false);
-      expect(report.sourceRevision).toBe(1);
-      expect(report.items.some((item) => item.code === 2591)).toBe(false);
-      expect(report.items.some((item) => item.code === 2339)).toBe(true);
-    } finally {
-      await manager.dispose();
-      await fs.rm(rootPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    }
-  }, 20000);
+      const manager = new LspManager(rootPath);
+      try {
+        const report = await manager.forFile(filePath).diagnostics(filePathToUri(filePath));
+        expect(report.status).toBe("ok");
+        expect(report.timedOut).toBe(false);
+        expect(report.stale).toBe(false);
+        expect(report.sourceRevision).toBe(1);
+        expect(report.items.some((item) => item.code === 2591)).toBe(false);
+        expect(report.items.some((item) => item.code === 2339)).toBe(true);
+      } finally {
+        await manager.dispose();
+        await fs.rm(rootPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    },
+    20000
+  );
 
-  it.skipIf(!hasBundledNodeTypeRoot)("resolves Node built-ins without enabling unchecked JavaScript diagnostics", async () => {
-    const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-unchecked-js-fixture-"));
-    const filePath = path.join(rootPath, "scripts", "probe.mjs");
-    await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(path.join(rootPath, "SKILL.md"), "# Standalone skill\n", "utf8");
-    await fs.writeFile(
-      filePath,
-      "import assert from 'node:assert/strict';\nimport { readFileSync } from 'node:fs';\nconst text = readFileSync(process.cwd(), 'utf8');\nassert.equal(typeof text, 'string');\nconst uncheckedValue = 1;\nuncheckedValue.toUpperCase();\n",
-      "utf8"
-    );
+  it.skipIf(!hasBundledNodeTypeRoot)(
+    "resolves Node built-ins without enabling unchecked JavaScript diagnostics",
+    async () => {
+      const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-unchecked-js-fixture-"));
+      const filePath = path.join(rootPath, "scripts", "probe.mjs");
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(path.join(rootPath, "SKILL.md"), "# Standalone skill\n", "utf8");
+      await fs.writeFile(
+        filePath,
+        "import assert from 'node:assert/strict';\nimport { readFileSync } from 'node:fs';\nconst text = readFileSync(process.cwd(), 'utf8');\nassert.equal(typeof text, 'string');\nconst uncheckedValue = 1;\nuncheckedValue.toUpperCase();\n",
+        "utf8"
+      );
 
-    const manager = new LspManager(rootPath);
-    try {
-      const report = await manager.forFile(filePath).diagnostics(filePathToUri(filePath));
-      expect(report.status).toBe("ok");
-      expect(report.timedOut).toBe(false);
-      expect(report.stale).toBe(false);
-      expect(report.sourceRevision).toBe(1);
-      expect(report.items.some((item) => item.code === 2591 || item.code === 2307)).toBe(false);
-      expect(report.items.some((item) => item.code === 2339)).toBe(true);
-    } finally {
-      await manager.dispose();
-      await fs.rm(rootPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
-    }
-  }, 20000);
+      const manager = new LspManager(rootPath);
+      try {
+        const report = await manager.forFile(filePath).diagnostics(filePathToUri(filePath));
+        expect(report.status).toBe("ok");
+        expect(report.timedOut).toBe(false);
+        expect(report.stale).toBe(false);
+        expect(report.sourceRevision).toBe(1);
+        expect(report.items.some((item) => item.code === 2591 || item.code === 2307)).toBe(false);
+        expect(report.items.some((item) => item.code === 2339)).toBe(true);
+      } finally {
+        await manager.dispose();
+        await fs.rm(rootPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    },
+    20000
+  );
 
-  it.skipIf(!hasBundledNodeTypeRoot)("preserves explicit checkJs diagnostics for a configured jsconfig project", async () => {
-    await expectConfiguredJavaScriptProjectDiagnostics("jsconfig.json");
-  }, 20000);
+  it.skipIf(!hasBundledNodeTypeRoot)(
+    "preserves explicit checkJs diagnostics for a configured jsconfig project",
+    async () => {
+      await expectConfiguredJavaScriptProjectDiagnostics("jsconfig.json");
+    },
+    20000
+  );
 
-  it.skipIf(!hasBundledNodeTypeRoot)("preserves explicit checkJs diagnostics for a configured tsconfig project", async () => {
-    await expectConfiguredJavaScriptProjectDiagnostics("tsconfig.json");
-  }, 20000);
+  it.skipIf(!hasBundledNodeTypeRoot)(
+    "preserves explicit checkJs diagnostics for a configured tsconfig project",
+    async () => {
+      await expectConfiguredJavaScriptProjectDiagnostics("tsconfig.json");
+    },
+    20000
+  );
 
   it("round-trips diagnostics across open, change, and clean states", async () => {
     const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-ts-fixture-"));
@@ -152,11 +180,7 @@ describe.skipIf(!hasPyrightLanguageServer)("Pyright language server integration"
     const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-py-fixture-"));
     const filePath = path.join(rootPath, "src", "sample.py");
     await fs.mkdir(path.dirname(filePath), { recursive: true });
-    await fs.writeFile(
-      path.join(rootPath, "pyrightconfig.json"),
-      JSON.stringify({ typeCheckingMode: "strict", include: ["src"] }),
-      "utf8"
-    );
+    await fs.writeFile(path.join(rootPath, "pyrightconfig.json"), JSON.stringify({ typeCheckingMode: "strict", include: ["src"] }), "utf8");
     await fs.writeFile(filePath, "def double(value: int) -> int:\n    return value * 2\n\nresult: str = double(21)\n", "utf8");
 
     const config = createLanguageServerConfig("python", rootPath);

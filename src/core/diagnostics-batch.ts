@@ -40,7 +40,9 @@ export function mergeBatchDiagnosticSummaries(files: string[], summaries: Diagno
     total: items.length,
     bySeverity,
     items,
-    summary: items.slice(0, 10).map((item, index) => `${index + 1}. ${item.severity.toUpperCase()} ${item.file}:${item.line}:${item.character} ${item.message}`),
+    summary: items
+      .slice(0, 10)
+      .map((item, index) => `${index + 1}. ${item.severity.toUpperCase()} ${item.file}:${item.line}:${item.character} ${item.message}`),
     files: files.map((file, index) => summarizeFile(file, summaries[index])),
     missingServers: summarizeMissingServers(summaries)
   };

@@ -9,7 +9,11 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-lsp-install-"));
 const env = { ...process.env, CODEX_HOME: codexHome };
 
-fs.writeFileSync(path.join(codexHome, "hooks.json"), JSON.stringify({ hooks: { UserHook: [{ id: "user-owned" }] } }, null, 2) + "\n", "utf8");
+fs.writeFileSync(
+  path.join(codexHome, "hooks.json"),
+  JSON.stringify({ hooks: { UserHook: [{ id: "user-owned" }] } }, null, 2) + "\n",
+  "utf8"
+);
 fs.writeFileSync(path.join(codexHome, "AGENTS.md"), "# User-owned instructions\n", "utf8");
 
 run(["scripts/install-codex.mjs"]);
@@ -28,10 +32,7 @@ assert(
   agents.includes("for every touched or changed supported source file"),
   "install did not require diagnostics for every changed supported source file"
 );
-assert(
-  agents.includes("Pass explicit absolute `root` and `file` paths."),
-  "install did not require explicit root and file paths"
-);
+assert(agents.includes("Pass explicit absolute `root` and `file` paths."), "install did not require explicit root and file paths");
 assert(
   agents.includes('`status` is `"ok"`, `timedOut` is `false`, and `stale` is `false`'),
   "install did not define the current diagnostics trust state"
@@ -40,10 +41,7 @@ assert(
   agents.includes('`status: "timed_out"`') && agents.includes('`conclusion: "inconclusive"`'),
   "install did not preserve unresolved diagnostics states"
 );
-assert(
-  agents.includes("Report it once") && agents.includes("retry LSP only if"),
-  "install did not bound unresolved diagnostics handling"
-);
+assert(agents.includes("Report it once") && agents.includes("retry LSP only if"), "install did not bound unresolved diagnostics handling");
 assert(agents.includes("User-owned instructions"), "install did not preserve user-owned AGENTS content");
 
 const crlfConfig = config.replace(/\r\n?/g, "\n").replace(/\n/g, "\r\n");
@@ -51,7 +49,10 @@ fs.writeFileSync(path.join(codexHome, "config.toml"), crlfConfig, "utf8");
 run(["scripts/install-codex.mjs"]);
 const rewrittenConfig = read("config.toml");
 assert(rewrittenConfig.includes("\r\n"), "reinstall did not preserve CRLF config line endings");
-assert((rewrittenConfig.replace(/\r\n?/g, "\n").match(/^\[mcp_servers\.codex-lsp-bridge\]$/gm) ?? []).length === 1, "CRLF reinstall created duplicate MCP sections");
+assert(
+  (rewrittenConfig.replace(/\r\n?/g, "\n").match(/^\[mcp_servers\.codex-lsp-bridge\]$/gm) ?? []).length === 1,
+  "CRLF reinstall created duplicate MCP sections"
+);
 
 run(["scripts/uninstall-codex.mjs"]);
 
@@ -65,7 +66,10 @@ run(["scripts/install-codex.mjs", "--auto-update", "--package", `file:${packageR
 
 const autoConfig = read("config.toml");
 assert(!autoConfig.match(/command\s*=\s*"(?:node|npm|npx)"/), "auto-update install used a mutable runtime command");
-assert(autoConfig.replaceAll("\\", "/").replace(/\/+/g, "/").includes("codex-lsp-bridge/bridge-entrypoint.mjs"), "auto-update install did not materialize a local bridge entrypoint");
+assert(
+  autoConfig.replaceAll("\\", "/").replace(/\/+/g, "/").includes("codex-lsp-bridge/bridge-entrypoint.mjs"),
+  "auto-update install did not materialize a local bridge entrypoint"
+);
 assert(!read("hooks.json").includes("codex-lsp-bridge:post-tool-diagnostics"), "auto-update install enabled the managed PostToolUse hook");
 
 run(["scripts/install-codex.mjs", "--auto-update", "--package", `file:${packageRoot}`]);

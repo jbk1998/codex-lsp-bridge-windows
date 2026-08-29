@@ -21,10 +21,13 @@ export function summarizeDiagnostics(report: DiagnosticReport | Diagnostic[], li
   const diagnostics = Array.isArray(report) ? report : report.items;
   const sorted = sortDiagnostics(diagnostics);
   const configurationIssues = dedupe([
-    ...(Array.isArray(report) ? [] : report.configurationIssues ?? []),
-    ...sorted.filter(isMissingNodeTypeDiagnostic).map(() =>
-      "TypeScript could not resolve a Node built-in type; this is a language-environment/configuration issue, not a source-code diagnostic."
-    )
+    ...(Array.isArray(report) ? [] : (report.configurationIssues ?? [])),
+    ...sorted
+      .filter(isMissingNodeTypeDiagnostic)
+      .map(
+        () =>
+          "TypeScript could not resolve a Node built-in type; this is a language-environment/configuration issue, not a source-code diagnostic."
+      )
   ]);
   const bySeverity: Record<Severity, number> = {
     error: 0,

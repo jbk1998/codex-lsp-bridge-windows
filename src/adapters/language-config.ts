@@ -21,7 +21,15 @@ export interface LanguageServerOverride {
 
 const serverByLanguage: Record<
   SupportedLanguage,
-  { languageId: string; command: string; args: string[]; extensions: string[]; workspaceSeedFiles: string[]; installHint: string; supportLevel: "primary" | "experimental" }
+  {
+    languageId: string;
+    command: string;
+    args: string[];
+    extensions: string[];
+    workspaceSeedFiles: string[];
+    installHint: string;
+    supportLevel: "primary" | "experimental";
+  }
 > = {
   typescript: {
     languageId: "typescript",

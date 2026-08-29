@@ -86,11 +86,7 @@ export function runDoctor(rootPath: string): DoctorResult {
   };
 }
 
-function buildRecommendations(
-  languages: DoctorResult["languages"],
-  codex: DoctorResult["codex"],
-  build: DoctorResult["build"]
-): string[] {
+function buildRecommendations(languages: DoctorResult["languages"], codex: DoctorResult["codex"], build: DoctorResult["build"]): string[] {
   const recommendations: string[] = [];
   for (const language of languages) {
     if (language.status === "missing") {

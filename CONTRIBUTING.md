@@ -7,7 +7,12 @@ Thanks for helping improve `codex-lsp-bridge`.
 ```bash
 npm install
 npm run ci:verify
+npm run test:integration
 ```
+
+`ci:verify` includes type-check, ESLint, Prettier, coverage, build, and package
+smokes. `test:integration` requires and executes the pinned TypeScript and
+Pyright servers and fails if any of its seven tests are skipped.
 
 ## Scope
 
@@ -38,8 +43,8 @@ Keep the bridge runtime and the language-server launcher separate:
 The repository-local harness is `scripts/measure-bridge-lifecycle.mjs`. It is
 not a package bin, MCP surface, hook, or resident service. Run its tests with
 `npm run test:run -- tests/measurement.test.ts`; native Windows process,
-resource, identity, and simultaneous-control evidence remains a maintainer
-acceptance step.
+resource, identity, and simultaneous-control evidence is automated by
+`node scripts/windows-acceptance.mjs` on a native Windows runner.
 
 See [docs/PROCESS-AND-LIFECYCLE.md](./docs/PROCESS-AND-LIFECYCLE.md) for the
 full acceptance contract.

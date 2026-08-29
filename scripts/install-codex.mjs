@@ -5,11 +5,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import {
-  createNativeNodeLaunchRecord,
-  revalidateNativeNodeRuntime,
-  validateNativeNodeRuntime
-} from "../dist/core/native-node-runtime.js";
+import { createNativeNodeLaunchRecord, revalidateNativeNodeRuntime, validateNativeNodeRuntime } from "../dist/core/native-node-runtime.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
@@ -122,7 +118,9 @@ function installRustAnalyzer() {
   }
 
   if (!commandExists("rustup")) {
-    throw new Error("Cannot install rust-analyzer because rustup is not available. Install Rust from https://rustup.rs/ or rerun without --with-rust-analyzer.");
+    throw new Error(
+      "Cannot install rust-analyzer because rustup is not available. Install Rust from https://rustup.rs/ or rerun without --with-rust-analyzer."
+    );
   }
 
   const result = spawnSync("rustup", ["component", "add", "rust-analyzer"], { stdio: "inherit" });
@@ -144,12 +142,16 @@ function stagePackageUpdate(spec) {
     stagingRootIdentity = captureFileIdentity(stagingRoot);
     stagingMarkerIdentity = captureFileIdentity(ownershipMarkerPath);
     const npmCommand = resolveNpmCommand();
-    const result = spawnSync(npmCommand.command, [...npmCommand.args, "install", "--no-save", "--no-package-lock", "--ignore-scripts", "--prefix", stagingRoot, spec], {
-      cwd: packageRoot,
-      env: { ...process.env, npm_config_update_notifier: "false" },
-      encoding: "utf8",
-      windowsVerbatimArguments: npmCommand.windowsVerbatimArguments
-    });
+    const result = spawnSync(
+      npmCommand.command,
+      [...npmCommand.args, "install", "--no-save", "--no-package-lock", "--ignore-scripts", "--prefix", stagingRoot, spec],
+      {
+        cwd: packageRoot,
+        env: { ...process.env, npm_config_update_notifier: "false" },
+        encoding: "utf8",
+        windowsVerbatimArguments: npmCommand.windowsVerbatimArguments
+      }
+    );
     if (result.status !== 0) {
       throw new Error("explicit package update failed");
     }
@@ -171,7 +173,13 @@ function stagePackageUpdate(spec) {
       active: false
     };
   } catch (error) {
-    const cleanupComplete = removeOwnedPackageTree({ stagingRoot, ownershipMarkerPath, ownershipMarkerContent, stagingRootIdentity, stagingMarkerIdentity });
+    const cleanupComplete = removeOwnedPackageTree({
+      stagingRoot,
+      ownershipMarkerPath,
+      ownershipMarkerContent,
+      stagingRootIdentity,
+      stagingMarkerIdentity
+    });
     if (!cleanupComplete) {
       throw new InstallTransactionError(error instanceof Error ? error.message : "explicit package update failed", "rollback_partial");
     }
@@ -228,7 +236,15 @@ function commitStagedUpdate(plan) {
     console.warn(`[codex-lsp-bridge] preserved unproven package backup: ${plan.backupRoot}`);
     return;
   }
-  if (!removeOwnedPackageTree({ root: plan.backupRoot, rootIdentity: plan.backupRootIdentity, markerPath: plan.backupMarkerPath, markerIdentity: plan.backupMarkerIdentity, markerContent: plan.backupMarkerContent })) {
+  if (
+    !removeOwnedPackageTree({
+      root: plan.backupRoot,
+      rootIdentity: plan.backupRootIdentity,
+      markerPath: plan.backupMarkerPath,
+      markerIdentity: plan.backupMarkerIdentity,
+      markerContent: plan.backupMarkerContent
+    })
+  ) {
     console.warn(`[codex-lsp-bridge] preserved unproven package backup: ${plan.backupRoot}`);
   }
 }
@@ -238,16 +254,28 @@ function rollbackStagedUpdate(plan) {
   let rollbackComplete = true;
   try {
     if (plan.active) {
-      if (!isInstallerOwnedPackageTree(plan, plan.finalRoot, plan.activeRootIdentity, plan.activeMarkerIdentity, plan.ownershipMarkerContent)) {
+      if (
+        !isInstallerOwnedPackageTree(plan, plan.finalRoot, plan.activeRootIdentity, plan.activeMarkerIdentity, plan.ownershipMarkerContent)
+      ) {
         rollbackComplete = false;
       } else {
-        const activeRemoved = removeOwnedPackageTree({ root: plan.finalRoot, rootIdentity: plan.activeRootIdentity, markerPath: plan.activeMarkerPath, markerIdentity: plan.activeMarkerIdentity, markerContent: plan.ownershipMarkerContent });
+        const activeRemoved = removeOwnedPackageTree({
+          root: plan.finalRoot,
+          rootIdentity: plan.activeRootIdentity,
+          markerPath: plan.activeMarkerPath,
+          markerIdentity: plan.activeMarkerIdentity,
+          markerContent: plan.ownershipMarkerContent
+        });
         if (!activeRemoved) {
           rollbackComplete = false;
         } else {
           plan.active = false;
           if (pathExists(plan.backupRoot)) {
-            if (!plan.backupRootIdentity || !sameFileIdentity(captureFileIdentity(plan.backupRoot), plan.backupRootIdentity) || pathExists(plan.finalRoot)) {
+            if (
+              !plan.backupRootIdentity ||
+              !sameFileIdentity(captureFileIdentity(plan.backupRoot), plan.backupRootIdentity) ||
+              pathExists(plan.finalRoot)
+            ) {
               rollbackComplete = false;
             } else {
               assertSafePathAncestry(plan.backupRoot);
@@ -305,7 +333,10 @@ function writeManagedFilesAtomically(files) {
       }
     }
     if (journal.some((entry) => entry.attempted && !entry.writtenIdentity)) rollbackComplete = false;
-    throw new InstallTransactionError(error instanceof Error ? error.message : "managed file write failed", rollbackComplete ? "rollback_complete" : "rollback_partial");
+    throw new InstallTransactionError(
+      error instanceof Error ? error.message : "managed file write failed",
+      rollbackComplete ? "rollback_complete" : "rollback_partial"
+    );
   }
 }
 
@@ -314,7 +345,10 @@ function writeFileAtomically(filePath, content) {
   assertSafePathAncestry(filePath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   assertSafePathAncestry(filePath);
-  const temporaryPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`);
+  const temporaryPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`
+  );
   fs.writeFileSync(temporaryPath, bytes, { flag: "wx" });
   try {
     assertSafePathAncestry(filePath);
@@ -353,9 +387,11 @@ function assertSafePathAncestry(filePath) {
       throw error;
     }
     const trustedPlatformAlias = isTrustedPlatformAlias(candidate);
-    if (candidate !== absolutePath && !stats.isDirectory() && !trustedPlatformAlias) throw new Error(`managed path ancestor is not a directory: ${candidate}`);
+    if (candidate !== absolutePath && !stats.isDirectory() && !trustedPlatformAlias)
+      throw new Error(`managed path ancestor is not a directory: ${candidate}`);
     // On Windows Node reports directory junctions and symbolic links as symbolic links from lstat.
-    if (stats.isSymbolicLink() && !trustedPlatformAlias) throw new Error(`managed path ancestor is a symlink or reparse escape: ${candidate}`);
+    if (stats.isSymbolicLink() && !trustedPlatformAlias)
+      throw new Error(`managed path ancestor is a symlink or reparse escape: ${candidate}`);
   }
 }
 
@@ -391,7 +427,14 @@ function captureFileIdentity(filePath) {
 
 function sameFileIdentity(left, right) {
   if (!left || !right || left.isDirectory !== right.isDirectory || left.isSymbolicLink !== right.isSymbolicLink) return false;
-  if (left.dev !== undefined && right.dev !== undefined && left.ino !== undefined && right.ino !== undefined && left.ino !== 0 && right.ino !== 0) {
+  if (
+    left.dev !== undefined &&
+    right.dev !== undefined &&
+    left.ino !== undefined &&
+    right.ino !== undefined &&
+    left.ino !== 0 &&
+    right.ino !== 0
+  ) {
     return left.dev === right.dev && left.ino === right.ino;
   }
   return left.birthtimeMs === right.birthtimeMs && left.size === right.size;
@@ -406,7 +449,10 @@ function snapshotManagedFile(filePath) {
 
 function assertManagedSnapshotCurrent(entry) {
   const current = snapshotManagedFile(entry.filePath);
-  if (current.exists !== entry.preWrite.exists || (current.exists && (!sameFileIdentity(current.identity, entry.preWrite.identity) || !current.content.equals(entry.preWrite.content)))) {
+  if (
+    current.exists !== entry.preWrite.exists ||
+    (current.exists && (!sameFileIdentity(current.identity, entry.preWrite.identity) || !current.content.equals(entry.preWrite.content)))
+  ) {
     throw new Error(`managed target changed before write: ${entry.filePath}`);
   }
 }
@@ -428,15 +474,24 @@ function moveNewFileWindows(sourcePath, targetPath) {
 function runWindowsFilePrimitive(operation, sourcePath, targetPath, backupPath) {
   const powershell = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
   if (!fs.existsSync(powershell)) throw new Error("Windows atomic file primitive is unavailable; refusing unsafe replacement");
-  const command = "$ErrorActionPreference='Stop'; $source=$env:CODEX_LSP_INSTALL_SOURCE; $target=$env:CODEX_LSP_INSTALL_TARGET; $backup=$env:CODEX_LSP_INSTALL_BACKUP; if ($env:CODEX_LSP_INSTALL_OPERATION -eq 'replace') { [System.IO.File]::Replace($source, $target, $backup) } else { [System.IO.File]::Move($source, $target) }";
+  const command =
+    "$ErrorActionPreference='Stop'; $source=$env:CODEX_LSP_INSTALL_SOURCE; $target=$env:CODEX_LSP_INSTALL_TARGET; $backup=$env:CODEX_LSP_INSTALL_BACKUP; if ($env:CODEX_LSP_INSTALL_OPERATION -eq 'replace') { [System.IO.File]::Replace($source, $target, $backup) } else { [System.IO.File]::Move($source, $target) }";
   const result = spawnSync(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command], {
-    env: { ...process.env, CODEX_LSP_INSTALL_SOURCE: sourcePath, CODEX_LSP_INSTALL_TARGET: targetPath, CODEX_LSP_INSTALL_BACKUP: backupPath ?? "", CODEX_LSP_INSTALL_OPERATION: operation },
+    env: {
+      ...process.env,
+      CODEX_LSP_INSTALL_SOURCE: sourcePath,
+      CODEX_LSP_INSTALL_TARGET: targetPath,
+      CODEX_LSP_INSTALL_BACKUP: backupPath ?? "",
+      CODEX_LSP_INSTALL_OPERATION: operation
+    },
     encoding: "utf8",
     timeout: 10000,
     windowsHide: true
   });
   if (result.error || result.status !== 0) {
-    throw new Error(`Windows ${operation} primitive failed: ${result.error?.message ?? (result.stderr || `status ${result.status ?? "unknown"}`).trim()}`);
+    throw new Error(
+      `Windows ${operation} primitive failed: ${result.error?.message ?? (result.stderr || `status ${result.status ?? "unknown"}`).trim()}`
+    );
   }
 }
 
@@ -455,13 +510,30 @@ function isInstallerOwnedPackageTree(plan, root, expectedRootIdentity, expectedM
   }
 }
 
-function assertOwnedPackageTree(plan, root, expectedRootIdentity, expectedMarkerIdentity, expectedMarkerContent = plan.ownershipMarkerContent) {
+function assertOwnedPackageTree(
+  plan,
+  root,
+  expectedRootIdentity,
+  expectedMarkerIdentity,
+  expectedMarkerContent = plan.ownershipMarkerContent
+) {
   if (!isInstallerOwnedPackageTree(plan, root, expectedRootIdentity, expectedMarkerIdentity, expectedMarkerContent)) {
     throw new Error(`installer-owned package tree proof failed: ${root}`);
   }
 }
 
-function removeOwnedPackageTree({ root, rootIdentity, markerPath, markerIdentity, markerContent, stagingRoot, ownershipMarkerPath, ownershipMarkerContent, stagingRootIdentity, stagingMarkerIdentity }) {
+function removeOwnedPackageTree({
+  root,
+  rootIdentity,
+  markerPath,
+  markerIdentity,
+  markerContent,
+  stagingRoot,
+  ownershipMarkerPath,
+  ownershipMarkerContent,
+  stagingRootIdentity,
+  stagingMarkerIdentity
+}) {
   const actualRoot = root ?? stagingRoot;
   const actualMarkerPath = markerPath ?? ownershipMarkerPath;
   const actualMarkerContent = markerContent ?? ownershipMarkerContent;
@@ -528,8 +600,8 @@ function upsertAgentInstructions(content) {
     "",
     "- After substantial edits or during code review, audit, or investigation, call `lsp_diagnostics` for every touched or changed supported source file before broader verification or final findings. Pass explicit absolute `root` and `file` paths.",
     "- Before renames, moves, signature changes, import rewrites, or multi-file semantic refactors, call `lsp_definition` and `lsp_references` at the relevant file position. Pass explicit absolute `root` and `file` paths.",
-    "- Trust diagnostics as current only when `status` is `\"ok\"`, `timedOut` is `false`, and `stale` is `false`.",
-    "- Treat `status: \"timed_out\"`, `stale: true`, `status: \"unavailable\"`, `conclusion: \"inconclusive\"`, a missing language server, or unresolved `configurationIssues` as inconclusive LSP evidence, not a reason to stop. Report it once, continue with the narrowest repo-native verification command, and retry LSP only if the target, root, configuration, or language-server state changes. Do not call the LSP result clean.",
+    '- Trust diagnostics as current only when `status` is `"ok"`, `timedOut` is `false`, and `stale` is `false`.',
+    '- Treat `status: "timed_out"`, `stale: true`, `status: "unavailable"`, `conclusion: "inconclusive"`, a missing language server, or unresolved `configurationIssues` as inconclusive LSP evidence, not a reason to stop. Report it once, continue with the narrowest repo-native verification command, and retry LSP only if the target, root, configuration, or language-server state changes. Do not call the LSP result clean.',
     "",
     "<!-- END codex-lsp-bridge -->"
   ].join("\n");

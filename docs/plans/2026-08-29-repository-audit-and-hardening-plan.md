@@ -109,10 +109,9 @@ Status: the package now requires Node 22+, and CI verifies Node 22 and 24 on
 Ubuntu and Windows with read-only contents permission and no persisted checkout
 credential.
 
-### P2: Remaining robustness work
+### P2: Follow-up robustness work
 
-These items are intentionally deferred so the lifecycle/security fix remains
-reviewable:
+The follow-up pass completed every source-controlled robustness item:
 
 1. Define whether idle timeout is a connection-startup policy or can change when
    an MCP request selects another workspace root; then align config docs and add
@@ -141,6 +140,35 @@ reviewable:
    for it; otherwise remove unused OIDC permission and document token rotation.
 11. Enable a `main` ruleset requiring the CI job and pull-request review. This is
    a repository setting, not a source-tree change.
+
+Status:
+
+1. The idle timeout is now explicitly a connection-startup policy, with
+   multi-root tests and matching documentation.
+2. MCP input, output, request concurrency, directory traversal, and outgoing
+   LSP payloads are bounded and regression-tested.
+3. LSP process generations now contain asynchronous stdin failures and ignore
+   stale stdout/stderr events.
+4. Workspace files are read through validated descriptors with before/after
+   identity checks and no-follow semantics where the platform supports them.
+5. A unit-tested manager registry now owns root replacement and retired-manager
+   cleanup; non-clean disposal remains reachable for a real retry.
+6. Malformed global or workspace configuration now fails closed with the exact
+   path and actionable field or JSON diagnostics.
+7. ESLint, Prettier, and focused high-risk coverage thresholds are enforced by
+   `ci:verify`.
+8. CI installs pinned TypeScript and Pyright servers and requires seven real
+   integration tests with zero skips.
+9. A native Windows acceptance job covers `.cmd`/`.bat` ownership,
+   direct-process identity, idle memory reduction, and cold restart.
+10. The release workflow uses tokenless npm trusted publishing and fails closed
+    without a token fallback. The npm package owner must bind the documented
+    repository/workflow identity in npm before publishing.
+11. The required `main` ruleset is specified in
+    [`docs/REPOSITORY-SETTINGS.md`](../REPOSITORY-SETTINGS.md). The available
+    GitHub integration can inspect but cannot mutate branch protection or
+    rulesets, so applying this repository-admin setting remains an external
+    control-plane action.
 
 ## Execution Phases
 
@@ -177,9 +205,16 @@ Gate: local full verification passes and GitHub CI is green.
 
 ### Phase 4: Follow-up hardening
 
-Implement the P2 list in small pull requests, starting with bounded transport
-payloads, asynchronous stdin failure containment, and TOCTOU-safe reads. Require
-native Windows evidence before making quantitative resource-reduction claims.
+- Implement all source-controlled P2 work.
+- Require real TypeScript/Pyright integrations instead of silently skipped
+  external-server tests.
+- Require native Windows acceptance evidence before making quantitative
+  resource-reduction claims.
+- Prepare tokenless trusted publishing and document its registry-side binding.
+- Specify the repository-admin ruleset that must protect `main`.
+
+Gate: local verification, real integration tests, and the pull request's Linux
+and Windows CI jobs pass.
 
 ## Completion Checklist
 
@@ -188,7 +223,18 @@ native Windows evidence before making quantitative resource-reduction claims.
 - [x] P0 lifecycle and executable-trust fixes implemented.
 - [x] P1 validation, metadata, `.cjs`, doctor, docs, and CI fixes implemented.
 - [x] Targeted regression tests pass.
-- [x] Full `npm run ci:verify` passes after final edits (185 passed, 8 external-server tests skipped).
+- [x] Full `npm run ci:verify` passes after final edits (209 passed, 4
+      platform/toolchain skips on Linux).
+- [x] Explicit TypeScript/Pyright integration verification passes (7 passed,
+      zero skipped, failed, or todo).
+- [x] Coverage passes globally (83.83% statements, 75.63% branches, 90.67%
+      functions, 87.57% lines) and for each focused high-risk module.
+- [x] `npm audit --audit-level=low` reports zero vulnerabilities.
 - [x] Working tree diff is clean of unintended generated changes.
 - [x] Dedicated branch is pushed and pull request opened as #9.
 - [x] GitHub CI passes on Node 22 and 24 across Ubuntu and Windows.
+- [x] All source-controlled P2 hardening is implemented and locally verified.
+- [ ] Native Windows acceptance and pinned integration jobs pass on the final
+      pull-request head.
+- [ ] A repository administrator applies the documented `main` ruleset.
+- [ ] The npm package owner configures the documented trusted-publisher binding.

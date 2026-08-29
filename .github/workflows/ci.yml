@@ -26,3 +26,31 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run ci:verify
+
+  integration:
+    name: integration (typescript + pyright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run test:integration
+
+  windows-acceptance:
+    name: windows acceptance
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node scripts/windows-acceptance.mjs

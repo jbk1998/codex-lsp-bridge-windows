@@ -29,10 +29,21 @@ try {
   const help = run(binPath, ["doctor", "--root", packageRoot], tempRoot);
   assert(help.stdout.includes('"distExists": true'), "installed package doctor did not report distExists true");
 
-  const installBin = path.join(tempRoot, "node_modules", ".bin", process.platform === "win32" ? "codex-lsp-bridge-install.cmd" : "codex-lsp-bridge-install");
+  const installBin = path.join(
+    tempRoot,
+    "node_modules",
+    ".bin",
+    process.platform === "win32" ? "codex-lsp-bridge-install.cmd" : "codex-lsp-bridge-install"
+  );
   const installedPackageRoot = path.join(tempRoot, "node_modules", "codex-lsp-bridge");
-  assert(fs.existsSync(path.join(tempRoot, "node_modules", "@types", "node", "package.json")), "production package install did not include @types/node");
-  assert(!fs.existsSync(path.join(installedPackageRoot, "scripts", "measure-bridge-lifecycle.mjs")), "installed package shipped the repository-local measurement harness");
+  assert(
+    fs.existsSync(path.join(tempRoot, "node_modules", "@types", "node", "package.json")),
+    "production package install did not include @types/node"
+  );
+  assert(
+    !fs.existsSync(path.join(installedPackageRoot, "scripts", "measure-bridge-lifecycle.mjs")),
+    "installed package shipped the repository-local measurement harness"
+  );
   isolatedTargetRoot = fs.mkdtempSync(path.join(os.tmpdir(), "codex-lsp-installed-target-"));
   run(
     process.execPath,

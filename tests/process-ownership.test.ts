@@ -1,10 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import {
-  createProcessOwnership,
-  buildWindowsProcessIdentityCommand,
-  type ProcessIdentityProvider
-} from "../src/core/process-ownership.js";
+import { createProcessOwnership, buildWindowsProcessIdentityCommand, type ProcessIdentityProvider } from "../src/core/process-ownership.js";
 
 class FakeChild extends EventEmitter {
   pid = 1234;

@@ -9,6 +9,7 @@ import {
   JsonRpcLspClient,
   maxLspContentBytes,
   maxLspHeaderBytes,
+  maxLspOutgoingPayloadBytes,
   prepareSpawnCommand
 } from "../src/core/json-rpc-lsp-client.js";
 import { createDisposalDeadline, type ProcessIdentityProvider } from "../src/core/process-ownership.js";
@@ -160,10 +161,7 @@ describe("JsonRpcLspClient", () => {
     const second = client.request<{ value: number }>("second");
 
     child.stdout.write(
-      Buffer.concat([
-        lspFrame({ jsonrpc: "2.0", id: 1, result: { value: 1 } }),
-        lspFrame({ jsonrpc: "2.0", id: 2, result: { value: 2 } })
-      ])
+      Buffer.concat([lspFrame({ jsonrpc: "2.0", id: 1, result: { value: 1 } }), lspFrame({ jsonrpc: "2.0", id: 2, result: { value: 2 } })])
     );
 
     await expect(first).resolves.toEqual({ value: 1 });
@@ -186,7 +184,7 @@ describe("JsonRpcLspClient", () => {
       "/d",
       "/s",
       "/c",
-      "\"\"C:\\Program Files\\nodejs\\typescript-language-server.cmd\" \"--stdio\" \"--log-level\" \"info\"\""
+      '""C:\\Program Files\\nodejs\\typescript-language-server.cmd" "--stdio" "--log-level" "info""'
     ]);
     expect(prepared.windowsVerbatimArguments).toBe(true);
   });
@@ -354,6 +352,74 @@ describe("JsonRpcLspClient", () => {
     await expect(client.request("initialize")).rejects.toThrow("pipe closed");
     expect(internal.pending.size).toBe(0);
     child.stdin.write = write;
+    await client.stop(createDisposalDeadline(Date.now(), 100, 5, 20));
+  });
+
+  it("rejects pending work when stdin emits an asynchronous EPIPE", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+    const request = client.request("initialize");
+
+    child.stdin.emit("error", Object.assign(new Error("broken pipe"), { code: "EPIPE" }));
+
+    await expect(request).rejects.toThrow('Failed to write to LSP server "server": broken pipe');
+    await flushAsyncWork();
+    expect(child.killCalls).toBe(1);
+  });
+
+  it("ignores a stale stdin error from an earlier process generation", async () => {
+    const firstChild = new FakeChild();
+    const secondChild = new FakeChild();
+    const children = [firstChild, secondChild];
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => children.shift()!) as never, processIdentityProvider: identityProvider() }
+    );
+
+    client.start();
+    firstChild.emit("exit", 0, null);
+    const request = client.request<{ ready: boolean }>("initialize");
+    firstChild.stdin.emit("error", Object.assign(new Error("stale EPIPE"), { code: "EPIPE" }));
+    secondChild.stdout.write(lspFrame({ jsonrpc: "2.0", id: 1, result: { ready: true } }));
+
+    await expect(request).resolves.toEqual({ ready: true });
+    expect(secondChild.killCalls).toBe(0);
+    await client.stop(createDisposalDeadline(Date.now(), 100, 5, 20));
+  });
+
+  it("ignores stale stdout frames from an earlier process generation", async () => {
+    const firstChild = new FakeChild();
+    const secondChild = new FakeChild();
+    const children = [firstChild, secondChild];
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => children.shift()!) as never, processIdentityProvider: identityProvider() }
+    );
+
+    client.start();
+    firstChild.emit("exit", 0, null);
+    const request = client.request<{ source: string }>("initialize");
+    firstChild.stdout.write(lspFrame({ jsonrpc: "2.0", id: 1, result: { source: "stale" } }));
+    secondChild.stdout.write(lspFrame({ jsonrpc: "2.0", id: 1, result: { source: "current" } }));
+
+    await expect(request).resolves.toEqual({ source: "current" });
+    await client.stop(createDisposalDeadline(Date.now(), 100, 5, 20));
+  });
+
+  it("rejects an outgoing LSP payload above the configured hard cap", async () => {
+    const child = new FakeChild();
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+
+    expect(() => client.notify("fixture/oversized", { value: "x".repeat(maxLspOutgoingPayloadBytes) })).toThrow(
+      `LSP outgoing payload exceeded ${maxLspOutgoingPayloadBytes} bytes`
+    );
+    expect(child.stdin.readableLength).toBe(0);
     await client.stop(createDisposalDeadline(Date.now(), 100, 5, 20));
   });
 });

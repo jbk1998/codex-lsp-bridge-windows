@@ -197,10 +197,7 @@ async function terminateChild(
   return { clean: true, reasonCode: "owned_child_exit" };
 }
 
-function captureLaunchIdentity(
-  child: OwnedChildProcess,
-  identityProvider: ProcessIdentityProvider
-): ProcessIdentity | undefined {
+function captureLaunchIdentity(child: OwnedChildProcess, identityProvider: ProcessIdentityProvider): ProcessIdentity | undefined {
   if (typeof child.pid !== "number" || child.pid <= 0) return undefined;
   try {
     return identityProvider.read(child.pid);
@@ -234,17 +231,17 @@ function readLinuxProcessIdentity(pid: number): ProcessIdentity | undefined {
   const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
   const commandEnd = stat.lastIndexOf(")");
   if (commandEnd === -1) return undefined;
-  const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+  const fields = stat
+    .slice(commandEnd + 1)
+    .trim()
+    .split(/\s+/);
   // The suffix starts at field 3 (state), so field 22 (starttime) is index 19.
   const startTime = fields[19];
   return startTime ? { pid, creationToken: `linux:${startTime}` } : undefined;
 }
 
 export function buildWindowsProcessIdentityCommand(pid: number): string {
-  return [
-    `$target = Get-Process -Id ${String(pid)} -ErrorAction Stop`,
-    "$target.StartTime.ToUniversalTime().Ticks"
-  ].join("; ");
+  return [`$target = Get-Process -Id ${String(pid)} -ErrorAction Stop`, "$target.StartTime.ToUniversalTime().Ticks"].join("; ");
 }
 
 function readWindowsProcessIdentity(pid: number): ProcessIdentity | undefined {
@@ -283,7 +280,10 @@ function readLinuxProcessDescendants(rootPid: number): number[] | undefined {
       const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
       const commandEnd = stat.lastIndexOf(")");
       if (commandEnd === -1) continue;
-      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+      const fields = stat
+        .slice(commandEnd + 1)
+        .trim()
+        .split(/\s+/);
       const parentPid = Number(fields[1]);
       if (Number.isSafeInteger(parentPid) && parentPid > 0) parentByPid.set(pid, parentPid);
     } catch {
@@ -325,7 +325,7 @@ function readWindowsProcessDescendants(rootPid: number): number[] | undefined {
 }
 
 function isExited(child: OwnedChildProcess): boolean {
-  return child.exitCode !== null || child.signalCode !== undefined && child.signalCode !== null;
+  return child.exitCode !== null || (child.signalCode !== undefined && child.signalCode !== null);
 }
 
 function waitForExit(child: OwnedChildProcess, deadlineAt: number): Promise<boolean> {

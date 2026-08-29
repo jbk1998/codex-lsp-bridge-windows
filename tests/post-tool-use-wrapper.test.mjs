@@ -10,7 +10,7 @@ describe("active PostToolUse wrapper characterization", () => {
     const hooks = JSON.parse(fs.readFileSync(path.join(packageRoot, "hooks", "hooks.json"), "utf8"));
 
     expect(wrapper).toContain("for (const file of files)");
-    expect(wrapper).toContain("spawnBridge([bridgeCli, \"diagnostics\", \"--file\", file");
+    expect(wrapper).toContain('spawnBridge([bridgeCli, "diagnostics", "--file", file');
     expect(wrapper).not.toContain("tryIpcDiagnostics");
     expect(hooks).toEqual({ hooks: {} });
   });

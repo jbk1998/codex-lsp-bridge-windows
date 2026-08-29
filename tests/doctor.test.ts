@@ -89,12 +89,9 @@ describe("doctor", () => {
     try {
       fs.writeFileSync(
         path.join(codexHome, "config.toml"),
-        [
-          "[mcp_servers.codex-lsp-bridge]",
-          `command = ${JSON.stringify(process.execPath)}`,
-          'args = ["dist/index.js", "mcp"]',
-          ""
-        ].join("\r\n")
+        ["[mcp_servers.codex-lsp-bridge]", `command = ${JSON.stringify(process.execPath)}`, 'args = ["dist/index.js", "mcp"]', ""].join(
+          "\r\n"
+        )
       );
       fs.writeFileSync(
         path.join(codexHome, "hooks.json"),
@@ -128,12 +125,7 @@ describe("doctor", () => {
     try {
       fs.writeFileSync(
         path.join(codexHome, "config.toml"),
-        [
-          "[mcp_servers.codex-lsp-bridge]",
-          `command = '${process.execPath}'`,
-          "args = ['dist/index.js', 'mcp']",
-          ""
-        ].join("\r\n")
+        ["[mcp_servers.codex-lsp-bridge]", `command = '${process.execPath}'`, "args = ['dist/index.js', 'mcp']", ""].join("\r\n")
       );
 
       expect(runDoctor(process.cwd()).codex.explicitMcpReady).toBe(true);

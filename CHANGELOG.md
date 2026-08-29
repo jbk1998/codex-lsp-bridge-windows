@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Bound MCP request lines to 1 MiB and active handlers to 64, cap outgoing LSP
+  payloads at 16 MiB, and contain asynchronous stdin failures by process
+  generation.
+- Read document content through a verified descriptor with root, canonical-path,
+  and file-identity checks before and after the read to close path-substitution
+  races.
+- Move root replacement into a tested manager registry that removes cleanly
+  retired managers and retains non-clean cleanup evidence for bounded retry.
+- Make malformed global and workspace config fail closed with path- and
+  field-specific diagnostics, and define idle timeout as a startup-root policy
+  for each MCP connection.
+- Enforce ESLint, Prettier, global coverage, and focused coverage floors; run
+  pinned TypeScript/Pyright integration tests with zero skips and deterministic
+  native Windows acceptance tests in dedicated CI jobs.
+- Replace long-lived npm publish tokens with OIDC trusted publishing using a
+  pinned compatible npm CLI and an explicit registry-binding checklist.
 - Keep non-cleanly suspended providers under manager ownership, permit later
   bounded cleanup attempts, and prevent EOF from scheduling or waiting
   indefinitely on idle suspension. Preserve suspension failures and pending
