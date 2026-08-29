@@ -190,5 +190,5 @@ native Windows evidence before making quantitative resource-reduction claims.
 - [x] Targeted regression tests pass.
 - [x] Full `npm run ci:verify` passes after final edits (185 passed, 8 external-server tests skipped).
 - [x] Working tree diff is clean of unintended generated changes.
-- [ ] Dedicated branch is pushed and pull request opened.
-- [ ] GitHub CI passes on the pull request.
+- [x] Dedicated branch is pushed and pull request opened as #9.
+- [x] GitHub CI passes on Node 22 and 24 across Ubuntu and Windows.
