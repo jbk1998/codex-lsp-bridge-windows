@@ -7,7 +7,7 @@ import type { SupportedLanguage } from "../adapters/language-config.js";
 export interface LspClientConfig {
   defaultLanguage: SupportedLanguage;
   diagnosticsTimeoutMs: DiagnosticsTimeoutPolicy;
-  /** Close an idle MCP stdio connection after this many milliseconds; zero disables it. */
+  /** Suspend idle LSP resources after this many milliseconds; zero disables it. */
   mcpIdleTimeoutMs?: number;
   hook: {
     maxFiles: number;
@@ -30,7 +30,19 @@ export function loadConfig(rootPath: string): LspClientConfig {
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const globalConfig = readConfig(path.join(codexHome, "lsp-client.json"));
   const localConfig = readConfig(path.join(rootPath, ".codex", "lsp-client.json"));
-  return mergeConfig(defaults, globalConfig, localConfig);
+  return mergeConfig(defaults, globalConfig, omitWorkspaceExecutableOverrides(localConfig));
+}
+
+/**
+ * Workspace files are repository-controlled input. Let them tune bridge
+ * behavior, but never let a checkout choose which executable and arguments the
+ * bridge launches. Language-server process overrides are trusted global config
+ * only.
+ */
+function omitWorkspaceExecutableOverrides(config: Partial<LspClientConfig>): Partial<LspClientConfig> {
+  if (config.languageServers === undefined) return config;
+  const { languageServers: _ignored, ...safeConfig } = config;
+  return safeConfig;
 }
 
 function readConfig(filePath: string): Partial<LspClientConfig> {

@@ -1,12 +1,21 @@
 import { createInterface } from "node:readline";
+import { createRequire } from "node:module";
 import { stderr, stdin as input, stdout as output } from "node:process";
 import type { CommandService, WorkspaceCommandService } from "../core/command-service.js";
 import { createDisposalDeadline, type DisposalDeadline, type ProcessTerminationResult } from "../core/process-ownership.js";
-import { McpLifecycleCoordinator, type McpLifecycleResult } from "./mcp-lifecycle.js";
+import {
+  McpLifecycleCoordinator,
+  type McpLifecycleReasonCode,
+  type McpLifecycleResult
+} from "./mcp-lifecycle.js";
 import { resolvePathInsideWorkspaceRootSync, shouldSelectWorkspaceService } from "../core/workspace-root.js";
 import { filePathToUri } from "../utils/uri.js";
 
 type LspCommandService = CommandService | WorkspaceCommandService;
+
+const require = createRequire(import.meta.url);
+const packageMetadata = require("../../package.json") as { version?: unknown };
+const serverVersion = typeof packageMetadata.version === "string" ? packageMetadata.version : "unknown";
 
 export interface McpRuntime {
   status?: () => unknown;
@@ -178,19 +187,30 @@ export async function runStdioMcp(service: LspCommandService, runtime: McpRuntim
   const outputStream = runtime.output ?? output;
   const errorOutput = runtime.errorOutput ?? stderr;
   const lifecycle = runtime.lifecycle ?? new McpLifecycleCoordinator({ dispose: runtime.dispose });
-  const rl = createInterface({ input: runtime.input ?? input, crlfDelay: Infinity });
+  const inputStream = runtime.input ?? input;
+  const rl = createInterface({ input: inputStream, crlfDelay: Infinity });
   const idleTimeoutMs = normalizeIdleTimeoutMs(runtime.idleTimeoutMs);
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let idleClosePending = false;
   let idleCloseRequested = false;
   let idleSuspendPending = false;
   let idleSuspensionPromise: Promise<ProcessTerminationResult | void> | undefined;
+  const idleSuspensionFailures: McpLifecycleReasonCode[] = [];
+  let transportClosed = false;
 
   const clearIdleTimer = () => {
     if (idleTimer === undefined) return;
     clearTimeout(idleTimer);
     idleTimer = undefined;
   };
+  const beginTransportClose = () => {
+    transportClosed = true;
+    clearIdleTimer();
+    idleClosePending = false;
+    idleSuspendPending = false;
+  };
+  const onInputEnd = () => beginTransportClose();
+  inputStream.once("end", onInputEnd);
   const closeWhenIdle = () => {
     if (idleCloseRequested) return;
     if (lifecycle.activeRequestCount > 0) {
@@ -198,26 +218,28 @@ export async function runStdioMcp(service: LspCommandService, runtime: McpRuntim
       return;
     }
     idleCloseRequested = true;
-    clearIdleTimer();
+    beginTransportClose();
     errorOutput.write(`MCP connection idle for ${idleTimeoutMs}ms; closing.\n`);
     rl.close();
   };
   const suspendWhenIdle = () => {
-    if (!runtime.suspend || idleSuspensionPromise) return;
+    if (!runtime.suspend || idleSuspensionPromise || transportClosed || lifecycle.state !== "open") return;
     idleSuspendPending = false;
     clearIdleTimer();
     const suspension = Promise.resolve().then(() => runtime.suspend!(createDisposalDeadline()));
     idleSuspensionPromise = suspension.then(
       (result) => {
         if (result && !result.clean) {
+          idleSuspensionFailures.push(result.reasonCode, ...(result.reasonCodes ?? []));
           errorOutput.write(`MCP idle suspension ended non-cleanly: ${result.reasonCode}.\n`);
         } else {
           errorOutput.write(`MCP connection idle for ${idleTimeoutMs}ms; suspended LSP resources.\n`);
         }
         return result;
       },
-      (error) => {
-        errorOutput.write(`MCP idle suspension failed: ${error instanceof Error ? error.message : "Unknown error"}.\n`);
+      () => {
+        idleSuspensionFailures.push("disposal_failed");
+        errorOutput.write("MCP idle suspension failed.\n");
         return undefined;
       }
     ).finally(() => {
@@ -243,7 +265,7 @@ export async function runStdioMcp(service: LspCommandService, runtime: McpRuntim
     idleTimer = setTimeout(requestIdleAction, idleTimeoutMs);
   };
   const closeAfterPendingIdleTimeout = () => {
-    if (lifecycle.activeRequestCount > 0) return;
+    if (transportClosed || lifecycle.state !== "open" || lifecycle.activeRequestCount > 0) return;
     if (runtime.suspend) {
       if (idleSuspendPending) suspendWhenIdle();
       return;
@@ -275,10 +297,26 @@ export async function runStdioMcp(service: LspCommandService, runtime: McpRuntim
   try {
     await new Promise<void>((resolve) => rl.once("close", resolve));
   } finally {
-    clearIdleTimer();
-    if (idleSuspensionPromise) await idleSuspensionPromise;
+    beginTransportClose();
+    inputStream.removeListener("end", onInputEnd);
   }
-  const result = await lifecycle.close();
+  const lifecycleResult = await lifecycle.close();
+  const suspensionCleanupPending = idleSuspensionPromise !== undefined;
+  const reasonCodes = [...new Set([
+    ...(lifecycleResult.reasonCodes ?? (lifecycleResult.reasonCode ? [lifecycleResult.reasonCode] : [])),
+    ...idleSuspensionFailures,
+    ...(suspensionCleanupPending ? ["disposal_timeout" as const] : [])
+  ])];
+  const result: McpLifecycleResult = reasonCodes.length === 0
+    ? lifecycleResult
+    : {
+        ...lifecycleResult,
+        state: "non_clean",
+        clean: false,
+        reasonCode: reasonCodes[0],
+        ...(reasonCodes.length > 1 ? { reasonCodes } : {}),
+        ...((lifecycleResult.cleanupPending || suspensionCleanupPending) ? { cleanupPending: true } : {})
+      };
   if (dispatchFailure || !result.clean) {
     const reason = result.reasonCode ?? "dispatch_failed";
     errorOutput.write(`MCP lifecycle ended non-cleanly: ${reason}\n`);
@@ -354,7 +392,7 @@ export async function dispatch(service: LspCommandService, request: Request, run
       },
       serverInfo: {
         name: "codex-lsp-bridge",
-        version: "0.1.0"
+        version: serverVersion
       }
     };
   }
@@ -419,13 +457,14 @@ async function callTool(service: LspCommandService, params: Record<string, unkno
 
   if (name === "lsp_diagnostics" && typeof args.dir === "string") {
     if (!runtime.directoryDiagnostics) throw new JsonRpcError(-32602, "directory diagnostics are unavailable");
+    const severity = readOptionalEnum(args, "severity", ["error", "warning", "information", "hint"] as const);
     return runtime.directoryDiagnostics({
       dir: args.dir,
-      severity: typeof args.severity === "string" ? args.severity : undefined,
+      severity,
       root: typeof args.root === "string" ? args.root : undefined,
-      maxFiles: typeof args.maxFiles === "number" ? args.maxFiles : undefined,
-      timeoutBudgetMs: typeof args.timeoutBudgetMs === "number" ? args.timeoutBudgetMs : undefined,
-      concurrency: typeof args.concurrency === "number" ? args.concurrency : undefined
+      maxFiles: readOptionalPositiveInteger(args, "maxFiles"),
+      timeoutBudgetMs: readOptionalPositiveInteger(args, "timeoutBudgetMs"),
+      concurrency: readOptionalPositiveInteger(args, "concurrency")
     });
   }
   if (name === "lsp_diagnostics" && args.timeoutBudgetMs !== undefined) {
@@ -457,6 +496,28 @@ function readOptionalPositiveNumber(params: Record<string, unknown>, key: string
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
     throw new JsonRpcError(-32602, `${key} parameter must be a positive number`);
+  }
+  return value;
+}
+
+function readOptionalPositiveInteger(params: Record<string, unknown>, key: string): number | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
+    throw new JsonRpcError(-32602, `${key} parameter must be a positive integer`);
+  }
+  return value;
+}
+
+function readOptionalEnum<const T extends readonly string[]>(
+  params: Record<string, unknown>,
+  key: string,
+  allowed: T
+): T[number] | undefined {
+  const value = params[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !allowed.includes(value)) {
+    throw new JsonRpcError(-32602, `${key} parameter must be one of: ${allowed.join(", ")}`);
   }
   return value;
 }

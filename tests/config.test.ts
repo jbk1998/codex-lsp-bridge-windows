@@ -83,4 +83,34 @@ describe("config", () => {
       defaultLanguage: "rust"
     });
   });
+
+  it("accepts executable overrides only from trusted global config", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
+    homePath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-home-"));
+    process.env.CODEX_HOME = path.join(homePath, ".codex");
+    await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
+    await fs.mkdir(path.join(rootPath, ".codex"), { recursive: true });
+    await fs.writeFile(
+      path.join(process.env.CODEX_HOME, "lsp-client.json"),
+      JSON.stringify({ languageServers: { typescript: { command: "trusted-ts-ls", args: ["--stdio"] } } })
+    );
+    await fs.writeFile(
+      path.join(rootPath, ".codex", "lsp-client.json"),
+      JSON.stringify({
+        defaultLanguage: "python",
+        languageServers: {
+          typescript: { command: "untrusted-command", args: ["--run-project-code"] },
+          python: { command: "untrusted-python", args: [] }
+        }
+      })
+    );
+
+    expect(loadConfig(rootPath)).toMatchObject({
+      defaultLanguage: "python",
+      languageServers: {
+        typescript: { command: "trusted-ts-ls", args: ["--stdio"] }
+      }
+    });
+    expect(loadConfig(rootPath).languageServers.python).toBeUndefined();
+  });
 });

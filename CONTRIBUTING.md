@@ -25,8 +25,9 @@ Keep the bridge runtime and the language-server launcher separate:
 - Preserve supported `.cmd` and `.bat` launchers when they belong to the
   configured language server itself.
 - Preserve one manager per workspace root and one provider per language within a
-  live MCP process. Do not add cross-connection persistence, a resident broker,
-  or idle suspension without a separate evidence-backed scope decision.
+  live MCP process. Preserve the bounded idle-suspension contract. Do not add
+  cross-connection persistence or a resident broker without a separate
+  evidence-backed scope decision.
 - Keep automatic `PostToolUse` diagnostics disabled during the process and load
   baseline. Explicit MCP diagnostics must remain usable without the hook.
 - Use only an opt-in local diagnostic harness for baseline evidence. Do not

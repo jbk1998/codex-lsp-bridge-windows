@@ -62,6 +62,26 @@ describe("doctor", () => {
     fs.rmSync(packageRoot, { recursive: true, force: true });
   });
 
+  it("reports the trusted global language-server override it will launch", () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-lsp-doctor-override-"));
+    const previousHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      fs.writeFileSync(
+        path.join(codexHome, "lsp-client.json"),
+        JSON.stringify({ languageServers: { typescript: { command: process.execPath, args: ["--version"] } } })
+      );
+
+      expect(runDoctor(process.cwd()).languages).toContainEqual(
+        expect.objectContaining({ language: "typescript", command: process.execPath, status: "ok" })
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousHome;
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+
   it("separates explicit native MCP readiness from managed hook state", () => {
     const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-lsp-doctor-"));
     const previousHome = process.env.CODEX_HOME;

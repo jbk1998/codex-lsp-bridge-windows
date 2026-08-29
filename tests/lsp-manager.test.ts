@@ -3,6 +3,28 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { LspManager } from "../src/core/lsp-manager.js";
+import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
+import type { DisposalDeadline, ProcessTerminationResult } from "../src/core/process-ownership.js";
+
+class DisposalSequenceProvider implements SemanticProvider {
+  disposeCalls = 0;
+
+  constructor(private readonly results: Array<ProcessTerminationResult | void>) {}
+
+  diagnostics(): Promise<DiagnosticReport> { return Promise.resolve({ status: "ok", timedOut: false, stale: false, items: [] }); }
+  definition(): Promise<Location> { return Promise.reject(new Error("unused")); }
+  definitionAt(): Promise<Location> { return Promise.reject(new Error("unused")); }
+  references(): Promise<Location[]> { return Promise.resolve([]); }
+  referencesAt(): Promise<Location[]> { return Promise.resolve([]); }
+  symbols(): Promise<SymbolMatch[]> { return Promise.resolve([]); }
+  hover(): Promise<HoverInfo> { return Promise.reject(new Error("unused")); }
+  hoverAt(): Promise<HoverInfo> { return Promise.reject(new Error("unused")); }
+  dispose(_deadline?: DisposalDeadline): Promise<ProcessTerminationResult | void> {
+    const result = this.results[Math.min(this.disposeCalls, this.results.length - 1)];
+    this.disposeCalls += 1;
+    return Promise.resolve(result);
+  }
+}
 
 describe("LspManager", () => {
   it("lazily creates one provider per language", () => {
@@ -35,6 +57,26 @@ describe("LspManager", () => {
     expect(manager.forLanguage("typescript")).not.toBe(firstProvider);
 
     await manager.dispose();
+  });
+
+  it("retains non-cleanly suspended providers for final cleanup", async () => {
+    const first = new DisposalSequenceProvider([
+      { clean: false, reasonCode: "exit_unconfirmed" },
+      { clean: true, reasonCode: "owned_child_exit" }
+    ]);
+    const second = new DisposalSequenceProvider([undefined]);
+    const providers = [first, second];
+    const manager = new LspManager(process.cwd(), {
+      providerFactory: () => providers.shift() ?? second
+    });
+
+    manager.forLanguage("typescript");
+    await expect(manager.suspend()).resolves.toMatchObject({ clean: false, reasonCode: "exit_unconfirmed" });
+    manager.forLanguage("typescript");
+    await expect(manager.dispose()).resolves.toMatchObject({ clean: true });
+
+    expect(first.disposeCalls).toBe(2);
+    expect(second.disposeCalls).toBe(1);
   });
 
   it("keeps managers and providers isolated by workspace root", async () => {

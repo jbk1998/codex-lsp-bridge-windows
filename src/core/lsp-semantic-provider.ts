@@ -318,7 +318,18 @@ export class LspSemanticProvider implements SemanticProvider {
     this.documentRegistry.clear();
     this.cancelDiagnosticsCandidates();
     this.diagnosticsWaiters.cancel();
-    this.disposePromise = this.client.stop(deadline);
+    const disposal = this.client.stop(deadline);
+    const trackedDisposal = disposal.then(
+      (result) => {
+        if (result && !result.clean && this.disposePromise === trackedDisposal) this.disposePromise = undefined;
+        return result;
+      },
+      (error) => {
+        if (this.disposePromise === trackedDisposal) this.disposePromise = undefined;
+        throw error;
+      }
+    );
+    this.disposePromise = trackedDisposal;
     return this.disposePromise;
   }
 

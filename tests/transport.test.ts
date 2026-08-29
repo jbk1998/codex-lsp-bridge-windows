@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { dispatch, handleJsonRpcLine, handleRequest } from "../src/transport/mcp.js";
 import { CommandService } from "../src/core/command-service.js";
 import type { DiagnosticReport, HoverInfo, Location, SemanticProvider, SymbolMatch } from "../src/core/types.js";
@@ -64,9 +65,10 @@ describe("MCP dispatch", () => {
   it("implements the MCP initialize and tools/list handshake", async () => {
     const service = new CommandService(new EmptyProvider());
 
+    const packageMetadata = createRequire(import.meta.url)("../package.json") as { version: string };
     await expect(dispatch(service, { method: "initialize" })).resolves.toMatchObject({
       capabilities: { tools: {} },
-      serverInfo: { name: "codex-lsp-bridge" }
+      serverInfo: { name: "codex-lsp-bridge", version: packageMetadata.version }
     });
     await expect(dispatch(service, { method: "tools/list" })).resolves.toMatchObject({
       tools: expect.arrayContaining([
@@ -337,6 +339,25 @@ describe("MCP dispatch", () => {
         concurrency: 2
       }
     });
+  });
+
+  it("rejects invalid directory diagnostic bounds instead of silently widening the scan", async () => {
+    const service = new CommandService(new EmptyProvider());
+    const runtime = { directoryDiagnostics: async (request: unknown) => request };
+
+    for (const argumentsValue of [
+      { dir: "src", maxFiles: 0 },
+      { dir: "src", timeoutBudgetMs: 1.5 },
+      { dir: "src", concurrency: -1 },
+      { dir: "src", severity: "fatal" }
+    ]) {
+      await expect(
+        dispatch(service, {
+          method: "tools/call",
+          params: { name: "lsp_diagnostics", arguments: argumentsValue }
+        }, runtime)
+      ).rejects.toThrow(/parameter must be/);
+    }
   });
 
   it("formats JSON-RPC responses and ignores notifications", async () => {

@@ -39,7 +39,9 @@ Before declaring the staged process-reuse work complete, verify the contract in
   receipt only for completed runs. An `INCONCLUSIVE` workload or attribution
   result triggers repeat or extended measurement and cannot support a
   load-improvement claim; `HARNESS_ERROR` produces no receipt.
-- No persistent broker, idle-suspension mechanism, or Code Mode optimization is
+- Idle suspension remains bounded, waits for active requests, keeps the MCP
+  connection open, and lazily recreates providers on the next request. No
+  persistent broker, cross-connection reuse, or Code Mode optimization is
   included in this rollout.
 - The default managed PostToolUse hook remains absent or disabled. The active
   per-file wrapper and deferred batching/IPC helper have separate

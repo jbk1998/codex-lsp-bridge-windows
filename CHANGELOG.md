@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Keep non-cleanly suspended providers under manager ownership, permit later
+  bounded cleanup attempts, and prevent EOF from scheduling or waiting
+  indefinitely on idle suspension. Preserve suspension failures and pending
+  cleanup in the final lifecycle result without logging raw exception text.
+- Treat workspace `.codex/lsp-client.json` as untrusted input for process
+  selection: custom language-server commands and arguments now come only from
+  the user's global Codex config.
+- Validate directory-diagnostics bounds and severity at the MCP boundary instead
+  of silently replacing invalid values with broad defaults.
+- Recognize `.cjs` files consistently in explicit and directory diagnostics,
+  matching the existing hook and documentation contract.
+- Report the package version in the MCP initialize handshake, align public links
+  and lifecycle documentation with this fork, and test supported Node 22 and 24
+  releases on Ubuntu and Windows.
+- Make `doctor` report the trusted custom language-server command that runtime
+  requests will actually launch.
+- Commit package bin scripts with executable mode so npm installation does not
+  dirty a Unix checkout and direct bin execution has the expected permissions.
 - Document the staged process and lifecycle contract: direct native bridge
   runtime launch, explicit diagnostics with the automatic hook disabled during
   baseline, bounded in-process reuse, opt-in local measurement, positive and

@@ -138,6 +138,21 @@ describe("process ownership", () => {
     expect(child.killCalls).toBe(1);
   });
 
+  it("allows a later bounded cleanup attempt after a non-clean result", async () => {
+    const child = new FakeChild();
+    const ownership = createProcessOwnership(child, { identityProvider: identityProvider(), verify: () => true });
+
+    await expect(ownership.terminate(Date.now() + 5)).resolves.toEqual({
+      clean: false,
+      reasonCode: "exit_unconfirmed"
+    });
+    const retry = ownership.terminate(Date.now() + 100);
+    child.exit();
+
+    await expect(retry).resolves.toEqual({ clean: true, reasonCode: "owned_child_exit" });
+    expect(child.killCalls).toBe(2);
+  });
+
   it("reports permission failure without retrying through a process tree", async () => {
     const child = new FakeChild();
     child.shouldRejectKill = true;

@@ -327,6 +327,120 @@ describe("MCP stdio lifecycle", () => {
     }
   });
 
+  it("does not start a pending idle suspension after EOF begins shutdown", async () => {
+    vi.useFakeTimers();
+    const provider = new BlockingProvider();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    let suspendCalls = 0;
+
+    try {
+      const runPromise = runStdioMcp(new CommandService(provider), {
+        input,
+        output,
+        errorOutput,
+        idleTimeoutMs: 1000,
+        suspend: async () => {
+          suspendCalls += 1;
+        },
+        dispose: async () => undefined
+      });
+      input.write(`${JSON.stringify({ id: 12, method: "tools/call", params: { name: "lsp_diagnostics", arguments: {} } })}\n`);
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(1000);
+
+      const inputEnded = new Promise<void>((resolve) => input.once("end", resolve));
+      input.end();
+      await inputEnded;
+      provider.release();
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
+      expect(suspendCalls).toBe(0);
+    } finally {
+      input.destroy();
+      output.destroy();
+      errorOutput.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it("enters bounded shutdown without waiting for a hanging idle suspension", async () => {
+    vi.useFakeTimers();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+    let markSuspensionStarted: (() => void) | undefined;
+    const suspensionStarted = new Promise<void>((resolve) => {
+      markSuspensionStarted = resolve;
+    });
+
+    try {
+      const runPromise = runStdioMcp(new CommandService(new TestProvider()), {
+        input,
+        output,
+        errorOutput,
+        idleTimeoutMs: 1000,
+        suspend: async () => {
+          markSuspensionStarted?.();
+          await new Promise<void>(() => undefined);
+        },
+        dispose: async () => undefined
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      await suspensionStarted;
+      input.end();
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(runPromise).resolves.toMatchObject({
+        state: "non_clean",
+        clean: false,
+        reasonCode: "disposal_timeout",
+        cleanupPending: true
+      });
+    } finally {
+      input.destroy();
+      output.destroy();
+      errorOutput.destroy();
+      vi.useRealTimers();
+    }
+  });
+
+  it("preserves a non-clean idle suspension in the final lifecycle result", async () => {
+    vi.useFakeTimers();
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const errorOutput = new PassThrough();
+
+    try {
+      const runPromise = runStdioMcp(new CommandService(new TestProvider()), {
+        input,
+        output,
+        errorOutput,
+        idleTimeoutMs: 1000,
+        suspend: async () => ({ clean: false, reasonCode: "exit_unconfirmed" }),
+        dispose: async () => undefined
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      input.end();
+      await vi.advanceTimersByTimeAsync(0);
+
+      await expect(runPromise).resolves.toMatchObject({
+        state: "non_clean",
+        clean: false,
+        reasonCode: "exit_unconfirmed"
+      });
+    } finally {
+      input.destroy();
+      output.destroy();
+      errorOutput.destroy();
+      vi.useRealTimers();
+    }
+  });
+
   it("waits for an in-flight suspension before dispatching the next request", async () => {
     vi.useFakeTimers();
     const input = new PassThrough();

@@ -105,7 +105,20 @@ export function createProcessOwnership(child: OwnedChildProcess, options: Proces
 
   return {
     terminate(deadlineAt) {
-      terminationPromise ??= terminateChild(child, deadlineAt, options, identityProvider, launchIdentity);
+      if (!terminationPromise) {
+        const attempt = terminateChild(child, deadlineAt, options, identityProvider, launchIdentity);
+        const trackedAttempt = attempt.then(
+          (result) => {
+            if (!result.clean && terminationPromise === trackedAttempt) terminationPromise = undefined;
+            return result;
+          },
+          (error) => {
+            if (terminationPromise === trackedAttempt) terminationPromise = undefined;
+            throw error;
+          }
+        );
+        terminationPromise = trackedAttempt;
+      }
       return terminationPromise;
     }
   };
