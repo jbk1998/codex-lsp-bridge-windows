@@ -104,7 +104,7 @@ describe("process ownership", () => {
 
   it("builds a syntactically separated native Windows process identity query", () => {
     expect(buildWindowsProcessIdentityCommand(1234)).toBe(
-      "$target = Get-Process -Id 1234 -ErrorAction Stop; $target.StartTime.ToUniversalTime().Ticks"
+      "$target = Get-CimInstance Win32_Process -Filter 'ProcessId = 1234' -ErrorAction Stop; $target.CreationDate.ToUniversalTime().Ticks"
     );
   });
 

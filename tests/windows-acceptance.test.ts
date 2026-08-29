@@ -27,6 +27,7 @@ interface LspFixtureEvent {
   pid: number;
   ppid?: number;
   allocationMb?: number;
+  instanceId?: string;
 }
 
 windows("Windows process and idle-resource acceptance", () => {
@@ -147,6 +148,7 @@ windows("Windows process and idle-resource acceptance", () => {
         8_000
       );
       startedPids.push(first.pid);
+      expect(first.instanceId).toBeDefined();
       const firstWorkingSet = await waitFor(
         () => {
           const workingSet = readWorkingSet(first.pid);
@@ -165,12 +167,13 @@ windows("Windows process and idle-resource acceptance", () => {
       await waitFor(() => responses.find((response) => response.id === 2), "the second MCP response", 8_000);
       const second = await waitForEvent(
         eventsPath,
-        (event, starts) => event.event === "start" && starts.length === 2,
+        (event, starts) => event.event === "start" && starts.length === 2 && event.instanceId !== first.instanceId,
         "the cold-started LSP process",
         8_000
       );
       startedPids.push(second.pid);
-      expect(second.pid).not.toBe(first.pid);
+      expect(second.instanceId).toBeDefined();
+      expect(second.instanceId).not.toBe(first.instanceId);
       expect(
         await waitFor(
           () => {

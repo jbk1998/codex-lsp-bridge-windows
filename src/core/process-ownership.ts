@@ -101,7 +101,11 @@ export interface ProcessOwnership {
 export function createProcessOwnership(child: OwnedChildProcess, options: ProcessOwnershipOptions = {}): ProcessOwnership {
   let terminationPromise: Promise<ProcessTerminationResult> | undefined;
   const identityProvider = options.identityProvider ?? defaultProcessIdentityProvider;
-  const launchIdentity = captureLaunchIdentity(child, identityProvider);
+  // Windows shell wrappers are never eligible for generic child.kill(). Do
+  // not spend a synchronous process-query timeout capturing an identity that
+  // cannot authorize termination; terminateChild reports the stronger
+  // descendant boundary below before consulting it.
+  const launchIdentity = options.wrapper && process.platform === "win32" ? undefined : captureLaunchIdentity(child, identityProvider);
 
   return {
     terminate(deadlineAt) {
@@ -142,6 +146,13 @@ async function terminateChild(
   if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
   if (typeof child.pid !== "number" || child.pid <= 0) {
     return { clean: false, reasonCode: "identity_mismatch" };
+  }
+
+  // A .cmd/.bat process is a shell boundary rather than an owned process
+  // group. Refuse it before identity probing so a slow/unavailable native
+  // process query cannot mask the reason for the refusal.
+  if (options.wrapper && process.platform === "win32") {
+    return { clean: false, reasonCode: "descendant_unverified" };
   }
 
   if (!launchIdentity || launchIdentity.pid !== child.pid) {
@@ -241,7 +252,14 @@ function readLinuxProcessIdentity(pid: number): ProcessIdentity | undefined {
 }
 
 export function buildWindowsProcessIdentityCommand(pid: number): string {
-  return [`$target = Get-Process -Id ${String(pid)} -ErrorAction Stop`, "$target.StartTime.ToUniversalTime().Ticks"].join("; ");
+  // Get-Process.StartTime can be unavailable for an otherwise accessible
+  // process on hosted Windows runners. Win32_Process is the same native
+  // process table used by descendant authorization below and exposes a stable
+  // creation timestamp without requiring the process performance handle.
+  return [
+    `$target = Get-CimInstance Win32_Process -Filter 'ProcessId = ${String(pid)}' -ErrorAction Stop`,
+    "$target.CreationDate.ToUniversalTime().Ticks"
+  ].join("; ");
 }
 
 function readWindowsProcessIdentity(pid: number): ProcessIdentity | undefined {
@@ -249,10 +267,14 @@ function readWindowsProcessIdentity(pid: number): ProcessIdentity | undefined {
   const output = execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-    timeout: 1000,
+    // Starting PowerShell plus the CIM provider can exceed one second on a
+    // fresh hosted Windows runner. Keep the probe bounded, but leave enough
+    // room for normal startup so a healthy owned child is not rejected.
+    timeout: 3000,
     windowsHide: true
   }).trim();
-  return output ? { pid, creationToken: `windows:${output}` } : undefined;
+  const normalizedOutput = output.replace(/^\uFEFF/, "").trim();
+  return normalizedOutput ? { pid, creationToken: `windows:${normalizedOutput}` } : undefined;
 }
 
 function verifyNoDescendants(pid: number, provider = defaultProcessDescendantProvider): boolean {

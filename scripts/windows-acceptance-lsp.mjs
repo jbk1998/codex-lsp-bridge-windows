@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 
 const eventsPath = process.argv[2];
 const allocationMb = Number(process.argv[3] ?? "48");
@@ -18,7 +19,10 @@ function appendEvent(event) {
   fs.appendFileSync(eventsPath, `${JSON.stringify(event)}\n`, "utf8");
 }
 
-appendEvent({ event: "start", pid: process.pid, ppid: process.ppid, allocationMb });
+// A Windows PID can be recycled immediately after a process exits. Record a
+// per-process nonce so acceptance coverage can distinguish a genuine cold
+// start from a numeric PID comparison.
+appendEvent({ event: "start", pid: process.pid, ppid: process.ppid, allocationMb, instanceId: randomUUID() });
 
 let buffer = Buffer.alloc(0);
 process.stdin.on("data", (chunk) => {
