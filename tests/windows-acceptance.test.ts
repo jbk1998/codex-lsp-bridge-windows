@@ -187,7 +187,11 @@ windows("Windows process and idle-resource acceptance", () => {
 
       inputClosed = true;
       input.end();
-      await expect(runPromise).resolves.toMatchObject({ state: "clean", clean: true });
+      const lifecycleResult = await runPromise;
+      expect(lifecycleResult, `MCP lifecycle result: ${JSON.stringify(lifecycleResult)}`).toMatchObject({
+        state: "clean",
+        clean: true
+      });
     } finally {
       if (!inputClosed) input.end();
       await Promise.race([runPromise.catch(() => undefined), delay(8_000)]);
