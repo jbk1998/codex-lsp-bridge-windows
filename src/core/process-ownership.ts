@@ -192,10 +192,16 @@ async function terminateChild(
     currentIdentity = identityProvider.read(child.pid);
   } catch {
     if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
+    if (await waitForExit(child, deadlineAt)) return { clean: true, reasonCode: "already_exited" };
     return { clean: false, reasonCode: "identity_mismatch" };
   }
   if (!currentIdentity || !sameProcessIdentity(launchIdentity, currentIdentity)) {
     if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
+    // A synchronous OS identity query blocks Node from delivering an exit
+    // event. Give an already-requested graceful shutdown the remainder of the
+    // existing disposal budget before reporting an identity failure. This
+    // never authorizes a PID-only kill.
+    if (await waitForExit(child, deadlineAt)) return { clean: true, reasonCode: "already_exited" };
     return { clean: false, reasonCode: "identity_mismatch" };
   }
 
