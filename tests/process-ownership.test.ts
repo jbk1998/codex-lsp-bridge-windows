@@ -34,8 +34,8 @@ describe("process ownership", () => {
     const resultPromise = ownership.terminate(Date.now() + 100);
     child.exit();
 
-    await expect(resultPromise).resolves.toEqual({ clean: true, reasonCode: "owned_child_exit" });
-    expect(child.killCalls).toBe(1);
+    await expect(resultPromise).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
+    expect(child.killCalls).toBe(0);
   });
 
   it("refuses PID reuse or an unverified identity", async () => {
@@ -83,6 +83,23 @@ describe("process ownership", () => {
     expect(child.killCalls).toBe(0);
   });
 
+  it("accepts a graceful exit after a successful final identity read", async () => {
+    const child = new FakeChild();
+    let reads = 0;
+    const ownership = createProcessOwnership(child, {
+      identityProvider: {
+        read: (pid) => {
+          reads += 1;
+          if (reads === 2) child.exit();
+          return { pid, creationToken: "launch" };
+        }
+      }
+    });
+
+    await expect(ownership.terminate(Date.now() + 100)).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
+    expect(child.killCalls).toBe(0);
+  });
+
   it("keeps wrapper descendants non-clean unless ownership is verified", async () => {
     const child = new FakeChild();
     const ownership = createProcessOwnership(child, {
@@ -116,8 +133,8 @@ describe("process ownership", () => {
     const resultPromise = ownership.terminate(Date.now() + 100);
     child.exit();
 
-    await expect(resultPromise).resolves.toEqual({ clean: true, reasonCode: "owned_child_exit" });
-    expect(child.killCalls).toBe(1);
+    await expect(resultPromise).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
+    expect(child.killCalls).toBe(0);
   });
 
   it("builds a syntactically separated native Windows process identity query", () => {
@@ -163,8 +180,8 @@ describe("process ownership", () => {
     const retry = ownership.terminate(Date.now() + 100);
     child.exit();
 
-    await expect(retry).resolves.toEqual({ clean: true, reasonCode: "owned_child_exit" });
-    expect(child.killCalls).toBe(2);
+    await expect(retry).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
+    expect(child.killCalls).toBe(1);
   });
 
   it("reports permission failure without retrying through a process tree", async () => {

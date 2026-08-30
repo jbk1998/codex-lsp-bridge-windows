@@ -750,6 +750,7 @@ describe("LspSemanticProvider", () => {
   it("sends LSP content read from a verified descriptor", async () => {
     const provider = createProvider();
     const uri = filePathToUri(filePath);
+    const canonicalUri = filePathToUri(await fs.realpath(filePath));
     const pathRead = vi.spyOn(fs, "readFile").mockRejectedValue(new Error("path-based read should not run"));
     client.onNotify = (method, params) => {
       if (method !== "textDocument/didOpen") return;
@@ -770,7 +771,7 @@ describe("LspSemanticProvider", () => {
       expect(client.notifications.find((notification) => notification.method === "textDocument/didOpen")).toMatchObject({
         params: {
           textDocument: {
-            uri,
+            uri: canonicalUri,
             text: "export const Editor = 1;\n"
           }
         }

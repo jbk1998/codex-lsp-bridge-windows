@@ -199,9 +199,15 @@ async function terminateChild(
     return { clean: false, reasonCode: "identity_mismatch" };
   }
 
+  if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
+
   try {
-    if (!child.kill()) return { clean: false, reasonCode: "termination_rejected" };
+    if (!child.kill()) {
+      if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
+      return { clean: false, reasonCode: "termination_rejected" };
+    }
   } catch {
+    if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
     return { clean: false, reasonCode: "permission_denied" };
   }
 
