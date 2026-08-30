@@ -101,11 +101,28 @@ export interface ProcessOwnership {
 export function createProcessOwnership(child: OwnedChildProcess, options: ProcessOwnershipOptions = {}): ProcessOwnership {
   let terminationPromise: Promise<ProcessTerminationResult> | undefined;
   const identityProvider = options.identityProvider ?? defaultProcessIdentityProvider;
-  const launchIdentity = captureLaunchIdentity(child, identityProvider);
+  // Windows shell wrappers are never eligible for generic child.kill(). Do
+  // not spend a synchronous process-query timeout capturing an identity that
+  // cannot authorize termination; terminateChild reports the stronger
+  // descendant boundary below before consulting it.
+  const launchIdentity = options.wrapper && process.platform === "win32" ? undefined : captureLaunchIdentity(child, identityProvider);
 
   return {
     terminate(deadlineAt) {
-      terminationPromise ??= terminateChild(child, deadlineAt, options, identityProvider, launchIdentity);
+      if (!terminationPromise) {
+        const attempt = terminateChild(child, deadlineAt, options, identityProvider, launchIdentity);
+        const trackedAttempt = attempt.then(
+          (result) => {
+            if (!result.clean && terminationPromise === trackedAttempt) terminationPromise = undefined;
+            return result;
+          },
+          (error) => {
+            if (terminationPromise === trackedAttempt) terminationPromise = undefined;
+            throw error;
+          }
+        );
+        terminationPromise = trackedAttempt;
+      }
       return terminationPromise;
     }
   };
@@ -129,6 +146,13 @@ async function terminateChild(
   if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
   if (typeof child.pid !== "number" || child.pid <= 0) {
     return { clean: false, reasonCode: "identity_mismatch" };
+  }
+
+  // A .cmd/.bat process is a shell boundary rather than an owned process
+  // group. Refuse it before identity probing so a slow/unavailable native
+  // process query cannot mask the reason for the refusal.
+  if (options.wrapper && process.platform === "win32") {
+    return { clean: false, reasonCode: "descendant_unverified" };
   }
 
   if (!launchIdentity || launchIdentity.pid !== child.pid) {
@@ -167,15 +191,29 @@ async function terminateChild(
   try {
     currentIdentity = identityProvider.read(child.pid);
   } catch {
+    if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
+    if (await waitForExit(child, deadlineAt)) return { clean: true, reasonCode: "already_exited" };
     return { clean: false, reasonCode: "identity_mismatch" };
   }
   if (!currentIdentity || !sameProcessIdentity(launchIdentity, currentIdentity)) {
+    if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
+    // A synchronous OS identity query blocks Node from delivering an exit
+    // event. Give an already-requested graceful shutdown the remainder of the
+    // existing disposal budget before reporting an identity failure. This
+    // never authorizes a PID-only kill.
+    if (await waitForExit(child, deadlineAt)) return { clean: true, reasonCode: "already_exited" };
     return { clean: false, reasonCode: "identity_mismatch" };
   }
 
+  if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
+
   try {
-    if (!child.kill()) return { clean: false, reasonCode: "termination_rejected" };
+    if (!child.kill()) {
+      if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
+      return { clean: false, reasonCode: "termination_rejected" };
+    }
   } catch {
+    if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
     return { clean: false, reasonCode: "permission_denied" };
   }
 
@@ -184,10 +222,7 @@ async function terminateChild(
   return { clean: true, reasonCode: "owned_child_exit" };
 }
 
-function captureLaunchIdentity(
-  child: OwnedChildProcess,
-  identityProvider: ProcessIdentityProvider
-): ProcessIdentity | undefined {
+function captureLaunchIdentity(child: OwnedChildProcess, identityProvider: ProcessIdentityProvider): ProcessIdentity | undefined {
   if (typeof child.pid !== "number" || child.pid <= 0) return undefined;
   try {
     return identityProvider.read(child.pid);
@@ -221,16 +256,22 @@ function readLinuxProcessIdentity(pid: number): ProcessIdentity | undefined {
   const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
   const commandEnd = stat.lastIndexOf(")");
   if (commandEnd === -1) return undefined;
-  const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+  const fields = stat
+    .slice(commandEnd + 1)
+    .trim()
+    .split(/\s+/);
   // The suffix starts at field 3 (state), so field 22 (starttime) is index 19.
   const startTime = fields[19];
   return startTime ? { pid, creationToken: `linux:${startTime}` } : undefined;
 }
 
 export function buildWindowsProcessIdentityCommand(pid: number): string {
+  // The owned child runs as the current user, so Get-Process can read its
+  // immutable creation time without paying the multi-second cold-start cost
+  // of the CIM provider during a bounded shutdown.
   return [
     `$target = Get-Process -Id ${String(pid)} -ErrorAction Stop`,
-    "$target.StartTime.ToUniversalTime().Ticks"
+    "[Console]::Out.Write($target.StartTime.ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture))"
   ].join("; ");
 }
 
@@ -239,10 +280,14 @@ function readWindowsProcessIdentity(pid: number): ProcessIdentity | undefined {
   const output = execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-    timeout: 1000,
+    // A cold Windows PowerShell startup can exceed three seconds under hosted
+    // runner load. Five seconds remains bounded while avoiding false identity
+    // failures for a healthy owned child.
+    timeout: 5000,
     windowsHide: true
   }).trim();
-  return output ? { pid, creationToken: `windows:${output}` } : undefined;
+  const normalizedOutput = output.replace(/^\uFEFF/, "").trim();
+  return normalizedOutput ? { pid, creationToken: `windows:${normalizedOutput}` } : undefined;
 }
 
 function verifyNoDescendants(pid: number, provider = defaultProcessDescendantProvider): boolean {
@@ -270,7 +315,10 @@ function readLinuxProcessDescendants(rootPid: number): number[] | undefined {
       const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
       const commandEnd = stat.lastIndexOf(")");
       if (commandEnd === -1) continue;
-      const fields = stat.slice(commandEnd + 1).trim().split(/\s+/);
+      const fields = stat
+        .slice(commandEnd + 1)
+        .trim()
+        .split(/\s+/);
       const parentPid = Number(fields[1]);
       if (Number.isSafeInteger(parentPid) && parentPid > 0) parentByPid.set(pid, parentPid);
     } catch {
@@ -312,7 +360,7 @@ function readWindowsProcessDescendants(rootPid: number): number[] | undefined {
 }
 
 function isExited(child: OwnedChildProcess): boolean {
-  return child.exitCode !== null || child.signalCode !== undefined && child.signalCode !== null;
+  return child.exitCode !== null || (child.signalCode !== undefined && child.signalCode !== null);
 }
 
 function waitForExit(child: OwnedChildProcess, deadlineAt: number): Promise<boolean> {

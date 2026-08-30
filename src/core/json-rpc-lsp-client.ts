@@ -18,6 +18,7 @@ import { filePathToUri } from "../utils/uri.js";
 export const maxLspHeaderBytes = 8 * 1024;
 export const maxLspContentBytes = 16 * 1024 * 1024;
 export const maxLspReceiveBufferBytes = maxLspHeaderBytes + maxLspContentBytes + 4;
+export const maxLspOutgoingPayloadBytes = 16 * 1024 * 1024;
 
 export interface JsonRpcMessage {
   jsonrpc: "2.0";
@@ -51,7 +52,11 @@ export interface LspClient {
 
 export interface JsonRpcLspClientOptions {
   spawnProcess?: typeof spawn;
-  ownershipFactory?: (child: ChildProcessWithoutNullStreams, config: ServerProcessConfig, prepared: PreparedSpawnCommand) => ProcessOwnership;
+  ownershipFactory?: (
+    child: ChildProcessWithoutNullStreams,
+    config: ServerProcessConfig,
+    prepared: PreparedSpawnCommand
+  ) => ProcessOwnership;
   processIdentityProvider?: ProcessIdentityProvider;
   verifyProcessIdentity?: () => boolean | Promise<boolean>;
   verifyDescendants?: () => boolean | Promise<boolean>;
@@ -59,18 +64,21 @@ export interface JsonRpcLspClientOptions {
 
 export class JsonRpcLspClient extends EventEmitter implements LspClient {
   private process: ChildProcessWithoutNullStreams | undefined;
+  private processGeneration = 0;
   private nextId = 1;
   private buffer = Buffer.alloc(0);
   private closing = false;
   private stopPromise: Promise<ProcessTerminationResult | void> | undefined;
   private ownership: ProcessOwnership | undefined;
   private protocolFailurePromise: Promise<void> | undefined;
-  private readonly pending = new Map<
-    number | string,
-    { resolve: (value: unknown) => void; reject: (reason: Error) => void }
-  >();
+  private stdinFailureGeneration: number | undefined;
+  private stdinFailurePromise: Promise<void> | undefined;
+  private readonly pending = new Map<number | string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
 
-  constructor(private readonly config: ServerProcessConfig, private readonly options: JsonRpcLspClientOptions = {}) {
+  constructor(
+    private readonly config: ServerProcessConfig,
+    private readonly options: JsonRpcLspClientOptions = {}
+  ) {
     super();
   }
 
@@ -80,8 +88,9 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
 
     const prepared = prepareSpawnCommand(this.config);
     const spawnProcess = this.options.spawnProcess ?? spawn;
+    let spawnedProcess: ChildProcessWithoutNullStreams;
     try {
-      this.process = spawnProcess(prepared.command, prepared.args, {
+      spawnedProcess = spawnProcess(prepared.command, prepared.args, {
         cwd: this.config.cwd,
         stdio: "pipe",
         windowsVerbatimArguments: prepared.windowsVerbatimArguments
@@ -93,20 +102,30 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
       this.emit("exit", { code: null, signal: null });
       throw error;
     }
+    this.buffer = Buffer.alloc(0);
+    this.process = spawnedProcess;
+    const generation = ++this.processGeneration;
+    this.stdinFailureGeneration = undefined;
     this.ownership = this.options.ownershipFactory
-      ? this.options.ownershipFactory(this.process, this.config, prepared)
-      : createProcessOwnership(this.process as unknown as OwnedChildProcess, {
+      ? this.options.ownershipFactory(spawnedProcess, this.config, prepared)
+      : createProcessOwnership(spawnedProcess as unknown as OwnedChildProcess, {
           wrapper: prepared.command.toLowerCase().endsWith("cmd.exe") || prepared.command.toLowerCase().endsWith("cmd"),
           identityProvider: this.options.processIdentityProvider,
           verify: this.options.verifyProcessIdentity,
           verifyDescendants: this.options.verifyDescendants
         });
 
-    this.process.stdout.on("data", (chunk: Buffer) => this.handleStdoutChunk(chunk));
-    this.process.stderr.on("data", (chunk: Buffer) => {
+    spawnedProcess.stdout.on("data", (chunk: Buffer) => {
+      if (this.isCurrentProcess(spawnedProcess, generation)) this.handleStdoutChunk(chunk);
+    });
+    spawnedProcess.stderr.on("data", (chunk: Buffer) => {
       this.emit("stderr", chunk.toString("utf8"));
     });
-    this.process.on("error", (cause) => {
+    spawnedProcess.stdin.on("error", (cause) => {
+      this.handleStdinFailure(spawnedProcess, generation, cause);
+    });
+    spawnedProcess.on("error", (cause) => {
+      if (!this.isCurrentProcess(spawnedProcess, generation)) return;
       const error = new Error(`Failed to start LSP server "${this.config.command}": ${cause.message}`);
       this.rejectPending(error);
       this.process = undefined;
@@ -114,7 +133,8 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
       this.closing = false;
       this.emit("exit", { code: null, signal: null });
     });
-    this.process.on("exit", (code, signal) => {
+    spawnedProcess.on("exit", (code, signal) => {
+      if (!this.isCurrentProcess(spawnedProcess, generation)) return;
       const error = new Error(`LSP server exited with code ${code ?? "null"} signal ${signal ?? "null"}`);
       this.rejectPending(error);
       this.process = undefined;
@@ -198,13 +218,59 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   }
 
   private write(message: JsonRpcMessage): void {
-    if (!this.process) {
+    const process = this.process;
+    if (!process) {
       throw new Error("LSP server process is not running");
     }
 
     const body = Buffer.from(JSON.stringify(message), "utf8");
+    if (body.byteLength > maxLspOutgoingPayloadBytes) {
+      throw new Error(`LSP outgoing payload exceeded ${maxLspOutgoingPayloadBytes} bytes`);
+    }
     const header = Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`, "utf8");
-    this.process.stdin.write(Buffer.concat([header, body]));
+    const generation = this.processGeneration;
+    const frame = Buffer.concat([header, body]);
+    process.stdin.write(frame, (cause?: Error | null) => {
+      if (cause) this.handleStdinFailure(process, generation, cause);
+    });
+  }
+
+  private handleStdinFailure(process: ChildProcessWithoutNullStreams, generation: number, cause: unknown): void {
+    if (!this.isCurrentProcess(process, generation) || this.stdinFailureGeneration === generation) return;
+    this.stdinFailureGeneration = generation;
+    const error = new Error(
+      `Failed to write to LSP server "${this.config.command}": ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+    this.rejectPending(error);
+    this.emit("stderr", `${error.message}\n`);
+
+    const ownership = this.ownership;
+    if (!ownership) {
+      this.retireFailedStdinClient(process, generation);
+      return;
+    }
+    this.closing = true;
+    const terminate = ownership.terminate(Date.now() + defaultChildExitGraceMs);
+    this.stdinFailurePromise = terminate
+      .then(
+        () => this.retireFailedStdinClient(process, generation),
+        () => this.retireFailedStdinClient(process, generation)
+      )
+      .finally(() => {
+        if (this.stdinFailureGeneration === generation) this.stdinFailurePromise = undefined;
+      });
+  }
+
+  private retireFailedStdinClient(process: ChildProcessWithoutNullStreams, generation: number): void {
+    if (!this.isCurrentProcess(process, generation)) return;
+    this.process = undefined;
+    this.ownership = undefined;
+    this.closing = false;
+    this.emit("exit", { code: null, signal: null });
+  }
+
+  private isCurrentProcess(process: ChildProcessWithoutNullStreams, generation: number): boolean {
+    return this.process === process && this.processGeneration === generation;
   }
 
   private rejectPending(error: Error): void {
@@ -232,16 +298,18 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
     if (!process || !ownership) return;
     this.closing = true;
     const terminate = ownership.terminate(Date.now() + defaultChildExitGraceMs);
-    this.protocolFailurePromise = terminate.then(
-      (result) => {
-        if (!result.clean && this.process === process) this.retireFailedProtocolClient(process);
-      },
-      () => {
-        if (this.process === process) this.retireFailedProtocolClient(process);
-      }
-    ).finally(() => {
-      this.protocolFailurePromise = undefined;
-    });
+    this.protocolFailurePromise = terminate
+      .then(
+        (result) => {
+          if (!result.clean && this.process === process) this.retireFailedProtocolClient(process);
+        },
+        () => {
+          if (this.process === process) this.retireFailedProtocolClient(process);
+        }
+      )
+      .finally(() => {
+        this.protocolFailurePromise = undefined;
+      });
   }
 
   private retireFailedProtocolClient(process: ChildProcessWithoutNullStreams): void {
@@ -271,9 +339,7 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
       }
 
       const header = this.buffer.subarray(0, headerEnd).toString("utf8");
-      const contentLengthLines = header
-        .split("\r\n")
-        .filter((line) => /^Content-Length\s*:/i.test(line));
+      const contentLengthLines = header.split("\r\n").filter((line) => /^Content-Length\s*:/i.test(line));
       if (contentLengthLines.length !== 1) {
         throw new Error(`expected exactly one Content-Length header, found ${contentLengthLines.length}`);
       }
@@ -353,9 +419,7 @@ export function createServerRequestResponse(message: JsonRpcMessage, workspaceRo
     return {
       jsonrpc: "2.0",
       id: message.id,
-      result: workspaceRoot
-        ? [{ uri: filePathToUri(workspaceRoot), name: path.basename(workspaceRoot) }]
-        : null
+      result: workspaceRoot ? [{ uri: filePathToUri(workspaceRoot), name: path.basename(workspaceRoot) }] : null
     };
   }
 

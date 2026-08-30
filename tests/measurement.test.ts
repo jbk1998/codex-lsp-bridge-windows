@@ -149,7 +149,10 @@ describe("repository-local lifecycle measurement harness", () => {
       bridge.close();
       await expect(bridge.waitForExit(2000)).resolves.toBe(true);
       expect((await bridge.metrics()).childLifetimeMs).not.toBeNull();
-      const requests = (await fs.readFile(requestLog, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      const requests = (await fs.readFile(requestLog, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
       expect(requests.map((request) => request.method)).toEqual(["initialize", "notifications/initialized", "tools/call"]);
       expect(requests[2].params).toMatchObject({ name: "lsp_diagnostics", arguments: { file: sourcePath, root } });
     } finally {
@@ -158,15 +161,17 @@ describe("repository-local lifecycle measurement harness", () => {
   });
 
   it("rejects unvalidated launch records and does not force-close after identity uncertainty", async () => {
-    await expect(runMeasurement({
-      root: process.cwd(),
-      tempRoot: os.tmpdir(),
-      controlState: "positive",
-      controlObserved: true,
-      controlSimultaneous: true,
-      launchRecord: { version: 1, runtime: "native-node", command: "node.cmd", args: ["bridge.mjs"] },
-      launcher: async () => ({ pid: 4201 })
-    })).rejects.toMatchObject({ code: "launch_record_invalid" });
+    await expect(
+      runMeasurement({
+        root: process.cwd(),
+        tempRoot: os.tmpdir(),
+        controlState: "positive",
+        controlObserved: true,
+        controlSimultaneous: true,
+        launchRecord: { version: 1, runtime: "native-node", command: "node.cmd", args: ["bridge.mjs"] },
+        launcher: async () => ({ pid: 4201 })
+      })
+    ).rejects.toMatchObject({ code: "launch_record_invalid" });
 
     const forceClose = vi.fn(() => true);
     const receipt = await runMeasurement({

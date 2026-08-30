@@ -46,7 +46,7 @@ export function runDoctor(rootPath: string): DoctorResult {
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const config = loadConfig(rootPath);
   const diagnostics = resolveDiagnosticsTimeout(rootPath, config.diagnosticsTimeoutMs);
-  const languages: DoctorLanguageResult[] = listLanguageServerConfigs(rootPath).map((config) => {
+  const languages: DoctorLanguageResult[] = listLanguageServerConfigs(rootPath, config.languageServers).map((config) => {
     const executablePath = findExecutable(config.server.command);
     return {
       language: config.language,
@@ -86,11 +86,7 @@ export function runDoctor(rootPath: string): DoctorResult {
   };
 }
 
-function buildRecommendations(
-  languages: DoctorResult["languages"],
-  codex: DoctorResult["codex"],
-  build: DoctorResult["build"]
-): string[] {
+function buildRecommendations(languages: DoctorResult["languages"], codex: DoctorResult["codex"], build: DoctorResult["build"]): string[] {
   const recommendations: string[] = [];
   for (const language of languages) {
     if (language.status === "missing") {

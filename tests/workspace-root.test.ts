@@ -1,10 +1,11 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   findWorkspaceRootSync,
   isPathInsideWorkspaceRootSync,
+  readVerifiedWorkspaceFileUtf8,
   resolvePathInsideWorkspaceRootSync,
   resolveExplicitWorkspaceRootSync,
   resolveRequestedRootSync,
@@ -176,8 +177,68 @@ describe("workspace root resolution", () => {
       throw error;
     }
 
-    expect(() => resolvePathInsideWorkspaceRootSync(root, path.join("linked", "escape.ts"))).toThrow(
-      "outside workspace root"
+    expect(() => resolvePathInsideWorkspaceRootSync(root, path.join("linked", "escape.ts"))).toThrow("outside workspace root");
+  });
+
+  it("reads through a verified descriptor and rejects an in-place replacement", async () => {
+    const root = await makeTemporaryDirectory("codex-lsp-read-verified-");
+    const target = path.join(root, "source.ts");
+    await fs.writeFile(target, "export const source = 1;\n", "utf8");
+    const canonicalRoot = await fs.realpath(root);
+    const canonicalTarget = await fs.realpath(target);
+    const expectedIdentity = await fs.stat(canonicalTarget);
+
+    await expect(readVerifiedWorkspaceFileUtf8(root, canonicalRoot, canonicalTarget)).resolves.toBe("export const source = 1;\n");
+
+    await fs.rename(target, `${target}.original`);
+    await fs.writeFile(target, "export const replacement = true;\n", "utf8");
+    await expect(readVerifiedWorkspaceFileUtf8(root, canonicalRoot, canonicalTarget, expectedIdentity)).rejects.toThrow(
+      "Workspace file changed while reading"
     );
   });
+
+  it("accepts ordinary and extended-length Windows aliases for the same workspace", async () => {
+    if (process.platform !== "win32") return;
+
+    const root = await makeTemporaryDirectory("codex-lsp-read-windows-alias-");
+    const target = path.join(root, "source.ts");
+    await fs.writeFile(target, "export const source = 1;\n", "utf8");
+    const canonicalRoot = await fs.realpath(root);
+    const canonicalTarget = await fs.realpath(target);
+    const extendedRoot = toExtendedWindowsPath(canonicalRoot);
+    const extendedTarget = toExtendedWindowsPath(canonicalTarget);
+
+    await expect(readVerifiedWorkspaceFileUtf8(root, extendedRoot, canonicalTarget)).resolves.toBe("export const source = 1;\n");
+    await expect(readVerifiedWorkspaceFileUtf8(root, canonicalRoot, extendedTarget)).resolves.toBe("export const source = 1;\n");
+  });
+
+  it("revalidates a canonical target before descriptor open when it becomes a symlink escape", async () => {
+    const root = await makeTemporaryDirectory("codex-lsp-read-symlink-");
+    const outside = await makeTemporaryDirectory("codex-lsp-read-outside-");
+    const target = path.join(root, "source.ts");
+    const outsideTarget = path.join(outside, "outside.ts");
+    await fs.writeFile(target, "export const source = 1;\n", "utf8");
+    await fs.writeFile(outsideTarget, "export const outside = true;\n", "utf8");
+    const canonicalRoot = await fs.realpath(root);
+    const canonicalTarget = await fs.realpath(target);
+
+    const originalOpen = fs.open.bind(fs);
+    const openSpy = vi.spyOn(fs, "open").mockImplementation(async (...args) => {
+      await fs.rm(target);
+      await fs.symlink(outsideTarget, target);
+      openSpy.mockRestore();
+      return originalOpen(...args);
+    });
+
+    try {
+      await expect(readVerifiedWorkspaceFileUtf8(root, canonicalRoot, canonicalTarget)).rejects.toThrow("outside workspace root");
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
 });
+
+function toExtendedWindowsPath(filePath: string): string {
+  if (filePath.startsWith("\\\\")) return `\\\\?\\UNC\\${filePath.slice(2)}`;
+  return `\\\\?\\${filePath}`;
+}

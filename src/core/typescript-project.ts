@@ -58,10 +58,7 @@ export function resolveInferredTypeScriptProjectOptions(
 }
 
 function resolveTypeRoots(rootPath: string, runtimePath: string): TypeRootResolution {
-  const primaryCandidates = [
-    ...ancestorTypeRoots(rootPath),
-    ...runtimeTypeRoots(runtimePath)
-  ];
+  const primaryCandidates = [...ancestorTypeRoots(rootPath), ...runtimeTypeRoots(runtimePath)];
   const primaryRoots = uniquePaths(primaryCandidates.filter((candidate) => hasTypePackages(candidate)));
   if (primaryRoots.some(hasNodeTypePackage)) return { typeRoots: primaryRoots, primaryRoots };
 

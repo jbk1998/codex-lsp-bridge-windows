@@ -191,7 +191,9 @@ describe("deferred post-tool-use diagnostics helper", () => {
     expect(ipcRequest.endpoint).toBe("ipc-endpoint");
     expect(ipcRequest.request.files).toEqual([path.join(rootPath, "src", "index.ts")]);
     expect(ipcRequest.timeoutMs).toBe(200);
-    expect(result.stdout).toBe("[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n");
+    expect(result.stdout).toBe(
+      "[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n"
+    );
   });
 
   it("characterizes helper fallback when deferred IPC is unavailable", async () => {
@@ -224,7 +226,9 @@ describe("deferred post-tool-use diagnostics helper", () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0].args).toContain("diagnostics");
-    expect(result.stdout).toBe("[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n");
+    expect(result.stdout).toBe(
+      "[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n"
+    );
   });
 
   it("fails closed when IPC rejects the trust boundary", async () => {
@@ -260,27 +264,30 @@ describe("deferred post-tool-use diagnostics helper", () => {
     await makeExecutable(path.join(binPath, "typescript-language-server.cmd"));
 
     let calls = 0;
-    const run = () => runPostToolUseDiagnostics({
-      input: JSON.stringify({ file_path: "src/index.ts" }),
-      cwd: rootPath,
-      env: { PATH: binPath, CODEX_LSP_HOOK_DISABLE_IPC: "1" },
-      bridgeCli: "dist/index.js",
-      processExecPath: "node",
-      spawnSyncImpl: () => {
-        calls += 1;
-        return {
-          status: 0,
-          stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
-          stderr: ""
-        };
-      }
-    });
+    const run = () =>
+      runPostToolUseDiagnostics({
+        input: JSON.stringify({ file_path: "src/index.ts" }),
+        cwd: rootPath,
+        env: { PATH: binPath, CODEX_LSP_HOOK_DISABLE_IPC: "1" },
+        bridgeCli: "dist/index.js",
+        processExecPath: "node",
+        spawnSyncImpl: () => {
+          calls += 1;
+          return {
+            status: 0,
+            stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
+            stderr: ""
+          };
+        }
+      });
 
     await run();
     const second = await run();
 
     expect(calls).toBe(1);
-    expect(second.stdout).toBe("[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n");
+    expect(second.stdout).toBe(
+      "[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n"
+    );
   });
 
   it("invalidates cached diagnostics when file content changes", async () => {
@@ -293,21 +300,22 @@ describe("deferred post-tool-use diagnostics helper", () => {
     await makeExecutable(path.join(binPath, "typescript-language-server.cmd"));
 
     let calls = 0;
-    const run = () => runPostToolUseDiagnostics({
-      input: JSON.stringify({ file_path: "src/index.ts" }),
-      cwd: rootPath,
-      env: { PATH: binPath, CODEX_LSP_HOOK_DISABLE_IPC: "1" },
-      bridgeCli: "dist/index.js",
-      processExecPath: "node",
-      spawnSyncImpl: () => {
-        calls += 1;
-        return {
-          status: 0,
-          stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
-          stderr: ""
-        };
-      }
-    });
+    const run = () =>
+      runPostToolUseDiagnostics({
+        input: JSON.stringify({ file_path: "src/index.ts" }),
+        cwd: rootPath,
+        env: { PATH: binPath, CODEX_LSP_HOOK_DISABLE_IPC: "1" },
+        bridgeCli: "dist/index.js",
+        processExecPath: "node",
+        spawnSyncImpl: () => {
+          calls += 1;
+          return {
+            status: 0,
+            stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
+            stderr: ""
+          };
+        }
+      });
 
     await run();
     await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export const a = 2;\n");
@@ -327,21 +335,22 @@ describe("deferred post-tool-use diagnostics helper", () => {
     await makeExecutable(path.join(binPath, "typescript-language-server.cmd"));
 
     let calls = 0;
-    const run = () => runPostToolUseDiagnostics({
-      input: JSON.stringify({ file_path: "src/index.ts" }),
-      cwd: rootPath,
-      env: { PATH: binPath, CODEX_LSP_HOOK_DISABLE_IPC: "1" },
-      bridgeCli: "dist/index.js",
-      processExecPath: "node",
-      spawnSyncImpl: () => {
-        calls += 1;
-        return {
-          status: 0,
-          stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
-          stderr: ""
-        };
-      }
-    });
+    const run = () =>
+      runPostToolUseDiagnostics({
+        input: JSON.stringify({ file_path: "src/index.ts" }),
+        cwd: rootPath,
+        env: { PATH: binPath, CODEX_LSP_HOOK_DISABLE_IPC: "1" },
+        bridgeCli: "dist/index.js",
+        processExecPath: "node",
+        spawnSyncImpl: () => {
+          calls += 1;
+          return {
+            status: 0,
+            stdout: JSON.stringify({ status: "ok", timedOut: false, stale: false, total: 0, bySeverity: {}, items: [] }),
+            stderr: ""
+          };
+        }
+      });
 
     await run();
     await fs.writeFile(path.join(rootPath, "tsconfig.json"), JSON.stringify({ compilerOptions: { strict: false } }));
@@ -378,7 +387,9 @@ describe("deferred post-tool-use diagnostics helper", () => {
     });
 
     expect(calls).toBe(1);
-    expect(result.stdout).toBe("[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n");
+    expect(result.stdout).toBe(
+      "[codex-lsp-bridge] LSP diagnostics clean for 1 touched supported source file(s); not a full project type-check.\n"
+    );
   });
 });
 

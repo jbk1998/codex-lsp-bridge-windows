@@ -131,7 +131,9 @@ function looksLikePortableExecutable(filePath: string): boolean {
     const peOffset = dosHeader.readUInt32LE(0x3c);
     if (peOffset < 64 || peOffset > 1024 * 1024) return false;
     const signature = Buffer.alloc(4);
-    return fs.readSync(handle, signature, 0, signature.length, peOffset) === signature.length && signature.toString("ascii") === "PE\u0000\u0000";
+    return (
+      fs.readSync(handle, signature, 0, signature.length, peOffset) === signature.length && signature.toString("ascii") === "PE\u0000\u0000"
+    );
   } catch {
     return false;
   } finally {
@@ -160,7 +162,12 @@ export function validateNativeNodeLaunchRecord(record: unknown): ValidatedNative
     throw new NativeNodeRuntimeError("invalid_launch_record", "invalid launch record");
   }
   const candidate = record as Partial<NativeNodeLaunchRecord>;
-  if (candidate.version !== 1 || candidate.runtime !== "native-node" || typeof candidate.command !== "string" || !Array.isArray(candidate.args)) {
+  if (
+    candidate.version !== 1 ||
+    candidate.runtime !== "native-node" ||
+    typeof candidate.command !== "string" ||
+    !Array.isArray(candidate.args)
+  ) {
     throw new NativeNodeRuntimeError("invalid_launch_record", "invalid launch record");
   }
   for (const argument of candidate.args) {

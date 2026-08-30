@@ -1,10 +1,6 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it } from "vitest";
-import {
-  createProcessOwnership,
-  buildWindowsProcessIdentityCommand,
-  type ProcessIdentityProvider
-} from "../src/core/process-ownership.js";
+import { createProcessOwnership, buildWindowsProcessIdentityCommand, type ProcessIdentityProvider } from "../src/core/process-ownership.js";
 
 class FakeChild extends EventEmitter {
   pid = 1234;
@@ -38,8 +34,8 @@ describe("process ownership", () => {
     const resultPromise = ownership.terminate(Date.now() + 100);
     child.exit();
 
-    await expect(resultPromise).resolves.toEqual({ clean: true, reasonCode: "owned_child_exit" });
-    expect(child.killCalls).toBe(1);
+    await expect(resultPromise).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
+    expect(child.killCalls).toBe(0);
   });
 
   it("refuses PID reuse or an unverified identity", async () => {
@@ -66,6 +62,59 @@ describe("process ownership", () => {
       clean: false,
       reasonCode: "identity_mismatch"
     });
+    expect(child.killCalls).toBe(0);
+  });
+
+  it("accepts a graceful exit that races the final identity read", async () => {
+    const child = new FakeChild();
+    let reads = 0;
+    const ownership = createProcessOwnership(child, {
+      identityProvider: {
+        read: (pid) => {
+          reads += 1;
+          if (reads === 1) return { pid, creationToken: "launch" };
+          child.exit();
+          return undefined;
+        }
+      }
+    });
+
+    await expect(ownership.terminate(Date.now() + 100)).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
+    expect(child.killCalls).toBe(0);
+  });
+
+  it("accepts a queued graceful exit after a failed final identity read", async () => {
+    const child = new FakeChild();
+    let reads = 0;
+    const ownership = createProcessOwnership(child, {
+      identityProvider: {
+        read: (pid) => {
+          reads += 1;
+          if (reads === 1) return { pid, creationToken: "launch" };
+          queueMicrotask(() => child.exit());
+          return undefined;
+        }
+      }
+    });
+
+    await expect(ownership.terminate(Date.now() + 100)).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
+    expect(child.killCalls).toBe(0);
+  });
+
+  it("accepts a graceful exit after a successful final identity read", async () => {
+    const child = new FakeChild();
+    let reads = 0;
+    const ownership = createProcessOwnership(child, {
+      identityProvider: {
+        read: (pid) => {
+          reads += 1;
+          if (reads === 2) child.exit();
+          return { pid, creationToken: "launch" };
+        }
+      }
+    });
+
+    await expect(ownership.terminate(Date.now() + 100)).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
     expect(child.killCalls).toBe(0);
   });
 
@@ -102,13 +151,13 @@ describe("process ownership", () => {
     const resultPromise = ownership.terminate(Date.now() + 100);
     child.exit();
 
-    await expect(resultPromise).resolves.toEqual({ clean: true, reasonCode: "owned_child_exit" });
-    expect(child.killCalls).toBe(1);
+    await expect(resultPromise).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
+    expect(child.killCalls).toBe(0);
   });
 
   it("builds a syntactically separated native Windows process identity query", () => {
     expect(buildWindowsProcessIdentityCommand(1234)).toBe(
-      "$target = Get-Process -Id 1234 -ErrorAction Stop; $target.StartTime.ToUniversalTime().Ticks"
+      "$target = Get-Process -Id 1234 -ErrorAction Stop; [Console]::Out.Write($target.StartTime.ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture))"
     );
   });
 
@@ -135,6 +184,21 @@ describe("process ownership", () => {
       clean: false,
       reasonCode: "exit_unconfirmed"
     });
+    expect(child.killCalls).toBe(1);
+  });
+
+  it("allows a later bounded cleanup attempt after a non-clean result", async () => {
+    const child = new FakeChild();
+    const ownership = createProcessOwnership(child, { identityProvider: identityProvider(), verify: () => true });
+
+    await expect(ownership.terminate(Date.now() + 5)).resolves.toEqual({
+      clean: false,
+      reasonCode: "exit_unconfirmed"
+    });
+    const retry = ownership.terminate(Date.now() + 100);
+    child.exit();
+
+    await expect(retry).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
     expect(child.killCalls).toBe(1);
   });
 

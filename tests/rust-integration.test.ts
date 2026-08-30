@@ -8,7 +8,7 @@ import { LspSemanticProvider } from "../src/core/lsp-semantic-provider.js";
 import { filePathToUri } from "../src/utils/uri.js";
 
 const shouldRunRustAnalyzerIntegration = process.env.CODEX_LSP_RUN_RUST_ANALYZER_INTEGRATION === "1";
-const hasRustAnalyzer = shouldRunRustAnalyzerIntegration && await commandExists("rust-analyzer");
+const hasRustAnalyzer = shouldRunRustAnalyzerIntegration && (await commandExists("rust-analyzer"));
 
 describe.skipIf(!hasRustAnalyzer)("Rust language server integration", () => {
   it("round-trips diagnostics through rust-analyzer", async () => {
@@ -19,7 +19,7 @@ describe.skipIf(!hasRustAnalyzer)("Rust language server integration", () => {
       path.join(rootPath, "Cargo.toml"),
       '[package]\nname = "codex_lsp_rust_fixture"\nversion = "0.1.0"\nedition = "2021"\n'
     );
-    await fs.writeFile(filePath, "fn main() {\n    let value: i32 = \"bad\";\n}\n", "utf8");
+    await fs.writeFile(filePath, 'fn main() {\n    let value: i32 = "bad";\n}\n', "utf8");
 
     const config = createLanguageServerConfig("rust", rootPath);
     const provider = new LspSemanticProvider({

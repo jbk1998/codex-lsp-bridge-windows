@@ -22,9 +22,7 @@ describe("standalone TypeScript project discovery", () => {
     await fs.writeFile(path.join(runtimeRoot, "node_modules", "@types", "node", "index.d.ts"), "declare module 'node:fs';\n", "utf8");
 
     const runtimePath = path.join(runtimeRoot, "node.exe");
-    expect(resolveNodeTypeRoots(root, runtimePath)).toEqual([
-      path.join(runtimeRoot, "node_modules", "@types")
-    ]);
+    expect(resolveNodeTypeRoots(root, runtimePath)).toEqual([path.join(runtimeRoot, "node_modules", "@types")]);
   });
 
   it("walks runtime ancestors when the executable is nested below its bundled types", async () => {

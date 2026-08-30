@@ -7,7 +7,12 @@ Thanks for helping improve `codex-lsp-bridge`.
 ```bash
 npm install
 npm run ci:verify
+npm run test:integration
 ```
+
+`ci:verify` includes type-check, ESLint, Prettier, coverage, build, and package
+smokes. `test:integration` requires and executes the pinned TypeScript and
+Pyright servers and fails if any of its seven tests are skipped.
 
 ## Scope
 
@@ -25,8 +30,9 @@ Keep the bridge runtime and the language-server launcher separate:
 - Preserve supported `.cmd` and `.bat` launchers when they belong to the
   configured language server itself.
 - Preserve one manager per workspace root and one provider per language within a
-  live MCP process. Do not add cross-connection persistence, a resident broker,
-  or idle suspension without a separate evidence-backed scope decision.
+  live MCP process. Preserve the bounded idle-suspension contract. Do not add
+  cross-connection persistence or a resident broker without a separate
+  evidence-backed scope decision.
 - Keep automatic `PostToolUse` diagnostics disabled during the process and load
   baseline. Explicit MCP diagnostics must remain usable without the hook.
 - Use only an opt-in local diagnostic harness for baseline evidence. Do not
@@ -37,8 +43,8 @@ Keep the bridge runtime and the language-server launcher separate:
 The repository-local harness is `scripts/measure-bridge-lifecycle.mjs`. It is
 not a package bin, MCP surface, hook, or resident service. Run its tests with
 `npm run test:run -- tests/measurement.test.ts`; native Windows process,
-resource, identity, and simultaneous-control evidence remains a maintainer
-acceptance step.
+resource, identity, and simultaneous-control evidence is automated by
+`node scripts/windows-acceptance.mjs` on a native Windows runner.
 
 See [docs/PROCESS-AND-LIFECYCLE.md](./docs/PROCESS-AND-LIFECYCLE.md) for the
 full acceptance contract.

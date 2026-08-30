@@ -39,6 +39,7 @@ describe("language config", () => {
   it("detects supported languages from file extensions", () => {
     expect(detectLanguageFromFile("src/app.tsx")).toBe("typescript");
     expect(detectLanguageFromFile("src/module.mjs")).toBe("typescript");
+    expect(detectLanguageFromFile("src/config.cjs")).toBe("typescript");
     expect(detectLanguageFromFile("src/main.rs")).toBe("rust");
     expect(detectLanguageFromFile("src/main.py")).toBe("python");
     expect(detectLanguageFromFile("cmd/server/main.go")).toBe("go");

@@ -1,7 +1,7 @@
 # codex-lsp-bridge
 
 [![npm version](https://img.shields.io/npm/v/codex-lsp-bridge.svg)](https://www.npmjs.com/package/codex-lsp-bridge)
-[![CI](https://github.com/jbk1998/codex-lsp-bridge/actions/workflows/ci.yml/badge.svg)](https://github.com/jbk1998/codex-lsp-bridge/actions/workflows/ci.yml)
+[![CI](https://github.com/jbk1998/codex-lsp-bridge-windows/actions/workflows/ci.yml/badge.svg)](https://github.com/jbk1998/codex-lsp-bridge-windows/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 
 Read-only language-server tools for Codex. This bridge lets Codex ask the same
@@ -176,7 +176,7 @@ codex-lsp-bridge doctor --root .
 To install this fork before the changes land in the upstream npm package:
 
 ```bash
-npm install -g github:jbk1998/codex-lsp-bridge
+npm install -g github:jbk1998/codex-lsp-bridge-windows
 codex-lsp-bridge install
 codex-lsp-bridge doctor --root .
 ```
@@ -257,13 +257,13 @@ the staged process and load baseline.
 
 ## Requirements
 
-- Node.js 20+
+- Node.js 22+
 - Codex CLI with MCP support
 - Local language server executable for the language you want to use
 
 | Language | Support | Required command | Hook coverage | Install hint |
 | --- | --- | --- | --- | --- |
-| TypeScript / JavaScript | Primary | `typescript-language-server` | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs` | `npm install -g typescript-language-server typescript` |
+| TypeScript / JavaScript | Primary | `typescript-language-server` | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs` | `npm install -g typescript-language-server typescript` |
 | Rust | Experimental | `rust-analyzer` | `.rs` | `rustup component add rust-analyzer` |
 | Python | Experimental | `pyright-langserver` | `.py` | `npm install -g pyright` |
 | Go | Experimental | `gopls` | `.go` | `go install golang.org/x/tools/gopls@latest` |
@@ -618,7 +618,11 @@ Status request:
 ## Configuration
 
 Optional JSON config is read from `~/.codex/lsp-client.json` and then
-`<workspace>/.codex/lsp-client.json`; workspace config wins.
+`<workspace>/.codex/lsp-client.json`. Workspace config wins for behavioral
+settings, but executable `languageServers` overrides are accepted only from the
+trusted global config. A present config file must contain valid JSON and valid
+field types; malformed global or workspace config blocks the operation with an
+error naming the exact file and field instead of silently falling back.
 
 Use global config for your personal default and workspace config for large
 repos that need longer language-server warmup. For a Rust-first workspace:
@@ -630,7 +634,15 @@ repos that need longer language-server warmup. For a Rust-first workspace:
   "hook": {
     "maxFiles": 5,
     "verbosePending": false
-  },
+  }
+}
+```
+
+Put custom executable paths or arguments only in your global config. A checked
+out repository cannot replace them through workspace config:
+
+```json
+{
   "languageServers": {
     "rust": {
       "command": "rust-analyzer",
@@ -668,6 +680,8 @@ left open without requests, set `mcpIdleTimeoutMs` in
 The timeout resets on incoming MCP messages and waits for active requests to
 finish before suspending the language-server resources. The MCP stdio process
 stays open, and the next LSP request cold-starts the provider as needed. The
+value is captured from the startup workspace for the lifetime of that MCP stdio
+connection; selecting another root does not replace the connection timer. The
 current Windows setup uses a 30-minute idle timeout:
 
 ```json
@@ -789,14 +803,24 @@ The generated Codex bridge configuration must use that direct runtime as well.
 
 ## Security
 
-`codex-lsp-bridge` does not intentionally execute project code. It starts local
-language server processes and reads workspace files needed for document sync.
+`codex-lsp-bridge` starts language-server processes and reads workspace files
+needed for document sync. A workspace-local `node_modules/.bin` language server
+is executable code from that workspace, so use the bridge only in repositories
+and dependency trees you trust. Workspace config cannot override the executable
+or its arguments; those overrides are read only from your global Codex config.
 
 The installer modifies Codex config only when explicitly run. Use
 `codex-lsp-bridge-install --dry-run` before writing config if you want to review
 the changes.
 
 Language servers are external executables. Install them from trusted sources.
+
+Workspace file contents are opened through a read-only descriptor and the root,
+canonical path, and file identity are revalidated before and after the read.
+The MCP transport accepts at most 1 MiB per newline-delimited request and 64
+simultaneous request handlers. LSP frames are capped at 16 MiB in both
+directions, and asynchronous stdin failures reject the affected process
+generation instead of escaping as uncaught stream errors.
 
 ## Development
 
@@ -805,10 +829,12 @@ npm install
 npm run ci:verify
 ```
 
-`ci:verify` runs type-checking, coverage tests, build, package file
+`ci:verify` runs type-checking, ESLint, Prettier verification, coverage tests, build, package file
 verification, install/uninstall smoke tests, and a real tarball install smoke.
-GitHub Actions runs the same command on Node 20 and 22 across Linux, macOS, and
-Windows.
+GitHub Actions runs the same command on Node 22 and 24 across Ubuntu and
+Windows. Separate required jobs run seven pinned real TypeScript/Pyright tests
+with zero skips and native Windows `.cmd`/`.bat`, process-identity, idle-memory,
+and cold-start acceptance coverage.
 
 Release preparation is documented in [docs/RELEASE.md](./docs/RELEASE.md).
 

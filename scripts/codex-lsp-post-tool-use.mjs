@@ -69,9 +69,7 @@ function spawnBridge(args, options) {
 
 if (diagnostics.length === 0) {
   if (verbosePending && skippedServers.size > 0) {
-    const skipped = [...skippedServers.entries()]
-      .map(([command, count]) => `${count} file(s) need ${command}`)
-      .join(", ");
+    const skipped = [...skippedServers.entries()].map(([command, count]) => `${count} file(s) need ${command}`).join(", ");
     console.log(`[codex-lsp-bridge] skipped diagnostics; missing language server(s): ${skipped}.`);
   }
   process.exit(0);
@@ -83,13 +81,17 @@ const timedOut = diagnostics.filter((item) => item.timedOut || item.status === "
 
 if (timedOut.length > 0 && total === 0 && diagnostics.every((item) => !item.error)) {
   if (verbosePending) {
-    console.log(`[codex-lsp-bridge] LSP diagnostics inconclusive for ${timedOut.length} touched supported source file(s); not type-check passed.`);
+    console.log(
+      `[codex-lsp-bridge] LSP diagnostics inconclusive for ${timedOut.length} touched supported source file(s); not type-check passed.`
+    );
   }
   process.exit(0);
 }
 
 if (total === 0 && diagnostics.every((item) => !item.error)) {
-  console.log(`[codex-lsp-bridge] LSP diagnostics clean for ${files.length} touched supported source file(s); not a full project type-check.`);
+  console.log(
+    `[codex-lsp-bridge] LSP diagnostics clean for ${files.length} touched supported source file(s); not a full project type-check.`
+  );
   process.exit(0);
 }
 

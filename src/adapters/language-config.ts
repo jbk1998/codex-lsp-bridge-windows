@@ -21,13 +21,21 @@ export interface LanguageServerOverride {
 
 const serverByLanguage: Record<
   SupportedLanguage,
-  { languageId: string; command: string; args: string[]; extensions: string[]; workspaceSeedFiles: string[]; installHint: string; supportLevel: "primary" | "experimental" }
+  {
+    languageId: string;
+    command: string;
+    args: string[];
+    extensions: string[];
+    workspaceSeedFiles: string[];
+    installHint: string;
+    supportLevel: "primary" | "experimental";
+  }
 > = {
   typescript: {
     languageId: "typescript",
     command: "typescript-language-server",
     args: ["--stdio"],
-    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs"],
+    extensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"],
     workspaceSeedFiles: [
       "src/index.ts",
       "src/index.tsx",
@@ -132,8 +140,11 @@ function windowsExecutableExtensions(env: NodeJS.ProcessEnv): string[] {
   return [...configured.map((extension) => extension.toLowerCase()), ""];
 }
 
-export function listLanguageServerConfigs(rootPath: string): LanguageServerConfig[] {
-  return supportedLanguages().map((language) => createLanguageServerConfig(language, rootPath));
+export function listLanguageServerConfigs(
+  rootPath: string,
+  overrides: Partial<Record<SupportedLanguage, LanguageServerOverride>> = {}
+): LanguageServerConfig[] {
+  return supportedLanguages().map((language) => createLanguageServerConfig(language, rootPath, overrides[language]));
 }
 
 export function supportedLanguages(): SupportedLanguage[] {

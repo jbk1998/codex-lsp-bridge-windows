@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+- Bound MCP request lines to 1 MiB and active handlers to 64, cap outgoing LSP
+  payloads at 16 MiB, and contain asynchronous stdin failures by process
+  generation.
+- Read document content through a verified descriptor with root, canonical-path,
+  and file-identity checks before and after the read to close path-substitution
+  races.
+- Move root replacement into a tested manager registry that removes cleanly
+  retired managers and retains non-clean cleanup evidence for bounded retry.
+- Make malformed global and workspace config fail closed with path- and
+  field-specific diagnostics, and define idle timeout as a startup-root policy
+  for each MCP connection.
+- Enforce ESLint, Prettier, global coverage, and focused coverage floors; run
+  pinned TypeScript/Pyright integration tests with zero skips and deterministic
+  native Windows acceptance tests in dedicated CI jobs.
+- Replace long-lived npm publish tokens with OIDC trusted publishing using a
+  pinned compatible npm CLI and an explicit registry-binding checklist.
+- Keep non-cleanly suspended providers under manager ownership, permit later
+  bounded cleanup attempts, and prevent EOF from scheduling or waiting
+  indefinitely on idle suspension. Preserve suspension failures and pending
+  cleanup in the final lifecycle result without logging raw exception text.
+- Treat workspace `.codex/lsp-client.json` as untrusted input for process
+  selection: custom language-server commands and arguments now come only from
+  the user's global Codex config.
+- Validate directory-diagnostics bounds and severity at the MCP boundary instead
+  of silently replacing invalid values with broad defaults.
+- Recognize `.cjs` files consistently in explicit and directory diagnostics,
+  matching the existing hook and documentation contract.
+- Report the package version in the MCP initialize handshake, align public links
+  and lifecycle documentation with this fork, and test supported Node 22 and 24
+  releases on Ubuntu and Windows.
+- Make `doctor` report the trusted custom language-server command that runtime
+  requests will actually launch.
+- Commit package bin scripts with executable mode so npm installation does not
+  dirty a Unix checkout and direct bin execution has the expected permissions.
 - Document the staged process and lifecycle contract: direct native bridge
   runtime launch, explicit diagnostics with the automatic hook disabled during
   baseline, bounded in-process reuse, opt-in local measurement, positive and

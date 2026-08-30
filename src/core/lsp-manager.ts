@@ -19,10 +19,12 @@ import { canonicalizeWorkspaceRootSync, workspaceRootInstanceIdentitySync } from
 export interface LspManagerOptions {
   diagnosticsTimeoutMs?: number;
   languageServers?: Partial<Record<SupportedLanguage, LanguageServerOverride>>;
+  providerFactory?: (language: SupportedLanguage) => SemanticProvider;
 }
 
 export class LspManager {
   private readonly providers = new Map<SupportedLanguage, SemanticProvider>();
+  private readonly retiredProviders = new Set<SemanticProvider>();
   private suspendPromise: Promise<ProcessTerminationResult | void> | undefined;
   private disposePromise: Promise<ProcessTerminationResult | void> | undefined;
   private disposed = false;
@@ -45,6 +47,12 @@ export class LspManager {
     }
     const existing = this.providers.get(language);
     if (existing) return existing;
+
+    const injectedProvider = this.options.providerFactory?.(language);
+    if (injectedProvider) {
+      this.providers.set(language, injectedProvider);
+      return injectedProvider;
+    }
 
     const config = createLanguageServerConfig(language, this.rootPath, this.options.languageServers?.[language]);
     const inferredProjectOptions =
@@ -75,13 +83,19 @@ export class LspManager {
     const sharedDeadline = deadline ?? createDisposalDeadline();
     const providers = [...this.providers.values()];
     this.providers.clear();
-    const suspension = Promise.allSettled(
-      providers.map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline)))
-    ).then((settled) => {
-      const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
-      const rejectedCount = settled.filter((entry) => entry.status === "rejected").length;
-      return aggregateTerminationResults(results, rejectedCount);
-    });
+    for (const provider of providers) this.retiredProviders.add(provider);
+    const suspension = Promise.allSettled(providers.map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline)))).then(
+      (settled) => {
+        settled.forEach((entry, index) => {
+          if (entry.status === "fulfilled" && (!entry.value || entry.value.clean)) {
+            this.retiredProviders.delete(providers[index]);
+          }
+        });
+        const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
+        const rejectedCount = settled.filter((entry) => entry.status === "rejected").length;
+        return aggregateTerminationResults(results, rejectedCount);
+      }
+    );
     this.suspendPromise = suspension.finally(() => {
       this.suspendPromise = undefined;
     });
@@ -93,17 +107,30 @@ export class LspManager {
     this.disposed = true;
     const sharedDeadline = deadline ?? createDisposalDeadline();
     const suspension = this.suspendPromise;
-    this.disposePromise = (async () => {
+    const disposal = (async () => {
       if (suspension) await suspension;
-      const providers = [...this.providers.values()];
+      const providers = [...new Set([...this.providers.values(), ...this.retiredProviders])];
       this.providers.clear();
-      const settled = await Promise.allSettled(
-        providers.map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline)))
-      );
+      for (const provider of providers) this.retiredProviders.add(provider);
+      const settled = await Promise.allSettled(providers.map((provider) => Promise.resolve().then(() => provider.dispose(sharedDeadline))));
+      settled.forEach((entry, index) => {
+        if (entry.status === "fulfilled" && (!entry.value || entry.value.clean)) {
+          this.retiredProviders.delete(providers[index]);
+        }
+      });
       const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
       const rejectedCount = settled.filter((entry) => entry.status === "rejected").length;
       return aggregateTerminationResults(results, rejectedCount);
     })();
-    return this.disposePromise;
+    this.disposePromise = disposal;
+    void disposal.then(
+      (result) => {
+        if (result && !result.clean && this.disposePromise === disposal) this.disposePromise = undefined;
+      },
+      () => {
+        if (this.disposePromise === disposal) this.disposePromise = undefined;
+      }
+    );
+    return disposal;
   }
 }

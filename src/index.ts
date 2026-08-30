@@ -5,17 +5,13 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { summarizeConclusion } from "./core/diagnostics.js";
 import { WorkspaceCommandService } from "./core/command-service.js";
-import { loadConfig } from "./core/config.js";
+import { loadConfig, resolveMcpConnectionIdleTimeout } from "./core/config.js";
 import { resolveDiagnosticsTimeout } from "./core/diagnostics-timeout.js";
 import { runDoctor } from "./core/doctor.js";
 import { LspManager } from "./core/lsp-manager.js";
+import { ManagerRegistry } from "./core/manager-registry.js";
 import { revalidateNativeNodeRuntime, validateNativeNodeRuntime, type NativeNodeRuntimeValidation } from "./core/native-node-runtime.js";
-import {
-  aggregateTerminationResults,
-  createDisposalDeadline,
-  type DisposalDeadline,
-  type ProcessTerminationResult
-} from "./core/process-ownership.js";
+import { createDisposalDeadline, type DisposalDeadline } from "./core/process-ownership.js";
 import {
   resolvePathInsideWorkspaceRootSync,
   canonicalizeWorkspaceRootSync,
@@ -26,7 +22,12 @@ import {
 } from "./core/workspace-root.js";
 import { supportedExtensionsForLanguage } from "./adapters/language-config.js";
 import { filePathToUri } from "./utils/uri.js";
-import { runStdioMcp } from "./transport/mcp.js";
+import {
+  maxDirectoryDiagnosticConcurrency,
+  maxDirectoryDiagnosticFiles,
+  maxDirectoryDiagnosticTimeoutBudgetMs,
+  runStdioMcp
+} from "./transport/mcp.js";
 import type { SupportedLanguage } from "./adapters/language-config.js";
 import type { DiagnosticStatus, DiagnosticSummary } from "./core/types.js";
 
@@ -41,11 +42,6 @@ interface SourceFileListCacheEntry {
   createdAt: number;
   files: string[];
   truncated: boolean;
-}
-
-interface ManagerEntry {
-  instanceIdentity: string;
-  manager: LspManager;
 }
 
 async function main(): Promise<void> {
@@ -70,51 +66,31 @@ async function main(): Promise<void> {
 
   const root = path.resolve(readOption(args, "--root") ?? process.cwd());
   const config = loadConfig(root);
-  const managers = new Map<string, ManagerEntry>();
-  const retiredManagers = new Set<LspManager>();
+  // One MCP connection owns one idle timer. Root-specific requests may create
+  // managers, but they do not change this startup-root lifecycle policy.
+  const connectionIdleTimeoutMs = resolveMcpConnectionIdleTimeout(config);
+  const managers = new ManagerRegistry<LspManager>();
   const sourceFileListCache = new Map<string, SourceFileListCacheEntry>();
   let mcpOwnsDisposal = false;
-  const allManagers = () => [...new Set([
-    ...[...managers.values()].map((entry) => entry.manager),
-    ...retiredManagers
-  ])];
-  const disposeManagers = async (deadline: DisposalDeadline): Promise<ProcessTerminationResult | void> => {
-    const settled = await Promise.allSettled(allManagers().map((manager) => Promise.resolve().then(() => manager.dispose(deadline))));
-    const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
-    return aggregateTerminationResults(
-      results,
-      settled.filter((entry) => entry.status === "rejected").length
-    );
-  };
-  const suspendManagers = async (deadline: DisposalDeadline): Promise<ProcessTerminationResult | void> => {
-    const settled = await Promise.allSettled(allManagers().map((manager) => Promise.resolve().then(() => manager.suspend(deadline))));
-    const results = settled.map((entry) => (entry.status === "fulfilled" ? entry.value : undefined));
-    return aggregateTerminationResults(
-      results,
-      settled.filter((entry) => entry.status === "rejected").length
-    );
-  };
+  const disposeManagers = (deadline: DisposalDeadline) => managers.disposeAll(deadline);
+  const suspendManagers = (deadline: DisposalDeadline) => managers.suspendAll(deadline);
   const serviceForRoot = (serviceRoot: string, languageOverride?: SupportedLanguage) => {
     const resolvedRoot = canonicalizeWorkspaceRootSync(serviceRoot);
     const rootIdentity = workspaceRootIdentitySync(resolvedRoot);
     const instanceIdentity = workspaceRootInstanceIdentitySync(resolvedRoot);
     const rootConfig = loadConfig(resolvedRoot);
-    const existingEntry = managers.get(rootIdentity);
-    let scopedManager = existingEntry?.instanceIdentity === instanceIdentity ? existingEntry.manager : undefined;
-    if (!scopedManager) {
-      if (existingEntry) {
-        retiredManagers.add(existingEntry.manager);
-        sourceFileListCache.clear();
-        void existingEntry.manager.dispose(createDisposalDeadline()).catch(() => undefined);
-      }
-      const diagnosticsTimeout = resolveDiagnosticsTimeout(resolvedRoot, rootConfig.diagnosticsTimeoutMs);
-      scopedManager = new LspManager(resolvedRoot, {
-        diagnosticsTimeoutMs: diagnosticsTimeout.timeoutMs,
-        languageServers: rootConfig.languageServers
-      });
-      managers.set(rootIdentity, { instanceIdentity, manager: scopedManager });
-    }
-    return new WorkspaceCommandService(scopedManager, languageOverride ?? rootConfig.defaultLanguage);
+    const diagnosticsTimeout = resolveDiagnosticsTimeout(resolvedRoot, rootConfig.diagnosticsTimeoutMs);
+    const lookup = managers.getOrCreate(
+      rootIdentity,
+      instanceIdentity,
+      () =>
+        new LspManager(resolvedRoot, {
+          diagnosticsTimeoutMs: diagnosticsTimeout.timeoutMs,
+          languageServers: rootConfig.languageServers
+        })
+    );
+    if (lookup.replaced) sourceFileListCache.clear();
+    return new WorkspaceCommandService(lookup.manager, languageOverride ?? rootConfig.defaultLanguage);
   };
 
   try {
@@ -128,7 +104,7 @@ async function main(): Promise<void> {
 
     if (args[0] === "mcp") {
       await runStdioMcp(service, {
-        idleTimeoutMs: config.mcpIdleTimeoutMs,
+        idleTimeoutMs: connectionIdleTimeoutMs,
         suspend: (deadline) => suspendManagers(deadline),
         dispose: (deadline) => {
           mcpOwnsDisposal = true;
@@ -138,11 +114,34 @@ async function main(): Promise<void> {
         serviceForParams: (params) => serviceForRoot(resolveRequestedRootSync(root, params), language),
         directoryDiagnostics: async ({ dir, severity, root: requestedRoot, maxFiles, timeoutBudgetMs, concurrency }) => {
           const effectiveRoot = resolveRequestedRootSync(root, { dir, root: requestedRoot });
-          return collectDirectoryDiagnostics(effectiveRoot, dir, language, severity, serviceForRoot, {
-            maxFiles: readPositiveIntegerValue(maxFiles, defaultDirectoryDiagnosticsOptions.maxFiles),
-            timeoutBudgetMs: readPositiveIntegerValue(timeoutBudgetMs, defaultDirectoryDiagnosticsOptions.timeoutBudgetMs),
-            concurrency: readPositiveIntegerValue(concurrency, defaultDirectoryDiagnosticsOptions.concurrency)
-          }, sourceFileListCache);
+          return collectDirectoryDiagnostics(
+            effectiveRoot,
+            dir,
+            language,
+            severity,
+            serviceForRoot,
+            {
+              maxFiles: readBoundedPositiveIntegerValue(
+                maxFiles,
+                defaultDirectoryDiagnosticsOptions.maxFiles,
+                maxDirectoryDiagnosticFiles,
+                "maxFiles"
+              ),
+              timeoutBudgetMs: readBoundedPositiveIntegerValue(
+                timeoutBudgetMs,
+                defaultDirectoryDiagnosticsOptions.timeoutBudgetMs,
+                maxDirectoryDiagnosticTimeoutBudgetMs,
+                "timeoutBudgetMs"
+              ),
+              concurrency: readBoundedPositiveIntegerValue(
+                concurrency,
+                defaultDirectoryDiagnosticsOptions.concurrency,
+                maxDirectoryDiagnosticConcurrency,
+                "concurrency"
+              )
+            },
+            sourceFileListCache
+          );
         }
       });
       return;
@@ -159,15 +158,35 @@ async function main(): Promise<void> {
         if (readOption(args, "--timeout-ms") !== undefined) {
           throw new Error("--timeout-ms is only valid for file diagnostics; use --timeout-budget-ms for directory diagnostics");
         }
-        console.log(JSON.stringify(await collectDirectoryDiagnostics(root, dir, language, severity, serviceForRoot, readDirectoryDiagnosticsOptions(args), sourceFileListCache), null, 2));
+        console.log(
+          JSON.stringify(
+            await collectDirectoryDiagnostics(
+              root,
+              dir,
+              language,
+              severity,
+              serviceForRoot,
+              readDirectoryDiagnosticsOptions(args),
+              sourceFileListCache
+            ),
+            null,
+            2
+          )
+        );
         return;
       }
       if (readOption(args, "--timeout-budget-ms") !== undefined) {
         throw new Error("--timeout-budget-ms is only valid for directory diagnostics; use --timeout-ms for file diagnostics");
       }
-      console.log(JSON.stringify(await service.diagnostics(file ? filePathToUri(resolveFileInsideRoot(root, file)) : undefined, {
-        timeoutMs: readOptionalPositiveIntegerOption(args, "--timeout-ms")
-      }), null, 2));
+      console.log(
+        JSON.stringify(
+          await service.diagnostics(file ? filePathToUri(resolveFileInsideRoot(root, file)) : undefined, {
+            timeoutMs: readOptionalPositiveIntegerOption(args, "--timeout-ms")
+          }),
+          null,
+          2
+        )
+      );
       return;
     }
     if (command === "definition") {
@@ -273,14 +292,24 @@ function printUsage(stream: "stdout" | "stderr"): void {
 
 function readDirectoryDiagnosticsOptions(args: string[]): DirectoryDiagnosticsOptions {
   return {
-    maxFiles: readPositiveIntegerOption(args, "--max-files", defaultDirectoryDiagnosticsOptions.maxFiles),
-    timeoutBudgetMs: readPositiveIntegerOption(args, "--timeout-budget-ms", defaultDirectoryDiagnosticsOptions.timeoutBudgetMs),
-    concurrency: readPositiveIntegerOption(args, "--concurrency", defaultDirectoryDiagnosticsOptions.concurrency)
+    maxFiles: readPositiveIntegerOption(args, "--max-files", defaultDirectoryDiagnosticsOptions.maxFiles, maxDirectoryDiagnosticFiles),
+    timeoutBudgetMs: readPositiveIntegerOption(
+      args,
+      "--timeout-budget-ms",
+      defaultDirectoryDiagnosticsOptions.timeoutBudgetMs,
+      maxDirectoryDiagnosticTimeoutBudgetMs
+    ),
+    concurrency: readPositiveIntegerOption(
+      args,
+      "--concurrency",
+      defaultDirectoryDiagnosticsOptions.concurrency,
+      maxDirectoryDiagnosticConcurrency
+    )
   };
 }
 
-function readPositiveIntegerOption(args: string[], option: string, fallback: number): number {
-  return readPositiveIntegerValue(readNumberOption(args, option), fallback);
+function readPositiveIntegerOption(args: string[], option: string, fallback: number, maximum: number): number {
+  return readBoundedPositiveIntegerValue(readNumberOption(args, option), fallback, maximum, option);
 }
 
 function readOptionalPositiveIntegerOption(args: string[], option: string): number | undefined {
@@ -290,8 +319,12 @@ function readOptionalPositiveIntegerOption(args: string[], option: string): numb
   return value;
 }
 
-function readPositiveIntegerValue(value: number | undefined, fallback: number): number {
-  return Number.isInteger(value) && value !== undefined && value > 0 ? value : fallback;
+function readBoundedPositiveIntegerValue(value: number | undefined, fallback: number, maximum: number, label: string): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
+    throw new Error(`${label} must be a positive integer no greater than ${maximum}`);
+  }
+  return value;
 }
 
 interface DirectoryDiagnosticsOptions {
@@ -303,18 +336,28 @@ interface DirectoryDiagnosticsOptions {
 async function collectSourceFiles(
   directory: string,
   maxFiles: number,
-  language: SupportedLanguage
-): Promise<{ files: string[]; truncated: boolean }> {
+  language: SupportedLanguage,
+  deadlineAt: number
+): Promise<{ files: string[]; truncated: boolean; timedOut: boolean }> {
   const skipped = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules"]);
   const extensions = new Set(supportedExtensionsForLanguage(language));
   const files: string[] = [];
   let truncated = false;
+  let timedOut = false;
 
   async function visit(currentDirectory: string): Promise<void> {
-    if (truncated) return;
+    if (truncated || timedOut) return;
+    if (Date.now() >= deadlineAt) {
+      timedOut = true;
+      return;
+    }
     const entries = await fs.readdir(currentDirectory, { withFileTypes: true }).catch(() => []);
     for (const entry of entries) {
-      if (truncated) return;
+      if (truncated || timedOut) return;
+      if (Date.now() >= deadlineAt) {
+        timedOut = true;
+        return;
+      }
       const entryPath = path.join(currentDirectory, entry.name);
       if (entry.isDirectory() && !skipped.has(entry.name)) {
         await visit(entryPath);
@@ -331,7 +374,7 @@ async function collectSourceFiles(
   }
 
   await visit(directory);
-  return { files, truncated };
+  return { files, truncated, timedOut };
 }
 
 async function collectDirectoryDiagnostics(
@@ -343,16 +386,18 @@ async function collectDirectoryDiagnostics(
   options: DirectoryDiagnosticsOptions,
   sourceFileListCache: Map<string, SourceFileListCacheEntry>
 ) {
-  const scopedService = serviceForRoot(root, language);
   const startedAt = Date.now();
+  const deadlineAt = startedAt + options.timeoutBudgetMs;
+  const scopedService = serviceForRoot(root, language);
   const sourceFiles = await readCachedSourceFiles(
     resolveDirectoryInsideRoot(root, dir),
     options.maxFiles,
     language,
-    sourceFileListCache
+    sourceFileListCache,
+    deadlineAt
   );
   const summaries: DiagnosticSummary[] = [];
-  let budgetTimedOut = false;
+  let budgetTimedOut = sourceFiles.timedOut;
 
   for (let index = 0; index < sourceFiles.files.length; index += options.concurrency) {
     if (Date.now() - startedAt >= options.timeoutBudgetMs) {
@@ -386,20 +431,23 @@ async function readCachedSourceFiles(
   directory: string,
   maxFiles: number,
   language: SupportedLanguage,
-  cache: Map<string, SourceFileListCacheEntry>
-): Promise<{ files: string[]; truncated: boolean; cached: boolean }> {
+  cache: Map<string, SourceFileListCacheEntry>,
+  deadlineAt: number
+): Promise<{ files: string[]; truncated: boolean; cached: boolean; timedOut: boolean }> {
   const cacheKey = `${directory}\0${language}\0${maxFiles}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.createdAt <= sourceFileListCacheTtlMs) {
-    return { files: cached.files, truncated: cached.truncated, cached: true };
+    return { files: cached.files, truncated: cached.truncated, cached: true, timedOut: false };
   }
 
-  const collected = await collectSourceFiles(directory, maxFiles, language);
-  cache.set(cacheKey, {
-    createdAt: Date.now(),
-    files: collected.files,
-    truncated: collected.truncated
-  });
+  const collected = await collectSourceFiles(directory, maxFiles, language, deadlineAt);
+  if (!collected.timedOut) {
+    cache.set(cacheKey, {
+      createdAt: Date.now(),
+      files: collected.files,
+      truncated: collected.truncated
+    });
+  }
   return { ...collected, cached: false };
 }
 
@@ -431,14 +479,13 @@ function mergeDiagnosticSummaries(summaries: Array<Awaited<ReturnType<WorkspaceC
     total: items.length,
     bySeverity,
     items,
-    summary: items.slice(0, 10).map((item, index) => `${index + 1}. ${item.severity.toUpperCase()} ${item.file}:${item.line}:${item.character} ${item.message}`)
+    summary: items
+      .slice(0, 10)
+      .map((item, index) => `${index + 1}. ${item.severity.toUpperCase()} ${item.file}:${item.line}:${item.character} ${item.message}`)
   };
 }
 
-function filterDiagnosticSummary(
-  summary: DiagnosticSummary,
-  severity: string | undefined
-): DiagnosticSummary {
+function filterDiagnosticSummary(summary: DiagnosticSummary, severity: string | undefined): DiagnosticSummary {
   if (!severity) return summary;
   const items = summary.items.filter((item) => item.severity === severity);
   return {

@@ -105,19 +105,15 @@ export async function runPostToolUseDiagnostics({
       continue;
     }
 
-    const result = spawnSyncImpl(processExecPath, [
-      bridgeCli,
-      "diagnostics",
-      ...languageFiles.flatMap((file) => ["--file", file]),
-      "--language",
-      language,
-      "--root",
-      repoRoot
-    ], {
-      cwd: repoRoot,
-      encoding: "utf8",
-      maxBuffer: 1024 * 1024
-    });
+    const result = spawnSyncImpl(
+      processExecPath,
+      [bridgeCli, "diagnostics", ...languageFiles.flatMap((file) => ["--file", file]), "--language", language, "--root", repoRoot],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        maxBuffer: 1024 * 1024
+      }
+    );
 
     if (result.status !== 0) {
       diagnostics.push({
@@ -151,9 +147,7 @@ export function hashRoot(root) {
 function formatDiagnosticsOutput(diagnostics, files, repoRoot, verbosePending, fsImpl, skippedServers = new Map()) {
   if (diagnostics.length === 0) {
     if (verbosePending && skippedServers.size > 0) {
-      const skipped = [...skippedServers.entries()]
-        .map(([command, count]) => `${count} file(s) need ${command}`)
-        .join(", ");
+      const skipped = [...skippedServers.entries()].map(([command, count]) => `${count} file(s) need ${command}`).join(", ");
       return { exitCode: 0, stdout: `[codex-lsp-bridge] skipped diagnostics; missing language server(s): ${skipped}.\n` };
     }
     return { exitCode: 0, stdout: "" };
@@ -198,13 +192,18 @@ function formatDiagnosticsOutput(diagnostics, files, repoRoot, verbosePending, f
 }
 
 function createDiagnosticsCacheKey(files, repoRoot, fsImpl) {
-  return crypto.createHash("sha256").update(JSON.stringify({
-    schemaVersion: cacheSchemaVersion,
-    rootHash: hashRoot(repoRoot),
-    bridgeVersion: readBridgeVersion(repoRoot, fsImpl),
-    files: files.map((file) => fingerprintFile(file, fsImpl)),
-    project: projectFingerprintFiles.map((file) => fingerprintOptionalFile(path.join(repoRoot, file), file, fsImpl))
-  })).digest("hex");
+  return crypto
+    .createHash("sha256")
+    .update(
+      JSON.stringify({
+        schemaVersion: cacheSchemaVersion,
+        rootHash: hashRoot(repoRoot),
+        bridgeVersion: readBridgeVersion(repoRoot, fsImpl),
+        files: files.map((file) => fingerprintFile(file, fsImpl)),
+        project: projectFingerprintFiles.map((file) => fingerprintOptionalFile(path.join(repoRoot, file), file, fsImpl))
+      })
+    )
+    .digest("hex");
 }
 
 function readCachedDiagnostics(cacheKey, repoRoot, env, fsImpl) {
@@ -225,12 +224,15 @@ function writeCachedDiagnostics(cacheKey, diagnostics, repoRoot, env, fsImpl) {
   try {
     const cachePath = diagnosticsCachePath(repoRoot);
     const tempPath = `${cachePath}.${process.pid}.tmp`;
-    fsImpl.writeFileSync(tempPath, JSON.stringify({
-      schemaVersion: cacheSchemaVersion,
-      key: cacheKey,
-      diagnostics,
-      createdAt: Date.now()
-    }));
+    fsImpl.writeFileSync(
+      tempPath,
+      JSON.stringify({
+        schemaVersion: cacheSchemaVersion,
+        key: cacheKey,
+        diagnostics,
+        createdAt: Date.now()
+      })
+    );
     fsImpl.renameSync(tempPath, cachePath);
   } catch {
     // Cache is an optimization only. Diagnostics rerun on cache failures.
@@ -301,13 +303,17 @@ async function tryIpcDiagnostics(files, { repoRoot, env, fsImpl, sendIpcRequestI
     }
     if (typeof metadata.endpoint !== "string" || typeof metadata.secret !== "string") return undefined;
     const timeoutMs = readPositiveInteger(env.CODEX_LSP_HOOK_IPC_TIMEOUT_MS, defaultIpcTimeoutMs);
-    const response = await sendIpcRequestImpl(metadata.endpoint, {
-      protocolVersion: diagnosticsIpcProtocolVersion,
-      rootHash: metadata.rootHash,
-      secret: metadata.secret,
-      root: repoRoot,
-      files
-    }, timeoutMs);
+    const response = await sendIpcRequestImpl(
+      metadata.endpoint,
+      {
+        protocolVersion: diagnosticsIpcProtocolVersion,
+        rootHash: metadata.rootHash,
+        secret: metadata.secret,
+        root: repoRoot,
+        files
+      },
+      timeoutMs
+    );
     if (!response || typeof response !== "object") return undefined;
     if (response.ok === true) return { kind: "success", diagnostics: response.result };
     if (response.error?.kind === "security") return { kind: "security", message: response.error.message };

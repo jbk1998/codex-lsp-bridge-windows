@@ -3,12 +3,24 @@ import path from "node:path";
 import type { LspClient, ServerProcessConfig } from "./json-rpc-lsp-client.js";
 import type { DisposalDeadline, ProcessTerminationResult } from "./process-ownership.js";
 import { lspSeverityToText } from "./diagnostics.js";
-import type { Diagnostic, DiagnosticOptions, DiagnosticReport, DocumentPosition, HoverInfo, Location, Position, SemanticProvider, SymbolMatch } from "./types.js";
+import type {
+  Diagnostic,
+  DiagnosticOptions,
+  DiagnosticReport,
+  DocumentPosition,
+  HoverInfo,
+  Location,
+  Position,
+  SemanticProvider,
+  SymbolMatch
+} from "./types.js";
 import { canonicalizeFileUri, filePathToUri, uriToFilePath } from "../utils/uri.js";
 import {
   canonicalizeTargetPathSync,
   canonicalizeWorkspaceRootSync,
   isPathInsideWorkspaceRootSync,
+  readVerifiedWorkspaceFileUtf8,
+  type WorkspaceFileIdentity,
   workspaceRootInstanceIdentitySync
 } from "./workspace-root.js";
 import { DocumentRegistry } from "./document-registry.js";
@@ -111,11 +123,7 @@ export class LspSemanticProvider implements SemanticProvider {
   private createClient(): LspClient {
     const client = this.options.clientFactory(this.options.server);
     client.on("notification", (method: string, params: unknown) => {
-      if (
-        !this.disposed &&
-        client === this.client &&
-        method === "textDocument/publishDiagnostics"
-      ) this.captureDiagnostics(params);
+      if (!this.disposed && client === this.client && method === "textDocument/publishDiagnostics") this.captureDiagnostics(params);
     });
     client.on("exit", () => this.handleClientExit(client));
     return client;
@@ -173,11 +181,7 @@ export class LspSemanticProvider implements SemanticProvider {
       }
       let timedOut = false;
       const publishedSourceRevision = this.diagnosticsSourceRevisionByUri.get(document.uri);
-      if (
-        openedDocument.changed ||
-        !this.diagnosticsByUri.has(document.uri) ||
-        publishedSourceRevision !== openedDocument.sourceRevision
-      ) {
+      if (openedDocument.changed || !this.diagnosticsByUri.has(document.uri) || publishedSourceRevision !== openedDocument.sourceRevision) {
         // Recovery may reopen a document and receive its fresh diagnostics before
         // this call can register a waiter. The current revision is therefore the
         // baseline; the source-revision check still prevents an old notification
@@ -199,9 +203,7 @@ export class LspSemanticProvider implements SemanticProvider {
 
     const documents = this.documentRegistry.entries();
     const sourceRevisions = documents.map(([, document]) => document.version);
-    const stale = documents.some(
-      ([uri, document]) => this.diagnosticsSourceRevisionByUri.get(uri) !== document.version
-    );
+    const stale = documents.some(([uri, document]) => this.diagnosticsSourceRevisionByUri.get(uri) !== document.version);
     return {
       status: "ok",
       timedOut: false,
@@ -318,7 +320,18 @@ export class LspSemanticProvider implements SemanticProvider {
     this.documentRegistry.clear();
     this.cancelDiagnosticsCandidates();
     this.diagnosticsWaiters.cancel();
-    this.disposePromise = this.client.stop(deadline);
+    const disposal = this.client.stop(deadline);
+    const trackedDisposal = disposal.then(
+      (result) => {
+        if (result && !result.clean && this.disposePromise === trackedDisposal) this.disposePromise = undefined;
+        return result;
+      },
+      (error) => {
+        if (this.disposePromise === trackedDisposal) this.disposePromise = undefined;
+        throw error;
+      }
+    );
+    this.disposePromise = trackedDisposal;
     return this.disposePromise;
   }
 
@@ -374,6 +387,7 @@ export class LspSemanticProvider implements SemanticProvider {
   }
 
   private async notifyWithRecovery(method: string, params: unknown): Promise<void> {
+    this.assertRootInstanceCurrent();
     const client = this.client;
     const generation = this.generation;
 
@@ -453,6 +467,7 @@ export class LspSemanticProvider implements SemanticProvider {
 
       if (reopenDocuments) {
         for (const [uri, document] of this.documentRegistry.entries()) {
+          this.assertRootInstanceCurrent();
           this.pendingSourceRevisionByUri.set(uri, { generation, version: document.version });
           client.notify("textDocument/didOpen", {
             textDocument: {
@@ -480,7 +495,14 @@ export class LspSemanticProvider implements SemanticProvider {
     await this.ensureInitialized();
     const document = await this.resolveDocument(uri);
     return this.documentRegistry.runSerialized(document.uri, async () => {
-      const text = await fs.readFile(document.filePath, "utf8");
+      this.assertRootInstanceCurrent();
+      const text = await readVerifiedWorkspaceFileUtf8(
+        this.options.rootPath,
+        await this.rootRealPathPromise,
+        document.filePath,
+        document.fileIdentity
+      );
+      this.assertRootInstanceCurrent();
       const opened = this.documentRegistry.get(document.uri);
 
       if (!opened) {
@@ -596,7 +618,7 @@ export class LspSemanticProvider implements SemanticProvider {
     this.diagnosticsWaiters.schedule(uri, revision);
   }
 
-  private async resolveDocument(uri: string): Promise<{ uri: string; filePath: string }> {
+  private async resolveDocument(uri: string): Promise<{ uri: string; filePath: string; fileIdentity: WorkspaceFileIdentity }> {
     this.assertRootInstanceCurrent();
     const inputPath = path.resolve(uriToFilePath(uri));
     let realFilePath: string;
@@ -624,9 +646,12 @@ export class LspSemanticProvider implements SemanticProvider {
       throw new Error(`File is outside workspace root: ${inputPath}`);
     }
 
+    const fileStats = await fs.stat(canonicalFilePath);
+
     return {
       uri: filePathToUri(canonicalFilePath),
-      filePath: canonicalFilePath
+      filePath: canonicalFilePath,
+      fileIdentity: { dev: fileStats.dev, ino: fileStats.ino }
     };
   }
 
@@ -728,8 +753,11 @@ function normalizeHoverContents(contents: LspHover["contents"]): string {
 function isPublishDiagnosticsParams(value: unknown): value is PublishDiagnosticsParams {
   if (!value || typeof value !== "object") return false;
   const candidate = value as { uri?: unknown; version?: unknown; diagnostics?: unknown };
-  return typeof candidate.uri === "string" && Array.isArray(candidate.diagnostics) &&
-    (candidate.version === undefined || typeof candidate.version === "number");
+  return (
+    typeof candidate.uri === "string" &&
+    Array.isArray(candidate.diagnostics) &&
+    (candidate.version === undefined || typeof candidate.version === "number")
+  );
 }
 
 function isMissingLanguageServerError(error: unknown): boolean {
@@ -738,7 +766,8 @@ function isMissingLanguageServerError(error: unknown): boolean {
 
 function formatInitializationFailure(error: unknown): string {
   if (isMissingLanguageServerError(error)) return error instanceof Error ? error.message : "Language server unavailable";
-  if (error instanceof Error && error.message.includes("LSP server exited")) return "LSP server exited before the request completed (server_exited)";
+  if (error instanceof Error && error.message.includes("LSP server exited"))
+    return "LSP server exited before the request completed (server_exited)";
   if (error instanceof Error && error.message === "LSP server recovery failed") return "LSP server recovery failed (server_exited)";
   if (isWorkspaceRootChangedError(error)) return `${error.message}`;
   return error instanceof Error ? `${error.message} (server_exited)` : "Language server unavailable (server_exited)";
@@ -836,17 +865,7 @@ function symbolKindName(kind: number): string {
   return names[kind] ?? `Unknown(${kind})`;
 }
 
-const skippedDirectories = new Set([
-  ".git",
-  ".next",
-  ".turbo",
-  ".vercel",
-  "build",
-  "coverage",
-  "dist",
-  "node_modules",
-  "out"
-]);
+const skippedDirectories = new Set([".git", ".next", ".turbo", ".vercel", "build", "coverage", "dist", "node_modules", "out"]);
 
 async function findFirstSourceFile(rootPath: string, extensions: string[]): Promise<string | undefined> {
   if (extensions.length === 0) return undefined;

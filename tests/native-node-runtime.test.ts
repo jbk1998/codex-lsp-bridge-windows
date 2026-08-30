@@ -54,9 +54,7 @@ describe("native node runtime descriptor", () => {
     const validation = validateNativeNodeRuntime(runtimePath);
     fs.appendFileSync(runtimePath, "replacement");
 
-    expect(() => revalidateNativeNodeRuntime(validation)).toThrowError(
-      expect.objectContaining({ code: "runtime_identity_changed" })
-    );
+    expect(() => revalidateNativeNodeRuntime(validation)).toThrowError(expect.objectContaining({ code: "runtime_identity_changed" }));
   });
 
   it("rejects unsafe structured launch arguments", () => {
