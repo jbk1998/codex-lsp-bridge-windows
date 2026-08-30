@@ -191,9 +191,11 @@ async function terminateChild(
   try {
     currentIdentity = identityProvider.read(child.pid);
   } catch {
+    if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
     return { clean: false, reasonCode: "identity_mismatch" };
   }
   if (!currentIdentity || !sameProcessIdentity(launchIdentity, currentIdentity)) {
+    if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
     return { clean: false, reasonCode: "identity_mismatch" };
   }
 

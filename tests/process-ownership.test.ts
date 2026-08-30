@@ -65,6 +65,24 @@ describe("process ownership", () => {
     expect(child.killCalls).toBe(0);
   });
 
+  it("accepts a graceful exit that races the final identity read", async () => {
+    const child = new FakeChild();
+    let reads = 0;
+    const ownership = createProcessOwnership(child, {
+      identityProvider: {
+        read: (pid) => {
+          reads += 1;
+          if (reads === 1) return { pid, creationToken: "launch" };
+          child.exit();
+          return undefined;
+        }
+      }
+    });
+
+    await expect(ownership.terminate(Date.now() + 100)).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
+    expect(child.killCalls).toBe(0);
+  });
+
   it("keeps wrapper descendants non-clean unless ownership is verified", async () => {
     const child = new FakeChild();
     const ownership = createProcessOwnership(child, {

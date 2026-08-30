@@ -108,8 +108,12 @@ export async function readVerifiedWorkspaceFileUtf8(
   expectedTargetPath: string,
   expectedTargetIdentity?: WorkspaceFileIdentity
 ): Promise<string> {
-  const canonicalRootPath = normalizePathIdentity(expectedRootPath);
-  const canonicalTargetPath = normalizePathIdentity(expectedTargetPath);
+  // Resolve both sides through the same filesystem API before comparing them.
+  // On Windows, mixing caller-canonicalized paths with async realpath results
+  // can retain different short/long-name aliases even after namespace-prefix
+  // normalization.
+  const canonicalRootPath = normalizePathIdentity(await fs.realpath(expectedRootPath));
+  const canonicalTargetPath = normalizePathIdentity(await fs.realpath(expectedTargetPath));
   assertCanonicalTargetInsideRoot(canonicalTargetPath, canonicalRootPath, expectedTargetPath);
 
   const initialTargetStats = await revalidateWorkspaceFilePath(rootPath, canonicalRootPath, canonicalTargetPath);
