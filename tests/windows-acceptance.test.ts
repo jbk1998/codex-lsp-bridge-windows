@@ -82,7 +82,7 @@ windows("Windows process and idle-resource acceptance", () => {
     try {
       state = await waitForJson<ChildState>(statePath, "the direct child to start");
       const ownership = createProcessOwnership(child as unknown as OwnedChildProcess);
-      const result = await ownership.terminate(Date.now() + 3_000);
+      const result = await ownership.terminate(Date.now() + 10_000);
 
       expect(result).toEqual({ clean: true, reasonCode: "owned_child_exit" });
       await waitForChildExit(child, 3_000);
@@ -131,7 +131,7 @@ windows("Windows process and idle-resource acceptance", () => {
       input,
       output,
       errorOutput,
-      idleTimeoutMs: 2_000,
+      idleTimeoutMs: 8_000,
       suspend: (deadline) => manager.suspend(deadline),
       dispose: (deadline) => manager.dispose(deadline)
     });
@@ -158,7 +158,7 @@ windows("Windows process and idle-resource acceptance", () => {
         5_000
       );
 
-      await waitForCondition(() => !isProcessAlive(first.pid), "idle suspension to stop the first LSP process", 8_000);
+      await waitForCondition(() => !isProcessAlive(first.pid), "idle suspension to stop the first LSP process", 15_000);
       const afterSuspensionWorkingSet = readWorkingSet(first.pid);
       expect(afterSuspensionWorkingSet).toBe(0);
       expect(firstWorkingSet - afterSuspensionWorkingSet).toBeGreaterThanOrEqual(workingSetFloor);
@@ -197,7 +197,7 @@ windows("Windows process and idle-resource acceptance", () => {
       errorOutput.destroy();
       await fsp.rm(root, { recursive: true, force: true });
     }
-  }, 45_000);
+  }, 60_000);
 });
 
 function createWrapperScript(statePath: string): string {

@@ -274,9 +274,10 @@ function readWindowsProcessIdentity(pid: number): ProcessIdentity | undefined {
   const output = execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-    // A cold Windows PowerShell startup exceeded one second on hosted CI.
-    // Three seconds remains bounded while avoiding false identity failures.
-    timeout: 3000,
+    // A cold Windows PowerShell startup can exceed three seconds under hosted
+    // runner load. Five seconds remains bounded while avoiding false identity
+    // failures for a healthy owned child.
+    timeout: 5000,
     windowsHide: true
   }).trim();
   const normalizedOutput = output.replace(/^\uFEFF/, "").trim();

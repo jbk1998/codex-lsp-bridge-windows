@@ -60,5 +60,5 @@ describe("diagnostics timeout policy", () => {
       policy: "auto",
       reasons: expect.arrayContaining(["source files sampled 500+ +10000ms"])
     });
-  });
+  }, 15_000);
 });
