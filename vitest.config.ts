@@ -1,5 +1,10 @@
 import { defineConfig } from "vitest/config";
 
+const processOwnershipThresholds =
+  process.platform === "win32"
+    ? { statements: 50, branches: 50, functions: 70, lines: 55 }
+    : { statements: 55, branches: 55, functions: 75, lines: 60 };
+
 export default defineConfig({
   test: {
     coverage: {
@@ -13,12 +18,11 @@ export default defineConfig({
         branches: 72,
         functions: 80,
         lines: 80,
-        "src/core/process-ownership.ts": {
-          statements: 55,
-          branches: 55,
-          functions: 75,
-          lines: 60
-        },
+        // The implementation contains mutually exclusive Linux and Windows
+        // process-inspection branches. Keep strong per-file floors based on
+        // what each runner can execute instead of making one OS cover the
+        // other's native path.
+        "src/core/process-ownership.ts": processOwnershipThresholds,
         "src/core/native-node-runtime.ts": {
           statements: 62,
           branches: 59,

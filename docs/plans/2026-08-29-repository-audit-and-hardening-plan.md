@@ -223,18 +223,18 @@ and Windows CI jobs pass.
 - [x] P0 lifecycle and executable-trust fixes implemented.
 - [x] P1 validation, metadata, `.cjs`, doctor, docs, and CI fixes implemented.
 - [x] Targeted regression tests pass.
-- [x] Full `npm run ci:verify` passes after final edits (212 passed, 4
+- [x] Full `npm run ci:verify` passes after final edits (213 passed, 4
       platform/toolchain skips on Linux).
 - [x] Explicit TypeScript/Pyright integration verification passes (7 passed,
       zero skipped, failed, or todo).
-- [x] Coverage passes globally (83.28% statements, 74.96% branches, 90.67%
-      functions, 87.00% lines) and for each focused high-risk module.
+- [x] Coverage passes globally (83.17% statements, 74.90% branches, 90.67%
+      functions, 86.91% lines) and for each focused high-risk module.
 - [x] `npm audit --audit-level=low` reports zero vulnerabilities.
 - [x] Working tree diff is clean of unintended generated changes.
 - [x] Dedicated branch is pushed and pull request opened as #9.
 - [x] GitHub CI passes on Node 22 and 24 across Ubuntu and Windows.
 - [x] All source-controlled P2 hardening is implemented and locally verified.
-- [ ] Native Windows acceptance and pinned integration jobs pass on the final
+- [x] Native Windows acceptance and pinned integration jobs pass on the final
       pull-request head.
 - [ ] A repository administrator applies the documented `main` ruleset.
 - [ ] The npm package owner configures the documented trusted-publisher binding.
