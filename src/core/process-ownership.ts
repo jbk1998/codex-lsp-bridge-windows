@@ -252,18 +252,12 @@ function readLinuxProcessIdentity(pid: number): ProcessIdentity | undefined {
 }
 
 export function buildWindowsProcessIdentityCommand(pid: number): string {
-  // Get-Process.StartTime can be unavailable for an otherwise accessible
-  // process on hosted Windows runners. Win32_Process is the same native
-  // process table used by descendant authorization below and exposes a stable
-  // creation timestamp without requiring the process performance handle.
+  // The owned child runs as the current user, so Get-Process can read its
+  // immutable creation time without paying the multi-second cold-start cost
+  // of the CIM provider during a bounded shutdown.
   return [
-    `$target = Get-CimInstance Win32_Process -Filter 'ProcessId = ${String(pid)}' -ErrorAction Stop`,
-    "if ($null -eq $target) { throw 'process not found' }",
-    // CreationDate is exposed as a DMTF string by Win32_Process on Windows
-    // PowerShell. Keep that opaque value as the token: calling DateTime
-    // methods on it is version-dependent and can make an otherwise healthy
-    // process look unowned on hosted runners.
-    "[Console]::Out.Write([string]$target.CreationDate)"
+    `$target = Get-Process -Id ${String(pid)} -ErrorAction Stop`,
+    "[Console]::Out.Write($target.StartTime.ToFileTimeUtc().ToString([Globalization.CultureInfo]::InvariantCulture))"
   ].join("; ");
 }
 
@@ -272,10 +266,9 @@ function readWindowsProcessIdentity(pid: number): ProcessIdentity | undefined {
   const output = execFileSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
-    // Starting PowerShell plus the CIM provider can take several seconds on
-    // a fresh hosted Windows runner. Keep the probe bounded, but leave enough
-    // room for normal WMI startup so a healthy owned child is not rejected.
-    timeout: 5000,
+    // A cold Windows PowerShell startup exceeded one second on hosted CI.
+    // Three seconds remains bounded while avoiding false identity failures.
+    timeout: 3000,
     windowsHide: true
   }).trim();
   const normalizedOutput = output.replace(/^\uFEFF/, "").trim();

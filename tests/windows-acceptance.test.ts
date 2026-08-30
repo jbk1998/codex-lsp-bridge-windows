@@ -283,7 +283,7 @@ async function waitForCondition(probe: () => boolean, description: string, timeo
 }
 
 async function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<void> {
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
   await Promise.race([
     new Promise<void>((resolve) => child.once("exit", () => resolve())),
     delay(timeoutMs).then(() => {

@@ -227,8 +227,8 @@ and Windows CI jobs pass.
       platform/toolchain skips on Linux).
 - [x] Explicit TypeScript/Pyright integration verification passes (7 passed,
       zero skipped, failed, or todo).
-- [x] Coverage passes globally (83.59% statements, 75.49% branches, 90.67%
-      functions, 87.21% lines) and for each focused high-risk module.
+- [x] Coverage passes globally (83.56% statements, 75.26% branches, 90.67%
+      functions, 87.28% lines) and for each focused high-risk module.
 - [x] `npm audit --audit-level=low` reports zero vulnerabilities.
 - [x] Working tree diff is clean of unintended generated changes.
 - [x] Dedicated branch is pushed and pull request opened as #9.

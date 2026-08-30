@@ -298,6 +298,14 @@ function sameFileIdentity(
 }
 
 function isCanonicalPathInsideRoot(targetPath: string, rootPath: string): boolean {
+  if (process.platform === "win32") {
+    // Both inputs have already been reduced to the same lower-case Windows
+    // namespace by normalizePathIdentity. A separator boundary avoids the
+    // namespace/drive heuristics in path.relative while still rejecting
+    // sibling prefixes such as C:\\work and C:\\workspace-escape.
+    const rootBoundary = rootPath.endsWith("\\") ? rootPath : `${rootPath}\\`;
+    return targetPath === rootPath || targetPath.startsWith(rootBoundary);
+  }
   const relative = path.relative(rootPath, targetPath);
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
