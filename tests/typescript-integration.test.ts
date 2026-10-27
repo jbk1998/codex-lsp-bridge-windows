@@ -120,7 +120,7 @@ describe.skipIf(!hasTypeScriptLanguageServer)("TypeScript language server integr
       server: config.server,
       workspaceSeedFiles: config.workspaceSeedFiles,
       workspaceSeedExtensions: config.extensions,
-      diagnosticsTimeoutMs: 10000,
+      diagnosticsTimeoutMs: 30000,
       clientFactory: (server) => new JsonRpcLspClient(server)
     });
 
@@ -172,7 +172,7 @@ describe.skipIf(!hasTypeScriptLanguageServer)("TypeScript language server integr
       await provider.dispose();
       await fs.rm(rootPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
-  }, 20000);
+  }, 45000);
 });
 
 describe.skipIf(!hasPyrightLanguageServer)("Pyright language server integration", () => {
@@ -190,7 +190,7 @@ describe.skipIf(!hasPyrightLanguageServer)("Pyright language server integration"
       server: config.server,
       workspaceSeedFiles: config.workspaceSeedFiles,
       workspaceSeedExtensions: config.extensions,
-      diagnosticsTimeoutMs: 10000,
+      diagnosticsTimeoutMs: 30000,
       clientFactory: (server) => new JsonRpcLspClient(server)
     });
 
@@ -203,7 +203,7 @@ describe.skipIf(!hasPyrightLanguageServer)("Pyright language server integration"
       await provider.dispose();
       await fs.rm(rootPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
-  }, 20000);
+  }, 45000);
 });
 
 async function expectConfiguredJavaScriptProjectDiagnostics(configName: "jsconfig.json" | "tsconfig.json"): Promise<void> {

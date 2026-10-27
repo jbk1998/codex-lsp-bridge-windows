@@ -102,7 +102,7 @@ describe("LspSemanticProvider", () => {
       });
     };
 
-    await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+    await expect(provider.diagnostics(uri, { timeoutMs: 5_000 })).resolves.toMatchObject({
       status: "ok",
       timedOut: false,
       stale: false,

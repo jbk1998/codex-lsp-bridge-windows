@@ -7,6 +7,7 @@ const processOwnershipThresholds =
 
 export default defineConfig({
   test: {
+    maxWorkers: process.platform === "win32" ? 2 : undefined,
     coverage: {
       provider: "v8",
       reporter: ["text"],
