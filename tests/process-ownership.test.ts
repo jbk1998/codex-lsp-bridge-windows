@@ -101,6 +101,24 @@ describe("process ownership", () => {
     expect(child.killCalls).toBe(0);
   });
 
+  it("accepts an exit queued during a final identity read after the deadline", async () => {
+    const child = new FakeChild();
+    let reads = 0;
+    const ownership = createProcessOwnership(child, {
+      identityProvider: {
+        read: (pid) => {
+          reads += 1;
+          if (reads === 1) return { pid, creationToken: "launch" };
+          setImmediate(() => child.exit());
+          return undefined;
+        }
+      }
+    });
+
+    await expect(ownership.terminate(Date.now() - 1)).resolves.toEqual({ clean: true, reasonCode: "already_exited" });
+    expect(child.killCalls).toBe(0);
+  });
+
   it("accepts a graceful exit after a successful final identity read", async () => {
     const child = new FakeChild();
     let reads = 0;

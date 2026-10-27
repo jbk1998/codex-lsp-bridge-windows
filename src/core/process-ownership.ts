@@ -13,6 +13,7 @@ export type ProcessOwnershipReasonCode =
 export const defaultShutdownRequestMs = 1000;
 export const defaultChildExitGraceMs = 1500;
 export const defaultAggregateDisposalMs = 3000;
+const identityCheckExitEventGraceMs = 100;
 
 export interface DisposalDeadline {
   deadlineAt: number;
@@ -192,16 +193,16 @@ async function terminateChild(
     currentIdentity = identityProvider.read(child.pid);
   } catch {
     if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
-    if (await waitForExit(child, deadlineAt)) return { clean: true, reasonCode: "already_exited" };
+    if (await waitForExitAfterIdentityFailure(child, deadlineAt)) return { clean: true, reasonCode: "already_exited" };
     return { clean: false, reasonCode: "identity_mismatch" };
   }
   if (!currentIdentity || !sameProcessIdentity(launchIdentity, currentIdentity)) {
     if (isExited(child)) return { clean: true, reasonCode: "already_exited" };
     // A synchronous OS identity query blocks Node from delivering an exit
-    // event. Give an already-requested graceful shutdown the remainder of the
-    // existing disposal budget before reporting an identity failure. This
-    // never authorizes a PID-only kill.
-    if (await waitForExit(child, deadlineAt)) return { clean: true, reasonCode: "already_exited" };
+    // event. Give an already-requested graceful shutdown the remaining
+    // disposal budget and a brief bounded grace for the OS exit event to reach
+    // Node. This never authorizes a PID-only kill.
+    if (await waitForExitAfterIdentityFailure(child, deadlineAt)) return { clean: true, reasonCode: "already_exited" };
     return { clean: false, reasonCode: "identity_mismatch" };
   }
 
@@ -229,6 +230,11 @@ function captureLaunchIdentity(child: OwnedChildProcess, identityProvider: Proce
   } catch {
     return undefined;
   }
+}
+
+async function waitForExitAfterIdentityFailure(child: OwnedChildProcess, deadlineAt: number): Promise<boolean> {
+  if (await waitForExit(child, deadlineAt)) return true;
+  return waitForExit(child, Date.now() + identityCheckExitEventGraceMs);
 }
 
 function sameProcessIdentity(left: ProcessIdentity, right: ProcessIdentity): boolean {
