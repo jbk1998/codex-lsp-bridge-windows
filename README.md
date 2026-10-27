@@ -831,7 +831,7 @@ npm run ci:verify
 
 `ci:verify` runs type-checking, ESLint, Prettier verification, coverage tests, build, package file
 verification, install/uninstall smoke tests, and a real tarball install smoke.
-GitHub Actions runs the same command on Node 22 and 24 across Ubuntu and
+GitHub Actions runs the same command on Node 24 across Ubuntu and
 Windows. Separate required jobs run seven pinned real TypeScript/Pyright tests
 with zero skips and native Windows `.cmd`/`.bat`, process-identity, idle-memory,
 and cold-start acceptance coverage.

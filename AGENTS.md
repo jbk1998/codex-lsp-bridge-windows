@@ -17,7 +17,7 @@ npm run ci:verify
 
 Use `npm run ci:verify` before pushing changes that touch source, tests, package metadata, scripts, hooks, or install behavior. It runs type-check, lint, formatting verification, coverage tests, build, package verification, install smoke, and package smoke.
 
-GitHub CI runs `npm ci` and `npm run ci:verify` on Ubuntu and Windows with Node 22 and 24, plus pinned TypeScript/Pyright integration and native Windows acceptance jobs.
+GitHub CI runs `npm ci` and `npm run ci:verify` on Ubuntu and Windows with Node 24, plus pinned TypeScript/Pyright integration and native Windows acceptance jobs.
 
 ## Architecture
 
