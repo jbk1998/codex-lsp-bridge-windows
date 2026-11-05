@@ -176,6 +176,34 @@ describe.skipIf(!hasTypeScriptLanguageServer)("TypeScript language server integr
 });
 
 describe.skipIf(!hasPyrightLanguageServer)("Pyright language server integration", () => {
+  it("refreshes an unchanged importer when a workspace module appears or disappears", async () => {
+    const rootPath = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-py-watch-")));
+    const filePath = path.join(rootPath, "sample.py");
+    const dependency = path.join(rootPath, "new_module.py");
+    await fs.writeFile(path.join(rootPath, "pyrightconfig.json"), JSON.stringify({ typeCheckingMode: "strict", include: ["."] }));
+    await fs.writeFile(filePath, "from new_module import value\nresult: str = 42\nprint(value)\n");
+    const manager = new LspManager(rootPath);
+
+    try {
+      const provider = manager.forFile(filePath);
+      const uri = filePathToUri(filePath);
+      const codes = async () => {
+        const report = await provider.diagnostics(uri);
+        expect(report).toMatchObject({ status: "ok", stale: false, sourceRevision: 1, configurationIssues: [] });
+        return report.items.map(({ code }) => code);
+      };
+
+      expect(await codes()).toContain("reportMissingImports");
+      await fs.writeFile(dependency, "value = 1\n");
+      await expect.poll(codes, { timeout: 10000 }).toEqual(["reportAssignmentType"]);
+      await fs.unlink(dependency);
+      await expect.poll(codes, { timeout: 10000 }).toContain("reportMissingImports");
+    } finally {
+      await manager.dispose();
+      await fs.rm(rootPath, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 45000);
+
   it("reports Python assignment type diagnostics", async () => {
     const rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-py-fixture-"));
     const filePath = path.join(rootPath, "src", "sample.py");

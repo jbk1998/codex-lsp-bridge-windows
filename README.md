@@ -98,6 +98,13 @@ File diagnostics use one timeout from request entry through server startup,
 recovery, document synchronization, and the stable diagnostics notification.
 When that deadline expires, the bridge returns `status: timed_out` with
 `timedOut: true` and `stale: true`; an empty timed-out result is not clean.
+
+Diagnostic freshness is scoped to the open document and the language server's
+publications. The Python provider sends batched `.py` and `.pyi` file events
+within the workspace to Pyright, which can revise diagnostics for an unchanged
+importer. Dependency analysis runs asynchronously. Watcher problems are reported
+in `configurationIssues`; a fresh Pyright CLI run can check the workspace
+independently.
 Waiters and pending JSON-RPC state are cleaned up, and later requests either
 reuse a completed recovery or report an explicit unavailable state.
 
