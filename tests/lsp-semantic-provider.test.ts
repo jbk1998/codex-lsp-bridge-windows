@@ -640,7 +640,47 @@ describe("LspSemanticProvider", () => {
     });
   });
 
-  it("does not let a late notification replace committed diagnostics", async () => {
+  it("accepts versioned diagnostics when a dependency changes without a document edit", async () => {
+    const provider = createProvider();
+    const uri = filePathToUri(filePath);
+    const range = { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } };
+    const assignmentError = { range, message: "assignment error" };
+    let documentUri = uri;
+    client.onNotify = (method, params) => {
+      if (method !== "textDocument/didOpen") return;
+      documentUri = (params as { textDocument: { uri: string } }).textDocument.uri;
+      client.emit("notification", "textDocument/publishDiagnostics", {
+        uri: documentUri,
+        version: 1,
+        diagnostics: [{ range, message: "missing import" }, assignmentError]
+      });
+    };
+
+    try {
+      await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+        status: "ok",
+        stale: false,
+        sourceRevision: 1,
+        items: [{ message: "missing import" }, { message: "assignment error" }]
+      });
+
+      client.emit("notification", "textDocument/publishDiagnostics", {
+        uri: documentUri,
+        version: 1,
+        diagnostics: [assignmentError]
+      });
+      await expect(provider.diagnostics(uri)).resolves.toMatchObject({
+        status: "ok",
+        stale: false,
+        sourceRevision: 1,
+        items: [{ message: "assignment error" }]
+      });
+    } finally {
+      await provider.dispose();
+    }
+  });
+
+  it("does not let an older document version replace current diagnostics", async () => {
     const provider = createProvider();
     const uri = filePathToUri(filePath);
     client.onNotify = (method, params) => {

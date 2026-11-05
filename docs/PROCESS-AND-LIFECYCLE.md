@@ -71,10 +71,24 @@ repository fixtures do not establish production load improvement.
   document open or change, and the stable `publishDiagnostics` wait. A timeout
   returns `status: timed_out`, `timedOut: true`, and `stale: true`.
 - A timed-out waiter is removed and its timers are cleared. The language server
-  may continue a healthy in-flight startup, but an old generation, old root,
-  or already-committed source revision cannot publish into a later result.
+  may continue a healthy in-flight startup. Diagnostics from an old generation,
+  old root, or older document version cannot replace the current result. A
+  versioned publication for the current document can replace settled diagnostics,
+  including after dependency analysis when the document text is unchanged.
+  Unversioned publications are accepted only while an open or edit is pending.
   A subsequent request can use a completed recovery or receive an explicit
   unavailable result if recovery failed.
+- Windows reproduction with Pyright 1.1.413 and Python 3.13: defining a missing
+  name sent `didChange` for version 2, and the next version 2 publication agreed
+  with a fresh CLI run. Adding a module without editing its importer left the
+  missing-import diagnostic in a warm server, while a fresh server and CLI
+  resolved it. A test client advertising file-watch support and sending the
+  module creation event prompted Pyright to publish corrected version 1
+  diagnostics. The standard Python provider now forwards batched in-root
+  `.py` and `.pyi` file events and accepts the revised publication. The
+  integration test verifies module creation and deletion with no importer edit
+  and checks that the genuine assignment error remains. The watcher follows
+  the server generation and closes on exit or disposal.
 - Failed writes, including asynchronous stdin `EPIPE` events, process exits, and
   shutdown reject and clear outstanding JSON-RPC requests for the matching
   process generation. Shutdown is shared and bounded, so repeated close or

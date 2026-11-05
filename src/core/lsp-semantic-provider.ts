@@ -25,6 +25,7 @@ import {
 } from "./workspace-root.js";
 import { DocumentRegistry } from "./document-registry.js";
 import { DiagnosticsWaiterController } from "./diagnostics-waiters.js";
+import { watchPythonWorkspace } from "./python-workspace-watcher.js";
 
 interface LspDiagnostic {
   range: { start: Position; end: Position };
@@ -65,6 +66,7 @@ interface DiagnosticsCandidate {
   generation: number;
   revision: number;
   sourceRevision: number;
+  items: Diagnostic[];
   settleTimer?: NodeJS.Timeout;
 }
 
@@ -101,6 +103,7 @@ export class LspSemanticProvider implements SemanticProvider {
   private diagnosticsSourceRevisionByUri = new Map<string, number>();
   private pendingSourceRevisionByUri = new Map<string, PendingSourceRevision>();
   private diagnosticsCandidatesByUri = new Map<string, DiagnosticsCandidate>();
+  private closePythonWatcher?: () => void;
   private readonly documentRegistry = new DocumentRegistry();
   private configurationIssues: string[] = [];
   private readonly diagnosticsWaiters: DiagnosticsWaiterController;
@@ -136,6 +139,7 @@ export class LspSemanticProvider implements SemanticProvider {
     this.workspaceDocumentOpened = false;
     this.workspaceOpenPromise = undefined;
     this.state = "exited";
+    this.stopPythonWatcher();
     this.diagnosticsByUri.clear();
     this.diagnosticsRevisionByUri.clear();
     this.diagnosticsSourceRevisionByUri.clear();
@@ -310,6 +314,7 @@ export class LspSemanticProvider implements SemanticProvider {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
     this.state = "closing";
+    this.stopPythonWatcher();
     if (this.initialized) {
       for (const [uri] of this.documentRegistry.entries()) {
         this.client.notify("textDocument/didClose", {
@@ -441,7 +446,8 @@ export class LspSemanticProvider implements SemanticProvider {
           },
           workspace: {
             symbol: {},
-            workspaceFolders: true
+            workspaceFolders: true,
+            ...(this.options.languageId === "python" && { didChangeWatchedFiles: { dynamicRegistration: true } })
           }
         }
       });
@@ -481,14 +487,36 @@ export class LspSemanticProvider implements SemanticProvider {
         this.workspaceDocumentOpened = this.documentRegistry.entries().length > 0;
       }
 
+      const watchRoot = await this.rootRealPathPromise;
       this.assertRootInstanceCurrent();
       if (generation !== this.generation || this.disposed) throw new Error("LSP server exited during initialization");
+      if (this.options.languageId === "python") {
+        const reportError = (error: unknown) => {
+          const issue = `Python workspace file notifications may be incomplete: ${error instanceof Error ? error.message : String(error)}`;
+          if (!this.configurationIssues.includes(issue)) this.configurationIssues.push(issue);
+        };
+        try {
+          this.closePythonWatcher = watchPythonWorkspace(
+            watchRoot,
+            () => this.assertRootInstanceCurrent(),
+            (changes) => client.notify("workspace/didChangeWatchedFiles", { changes }),
+            reportError
+          );
+        } catch (error) {
+          reportError(error);
+        }
+      }
       this.initialized = true;
       this.state = "ready";
     } catch (error) {
       if (!this.disposed) this.state = "failed";
       throw error;
     }
+  }
+
+  private stopPythonWatcher(): void {
+    this.closePythonWatcher?.();
+    this.closePythonWatcher = undefined;
   }
 
   private async openOrUpdateDocument(uri: string): Promise<{ uri: string; filePath: string; changed: boolean; sourceRevision: number }> {
@@ -586,16 +614,26 @@ export class LspSemanticProvider implements SemanticProvider {
       return;
     }
 
-    const pending = this.pendingSourceRevisionByUri.get(uri);
     const document = this.documentRegistry.get(uri);
-    if (!pending || !document || pending.version !== document.version) return;
-    if (params.version !== undefined && params.version !== document.version) return;
+    if (!document) return;
+    const pending = this.pendingSourceRevisionByUri.get(uri);
+    if (params.version === undefined) {
+      if (pending?.generation !== this.generation || pending.version !== document.version) return;
+    } else if (params.version !== document.version) {
+      return;
+    }
+
+    // Dependency changes can produce a new report for the same document version.
+    this.invalidateDiagnosticsCandidate(uri);
+    this.diagnosticsSourceRevisionByUri.delete(uri);
 
     const revision = (this.diagnosticsRevisionByUri.get(uri) ?? 0) + 1;
     this.diagnosticsRevisionByUri.set(uri, revision);
-    this.diagnosticsByUri.set(
-      uri,
-      params.diagnostics.map((diagnostic) => ({
+    const candidate: DiagnosticsCandidate = {
+      generation: this.generation,
+      revision,
+      sourceRevision: document.version,
+      items: params.diagnostics.map((diagnostic) => ({
         file: uriToFilePath(uri),
         line: diagnostic.range.start.line + 1,
         character: diagnostic.range.start.character + 1,
@@ -604,11 +642,6 @@ export class LspSemanticProvider implements SemanticProvider {
         source: diagnostic.source,
         code: diagnostic.code
       }))
-    );
-    const candidate: DiagnosticsCandidate = {
-      generation: pending.generation,
-      revision,
-      sourceRevision: pending.version
     };
     this.diagnosticsCandidatesByUri.set(uri, candidate);
     candidate.settleTimer = setTimeout(
@@ -658,18 +691,16 @@ export class LspSemanticProvider implements SemanticProvider {
   private commitDiagnosticsCandidate(uri: string, candidate: DiagnosticsCandidate): void {
     if (this.diagnosticsCandidatesByUri.get(uri) !== candidate) return;
     const document = this.documentRegistry.get(uri);
-    const pending = this.pendingSourceRevisionByUri.get(uri);
     const isCurrent =
       candidate.generation === this.generation &&
       document?.version === candidate.sourceRevision &&
-      pending?.generation === candidate.generation &&
-      pending.version === candidate.sourceRevision &&
       this.diagnosticsRevisionByUri.get(uri) === candidate.revision;
 
     this.diagnosticsCandidatesByUri.delete(uri);
     candidate.settleTimer = undefined;
     if (!isCurrent) return;
 
+    this.diagnosticsByUri.set(uri, candidate.items);
     this.diagnosticsSourceRevisionByUri.set(uri, candidate.sourceRevision);
     this.pendingSourceRevisionByUri.delete(uri);
     this.diagnosticsWaiters.schedule(uri, candidate.revision);
