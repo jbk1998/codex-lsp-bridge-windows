@@ -102,9 +102,10 @@ When that deadline expires, the bridge returns `status: timed_out` with
 Diagnostic freshness is scoped to the open document and the language server's
 publications. The Python provider sends batched `.py` and `.pyi` file events
 within the workspace to Pyright, which can revise diagnostics for an unchanged
-importer. Dependency analysis runs asynchronously. Watcher problems are reported
-in `configurationIssues`; a fresh Pyright CLI run can check the workspace
-independently.
+importer. Dependency analysis runs asynchronously. Directory-only events, such
+as a Windows package-directory rename without per-file events, do not trigger
+dependency analysis. Watcher problems are reported in `configurationIssues`;
+a fresh Pyright CLI run can check the workspace independently.
 Waiters and pending JSON-RPC state are cleaned up, and later requests either
 reuse a completed recovery or report an explicit unavailable state.
 
