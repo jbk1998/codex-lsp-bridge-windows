@@ -114,14 +114,26 @@ describe("config", () => {
     await fs.mkdir(path.join(rootPath, ".codex"), { recursive: true });
     await fs.writeFile(
       path.join(process.env.CODEX_HOME, "lsp-client.json"),
-      JSON.stringify({ languageServers: { typescript: { command: "trusted-ts-ls", args: ["--stdio"] } } })
+      JSON.stringify({
+        languageServers: {
+          typescript: {
+            backend: "native",
+            executablePath: path.join(rootPath, "trusted-tsc.exe"),
+            args: ["--lsp", "--stdio"]
+          }
+        }
+      })
     );
     await fs.writeFile(
       path.join(rootPath, ".codex", "lsp-client.json"),
       JSON.stringify({
         defaultLanguage: "python",
         languageServers: {
-          typescript: { command: "untrusted-command", args: ["--run-project-code"] },
+          typescript: {
+            backend: "native",
+            executablePath: path.join(rootPath, "untrusted-tsc.exe"),
+            args: ["--run-project-code"]
+          },
           python: { command: "untrusted-python", args: [] }
         }
       })
@@ -130,7 +142,7 @@ describe("config", () => {
     expect(loadConfig(rootPath)).toMatchObject({
       defaultLanguage: "python",
       languageServers: {
-        typescript: { command: "trusted-ts-ls", args: ["--stdio"] }
+        typescript: { backend: "native", executablePath: path.join(rootPath, "trusted-tsc.exe"), args: ["--lsp", "--stdio"] }
       }
     });
     expect(loadConfig(rootPath).languageServers.python).toBeUndefined();
@@ -162,5 +174,39 @@ describe("config", () => {
     expect(() => loadConfig(rootPath)).toThrow(LspClientConfigError);
     expect(() => loadConfig(rootPath)).toThrow(`Invalid LSP client config at ${configPath}`);
     expect(() => loadConfig(rootPath)).toThrow("top-level value must be a JSON object");
+  });
+  it("rejects a TypeScript backend setting on other languages", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
+    homePath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-home-"));
+    process.env.CODEX_HOME = path.join(homePath, ".codex");
+    await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
+    const configPath = path.join(process.env.CODEX_HOME, "lsp-client.json");
+    await fs.writeFile(configPath, JSON.stringify({ languageServers: { python: { backend: "native" } } }));
+
+    expect(() => loadConfig(rootPath)).toThrow("languageServers.python.backend must be one of: classic, native (TypeScript only)");
+  });
+
+  it("requires a trusted absolute direct executable path for native TypeScript", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
+    homePath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-home-"));
+    process.env.CODEX_HOME = path.join(homePath, ".codex");
+    await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
+    const configPath = path.join(process.env.CODEX_HOME, "lsp-client.json");
+    await fs.writeFile(configPath, JSON.stringify({ languageServers: { typescript: { backend: "native" } } }));
+    expect(() => loadConfig(rootPath)).toThrow(
+      "languageServers.typescript.executablePath must be an absolute trusted TypeScript 7 executable path"
+    );
+
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ languageServers: { typescript: { backend: "native", executablePath: "relative\\tsc.exe" } } })
+    );
+    expect(() => loadConfig(rootPath)).toThrow("executablePath must be an absolute direct executable path");
+
+    await fs.writeFile(
+      configPath,
+      JSON.stringify({ languageServers: { typescript: { backend: "native", executablePath: path.join(rootPath, "tsc.cmd") } } })
+    );
+    expect(() => loadConfig(rootPath)).toThrow("executablePath must be an absolute direct executable path");
   });
 });

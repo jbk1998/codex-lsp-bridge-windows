@@ -169,6 +169,29 @@ describe("JsonRpcLspClient", () => {
     await client.stop(createDisposalDeadline(Date.now(), 100, 1, 20));
   });
 
+  it("cancels an in-flight request with $/cancelRequest and ignores a late response", async () => {
+    const child = new FakeChild();
+    const outgoing: Buffer[] = [];
+    child.stdin.on("data", (chunk: Buffer) => outgoing.push(Buffer.from(chunk)));
+    const client = new JsonRpcLspClient(
+      { command: "server", args: ["--stdio"], cwd: process.cwd() },
+      { spawnProcess: (() => child) as never, processIdentityProvider: identityProvider() }
+    );
+    const controller = new AbortController();
+    const request = client.request("textDocument/diagnostic", {}, { signal: controller.signal });
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    const sent = Buffer.concat(outgoing).toString("utf8");
+    expect(sent).toContain('"method":"textDocument/diagnostic"');
+    expect(sent).toContain('"method":"$/cancelRequest"');
+    expect(sent).toContain('"params":{"id":1}');
+
+    child.stdout.write(lspFrame({ jsonrpc: "2.0", id: 1, result: { kind: "full", items: [] } }));
+    expect((client as unknown as { pending: Map<unknown, unknown> }).pending.size).toBe(0);
+    await client.stop(createDisposalDeadline(Date.now(), 100, 1, 20));
+  });
+
   it("prepares Windows shell shims through cmd.exe", () => {
     const prepared = prepareSpawnCommand(
       {

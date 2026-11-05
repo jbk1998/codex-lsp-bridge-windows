@@ -135,4 +135,34 @@ describe("doctor", () => {
       fs.rmSync(codexHome, { recursive: true, force: true });
     }
   });
+  it("reports the selected native TypeScript executable and install hint", () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "codex-lsp-doctor-ts-native-"));
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-lsp-doctor-ts-native-home-"));
+    const previousHome = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = codexHome;
+    try {
+      const executablePath = path.join(rootPath, process.platform === "win32" ? "tsc.exe" : "tsc");
+      fs.mkdirSync(path.dirname(executablePath), { recursive: true });
+      fs.writeFileSync(executablePath, "native executable fixture");
+      fs.chmodSync(executablePath, 0o755);
+      fs.writeFileSync(
+        path.join(codexHome, "lsp-client.json"),
+        JSON.stringify({ languageServers: { typescript: { backend: "native", executablePath } } })
+      );
+
+      expect(runDoctor(rootPath).languages).toContainEqual(
+        expect.objectContaining({
+          language: "typescript",
+          command: fs.realpathSync(executablePath),
+          status: "ok",
+          installHint: expect.stringContaining("TypeScript 7")
+        })
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = previousHome;
+      fs.rmSync(rootPath, { recursive: true, force: true });
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
 });

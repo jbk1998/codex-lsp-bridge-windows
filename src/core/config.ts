@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { readDiagnosticsTimeoutPolicy, type DiagnosticsTimeoutPolicy } from "./diagnostics-timeout.js";
-import type { SupportedLanguage } from "../adapters/language-config.js";
+import type { LanguageServerOverride, SupportedLanguage } from "../adapters/language-config.js";
 
 export interface LspClientConfig {
   defaultLanguage: SupportedLanguage;
@@ -17,7 +17,7 @@ export interface LspClientConfig {
     maxFiles: number;
     verbosePending: boolean;
   };
-  languageServers: Partial<Record<SupportedLanguage, { command?: string; args?: string[] }>>;
+  languageServers: Partial<Record<SupportedLanguage, LanguageServerOverride>>;
 }
 
 const defaults: LspClientConfig = {
@@ -137,6 +137,33 @@ function validateConfig(config: Record<string, unknown>, filePath: string): void
       if (!isConfigObject(override)) {
         throwInvalidField(filePath, `languageServers.${language}`, "a JSON object");
       }
+      if (override.backend !== undefined && (language !== "typescript" || !isTypeScriptBackend(override.backend))) {
+        throwInvalidField(filePath, `languageServers.${language}.backend`, "one of: classic, native (TypeScript only)");
+      }
+      if (
+        override.executablePath !== undefined &&
+        (language !== "typescript" ||
+          override.backend !== "native" ||
+          typeof override.executablePath !== "string" ||
+          !path.isAbsolute(override.executablePath) ||
+          [".cmd", ".bat"].includes(path.extname(override.executablePath).toLowerCase()))
+      ) {
+        throwInvalidField(
+          filePath,
+          `languageServers.${language}.executablePath`,
+          "an absolute direct executable path for the native TypeScript backend only"
+        );
+      }
+      if (language === "typescript" && override.backend === "native" && override.executablePath === undefined) {
+        throwInvalidField(
+          filePath,
+          "languageServers.typescript.executablePath",
+          "an absolute trusted TypeScript 7 executable path when backend is native"
+        );
+      }
+      if (language === "typescript" && override.backend === "native" && override.command !== undefined) {
+        throwInvalidField(filePath, "languageServers.typescript.command", "omitted for native backend; use executablePath");
+      }
       if (override.command !== undefined && (typeof override.command !== "string" || override.command.trim().length === 0)) {
         throwInvalidField(filePath, `languageServers.${language}.command`, "a non-empty string");
       }
@@ -203,6 +230,10 @@ function readPositiveNumber(value: unknown, fallback: number): number {
 
 function readNonNegativeInteger(value: unknown, fallback: number | undefined): number | undefined {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647 ? value : fallback;
+}
+
+function isTypeScriptBackend(value: unknown): value is "classic" | "native" {
+  return value === "classic" || value === "native";
 }
 
 function isSupportedLanguage(value: unknown): value is SupportedLanguage {

@@ -12,7 +12,7 @@ the language server.
 This fork focuses on making the bridge practical on Windows and useful for real
 Codex coding sessions:
 
-- TypeScript/JavaScript diagnostics through `typescript-language-server`
+- TypeScript/JavaScript diagnostics through `typescript-language-server` by default, with an opt-in native TypeScript 7 backend
 - Python diagnostics through `pyright-langserver`
 - Reliable Windows npm shim handling for `.cmd` language-server launchers
 - Root-scoped CLI and MCP calls for detached worktrees and out-of-repo calls
@@ -158,7 +158,7 @@ Example diagnostic signal:
 Install a language server for your project. For TypeScript:
 
 ```bash
-npm install -g typescript-language-server typescript
+npm install -g typescript-language-server typescript@5.9.3
 ```
 
 For Python:
@@ -269,17 +269,17 @@ the staged process and load baseline.
 - Codex CLI with MCP support
 - Local language server executable for the language you want to use
 
-| Language | Support | Required command | Hook coverage | Install hint |
-| --- | --- | --- | --- | --- |
-| TypeScript / JavaScript | Primary | `typescript-language-server` | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs` | `npm install -g typescript-language-server typescript` |
-| Rust | Experimental | `rust-analyzer` | `.rs` | `rustup component add rust-analyzer` |
-| Python | Experimental | `pyright-langserver` | `.py` | `npm install -g pyright` |
-| Go | Experimental | `gopls` | `.go` | `go install golang.org/x/tools/gopls@latest` |
+| Language                | Support      | Required command                                                                  | Hook coverage                                | Install hint                                                                                                                     |
+| ----------------------- | ------------ | --------------------------------------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| TypeScript / JavaScript | Primary      | `typescript-language-server` (default) or native TypeScript 7 executable (opt-in) | `.ts`, `.tsx`, `.js`, `.jsx`, `.mjs`, `.cjs` | `npm install -g typescript-language-server typescript@5.9.3` or install matching `@typescript/typescript-<platform>-<arch>` package |
+| Rust                    | Experimental | `rust-analyzer`                                                                   | `.rs`                                        | `rustup component add rust-analyzer`                                                                                             |
+| Python                  | Experimental | `pyright-langserver`                                                              | `.py`                                        | `npm install -g pyright`                                                                                                         |
+| Go                      | Experimental | `gopls`                                                                           | `.go`                                        | `go install golang.org/x/tools/gopls@latest`                                                                                     |
 
 For TypeScript projects, install a language server if needed:
 
 ```bash
-npm install -g typescript-language-server typescript
+npm install -g typescript-language-server typescript@5.9.3
 ```
 
 For Rust projects, install `rust-analyzer` if needed:
@@ -646,6 +646,44 @@ repos that need longer language-server warmup. For a Rust-first workspace:
 }
 ```
 
+To opt into TypeScript 7, install the matching native package in a directory you
+control and set both `backend` and its absolute executable path in trusted global
+config. The setting applies to TypeScript and JavaScript across workspaces that
+use that global config. The default remains `typescript-language-server`. For
+Windows x64, an isolated install keeps project dependencies unchanged:
+
+```powershell
+$ts7Home = Join-Path $env:LOCALAPPDATA 'codex-lsp-typescript7'
+npm install --prefix $ts7Home --ignore-scripts @typescript/typescript-win32-x64@7.0.2
+Join-Path $ts7Home 'node_modules\@typescript\typescript-win32-x64\lib\tsc.exe'
+```
+
+Copy the resulting path into `executablePath`:
+
+```json
+{
+  "languageServers": {
+    "typescript": {
+      "backend": "native",
+      "executablePath": "C:\\work\\project\\node_modules\\@typescript\\typescript-win32-x64\\lib\\tsc.exe"
+    }
+  }
+}
+```
+
+The bridge launches that exact direct executable with `--lsp --stdio` and
+rejects `.cmd` and `.bat` shims. It does not discover or execute a workspace
+binary based only on the backend toggle. Workspace configuration cannot select
+a backend or executable.
+
+Native mode uses the workspace's `tsconfig.json` or `jsconfig.json` and does
+not apply the bridge's legacy inferred-project options. In a standalone
+JavaScript file without either config, ambient declarations such as Node types
+may therefore differ; the bridge reports that limitation when its inferred
+options would otherwise have been applied. To restore the classic backend,
+remove the native TypeScript entry or set its backend to `classic` and remove
+`executablePath`. Then restart the bridge connection.
+
 Put custom executable paths or arguments only in your global config. A checked
 out repository cannot replace them through workspace config:
 
@@ -659,6 +697,21 @@ out repository cannot replace them through workspace config:
   }
 }
 ```
+
+To compare both TypeScript backends through `LspManager` on selected files, set
+the native executable path and run the development benchmark after installing
+the repository dependencies:
+
+```powershell
+$env:CODEX_LSP_TYPESCRIPT_NATIVE_EXECUTABLE = 'C:\work\project\node_modules\@typescript\typescript-win32-x64\lib\tsc.exe'
+npm run benchmark:typescript-lsp -- --root C:\work\project --file src\index.ts --file src\util.ts
+```
+
+It writes one JSONL row per file with tool versions, cold latency and warm
+latency for a repeat check without editing,
+diagnostic status and signatures, and disposal results. It exits nonzero when
+the backends disagree on freshness, diagnostic signatures, or clean disposal.
+Latency is recorded for comparison and is not a pass/fail threshold.
 
 For large monorepos, let the bridge choose a bounded timeout from lightweight
 workspace hints:

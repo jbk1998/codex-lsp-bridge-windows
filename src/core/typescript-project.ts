@@ -15,6 +15,16 @@ export interface InferredTypeScriptProjectOptions {
   compilerOptions: Record<string, unknown>;
 }
 
+export function hasTypeScriptProjectConfig(rootPath: string): boolean {
+  return ["tsconfig.json", "jsconfig.json"].some((fileName) => {
+    try {
+      return fs.statSync(path.join(rootPath, fileName)).isFile();
+    } catch {
+      return false;
+    }
+  });
+}
+
 /**
  * Find Node declaration packages that the TypeScript server can use for an
  * inferred JavaScript project. This intentionally reads the runtime layout

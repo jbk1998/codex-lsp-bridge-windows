@@ -40,6 +40,25 @@ jobs:
       - run: npm ci
       - run: npm run test:integration
 
+  typescript-native-integration:
+    name: windows (TypeScript 7 native)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Install pinned native TypeScript outside the checkout
+        run: npm install --prefix "$env:RUNNER_TEMP\codex-ts7-lsp" --no-save --package-lock=false '@typescript/typescript-win32-x64@7.0.2'
+      - name: Verify native TypeScript integration
+        run: |
+          $env:CODEX_LSP_TYPESCRIPT_NATIVE_EXECUTABLE = Join-Path $env:RUNNER_TEMP 'codex-ts7-lsp\node_modules\@typescript\typescript-win32-x64\lib\tsc.exe'
+          npm run test:integration:native
+
   windows-acceptance:
     name: windows acceptance
     runs-on: windows-latest

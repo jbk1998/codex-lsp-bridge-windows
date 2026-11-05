@@ -13,7 +13,7 @@ import {
   type LanguageServerOverride,
   type SupportedLanguage
 } from "../adapters/language-config.js";
-import { resolveInferredTypeScriptProjectOptions } from "./typescript-project.js";
+import { hasTypeScriptProjectConfig, resolveInferredTypeScriptProjectOptions } from "./typescript-project.js";
 import { canonicalizeWorkspaceRootSync, workspaceRootInstanceIdentitySync } from "./workspace-root.js";
 
 export interface LspManagerOptions {
@@ -56,10 +56,13 @@ export class LspManager {
 
     const config = createLanguageServerConfig(language, this.rootPath, this.options.languageServers?.[language]);
     const inferredProjectOptions =
-      language === "typescript" ? resolveInferredTypeScriptProjectOptions(this.rootPath)?.compilerOptions : undefined;
+      language === "typescript" && (config.backend !== "native" || !hasTypeScriptProjectConfig(this.rootPath))
+        ? resolveInferredTypeScriptProjectOptions(this.rootPath)?.compilerOptions
+        : undefined;
     const provider = new LspSemanticProvider({
       rootPath: this.rootPath,
       languageId: config.languageId,
+      backend: config.backend,
       server: config.server,
       workspaceSeedFiles: config.workspaceSeedFiles,
       workspaceSeedExtensions: config.extensions,
