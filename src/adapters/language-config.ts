@@ -6,6 +6,7 @@ export type SupportedLanguage = "typescript" | "rust" | "python" | "go";
 
 export interface LanguageServerConfig {
   language: SupportedLanguage;
+  backend?: TypeScriptBackend;
   languageId: string;
   server: ServerProcessConfig;
   extensions: string[];
@@ -14,7 +15,11 @@ export interface LanguageServerConfig {
   supportLevel: "primary" | "experimental";
 }
 
+export type TypeScriptBackend = "classic" | "native";
+
 export interface LanguageServerOverride {
+  backend?: TypeScriptBackend;
+  executablePath?: string;
   command?: string;
   args?: string[];
 }
@@ -48,7 +53,7 @@ const serverByLanguage: Record<
       "app/page.tsx",
       "pages/index.tsx"
     ],
-    installHint: "npm install -g typescript-language-server typescript",
+    installHint: "npm install -g typescript-language-server typescript@5.9.3",
     supportLevel: "primary"
   },
   rust: {
@@ -86,22 +91,45 @@ export function createLanguageServerConfig(
   override: LanguageServerOverride = {}
 ): LanguageServerConfig {
   const config = serverByLanguage[language];
-  const command = override.command ?? config.command;
+  const backend = language === "typescript" ? (override.backend ?? "classic") : undefined;
+  if (override.executablePath !== undefined && (language !== "typescript" || backend !== "native")) {
+    throw new Error('"executablePath" is supported only with the native TypeScript backend');
+  }
+  if (backend === "native" && (!override.executablePath || !path.isAbsolute(override.executablePath))) {
+    throw new Error('TypeScript native backend requires an absolute trusted "executablePath" in global languageServers.typescript config');
+  }
+  if (backend === "native" && override.command !== undefined) {
+    throw new Error('TypeScript native backend uses "executablePath"; remove the ambiguous "command" override');
+  }
+  const command = override.executablePath ?? override.command ?? config.command;
+  const resolvedCommand = resolveServerCommand(rootPath, command);
+  if (backend === "native" && isWindowsShellShim(resolvedCommand)) {
+    throw new Error("TypeScript native backend requires a direct executable, not a Windows shell shim");
+  }
+
   return {
     language,
+    ...(backend ? { backend } : {}),
     languageId: config.languageId,
     extensions: [...config.extensions],
     workspaceSeedFiles: [...config.workspaceSeedFiles],
-    installHint: config.installHint,
+    installHint:
+      backend === "native"
+        ? "Install TypeScript 7's platform package and set languageServers.typescript.executablePath to its direct lib/tsc binary"
+        : config.installHint,
     supportLevel: config.supportLevel,
     server: {
-      command: resolveServerCommand(rootPath, command),
-      args: [...(override.args ?? config.args)],
+      command: resolvedCommand,
+      args: [...(override.args ?? (backend === "native" ? ["--lsp", "--stdio"] : config.args))],
       cwd: path.resolve(rootPath)
     }
   };
 }
 
+function isWindowsShellShim(command: string): boolean {
+  const extension = path.extname(command).toLowerCase();
+  return extension === ".cmd" || extension === ".bat";
+}
 export function resolveServerCommand(
   rootPath: string,
   command: string,

@@ -57,6 +57,25 @@ interface PublishDiagnosticsParams {
   diagnostics: LspDiagnostic[];
 }
 
+interface NativeDiagnosticFullReport {
+  kind: "full";
+  resultId?: string;
+  items: LspDiagnostic[];
+}
+
+interface NativeDiagnosticUnchangedReport {
+  kind: "unchanged";
+  resultId: string;
+}
+
+type NativeDiagnosticReport = NativeDiagnosticFullReport | NativeDiagnosticUnchangedReport;
+
+interface NativeDiagnosticsCache {
+  generation: number;
+  resultId?: string;
+  items: Diagnostic[];
+}
+
 interface PendingSourceRevision {
   generation: number;
   version: number;
@@ -76,6 +95,7 @@ const defaultDiagnosticsStabilityMs = 250;
 export interface LspSemanticProviderOptions {
   rootPath: string;
   languageId: string;
+  backend?: "classic" | "native";
   server: ServerProcessConfig;
   clientFactory: (config: ServerProcessConfig) => LspClient;
   workspaceSeedFiles?: string[];
@@ -103,6 +123,7 @@ export class LspSemanticProvider implements SemanticProvider {
   private diagnosticsSourceRevisionByUri = new Map<string, number>();
   private pendingSourceRevisionByUri = new Map<string, PendingSourceRevision>();
   private diagnosticsCandidatesByUri = new Map<string, DiagnosticsCandidate>();
+  private nativeDiagnosticsByUri = new Map<string, NativeDiagnosticsCache>();
   private closePythonWatcher?: () => void;
   private readonly documentRegistry = new DocumentRegistry();
   private configurationIssues: string[] = [];
@@ -126,7 +147,9 @@ export class LspSemanticProvider implements SemanticProvider {
   private createClient(): LspClient {
     const client = this.options.clientFactory(this.options.server);
     client.on("notification", (method: string, params: unknown) => {
-      if (!this.disposed && client === this.client && method === "textDocument/publishDiagnostics") this.captureDiagnostics(params);
+      if (!this.disposed && client === this.client && method === "textDocument/publishDiagnostics" && this.options.backend !== "native") {
+        this.captureDiagnostics(params);
+      }
     });
     client.on("exit", () => this.handleClientExit(client));
     return client;
@@ -143,6 +166,7 @@ export class LspSemanticProvider implements SemanticProvider {
     this.diagnosticsByUri.clear();
     this.diagnosticsRevisionByUri.clear();
     this.diagnosticsSourceRevisionByUri.clear();
+    this.nativeDiagnosticsByUri.clear();
     this.pendingSourceRevisionByUri.clear();
     this.cancelDiagnosticsCandidates();
     this.configurationIssues = [];
@@ -182,6 +206,9 @@ export class LspSemanticProvider implements SemanticProvider {
         if (isDiagnosticsDeadlineExceeded(error)) return this.timedOutReport(document.uri);
         if (isWorkspaceRootChangedError(error)) return this.rootUnavailableReport();
         throw error;
+      }
+      if (this.options.languageId === "typescript" && this.options.backend === "native") {
+        return this.pullNativeDiagnostics(document.uri, deadlineAt);
       }
       let timedOut = false;
       const publishedSourceRevision = this.diagnosticsSourceRevisionByUri.get(document.uri);
@@ -243,6 +270,16 @@ export class LspSemanticProvider implements SemanticProvider {
   async definitionAt(position: DocumentPosition): Promise<Location> {
     const document = await this.openOrUpdateDocument(filePathToUri(position.file));
     if (this.options.languageId === "typescript") {
+      if (this.options.backend === "native") {
+        const sourceDefinitions = await this.requestWithRecovery<LspLocation[] | null>("custom/textDocument/sourceDefinition", {
+          textDocument: { uri: document.uri },
+          position: toLspPosition(position)
+        });
+        if (!sourceDefinitions || sourceDefinitions.length === 0) {
+          throw new Error(`No source definition found at ${formatPosition(position)}`);
+        }
+        return this.toLocation(sourceDefinitions[0]);
+      }
       const sourceDefinitions = await this.requestWithRecovery<LspLocation[] | null>("workspace/executeCommand", {
         command: "_typescript.goToSourceDefinition",
         arguments: [document.uri, toLspPosition(position)]
@@ -323,6 +360,7 @@ export class LspSemanticProvider implements SemanticProvider {
       }
     }
     this.documentRegistry.clear();
+    this.nativeDiagnosticsByUri.clear();
     this.cancelDiagnosticsCandidates();
     this.diagnosticsWaiters.cancel();
     const disposal = this.client.stop(deadline);
@@ -391,6 +429,139 @@ export class LspSemanticProvider implements SemanticProvider {
     }
   }
 
+  private async pullNativeDiagnostics(uri: string, deadlineAt: number): Promise<DiagnosticReport> {
+    while (true) {
+      if (Date.now() >= deadlineAt) return this.timedOutReport(uri);
+      const controller = new AbortController();
+      let deadlineExpired = false;
+      const timer = setTimeout(
+        () => {
+          deadlineExpired = true;
+          controller.abort();
+        },
+        Math.max(0, deadlineAt - Date.now())
+      );
+
+      let request: { report: unknown; generation: number; version: number; cached?: NativeDiagnosticsCache };
+      try {
+        request = await this.requestNativeDiagnosticWithRecovery(uri, controller.signal, deadlineAt);
+      } catch (error) {
+        clearTimeout(timer);
+        if (isDiagnosticsDeadlineExceeded(error) || deadlineExpired || controller.signal.aborted || Date.now() >= deadlineAt) {
+          return this.timedOutReport(uri);
+        }
+        if (isWorkspaceRootChangedError(error)) return this.rootUnavailableReport();
+        return this.unavailableNativeDiagnosticsReport(uri, errorMessage(error));
+      }
+      clearTimeout(timer);
+      if (deadlineExpired || Date.now() >= deadlineAt) return this.timedOutReport(uri);
+
+      let currentDocument: { uri: string; filePath: string; changed: boolean; sourceRevision: number };
+      try {
+        currentDocument = await withDiagnosticsDeadline(this.openOrUpdateDocument(uri), deadlineAt);
+      } catch (error) {
+        if (isDiagnosticsDeadlineExceeded(error)) return this.timedOutReport(uri);
+        if (isWorkspaceRootChangedError(error)) return this.rootUnavailableReport();
+        return this.unavailableNativeDiagnosticsReport(uri, errorMessage(error));
+      }
+
+      if (request.generation !== this.generation || request.version !== currentDocument.sourceRevision) {
+        continue;
+      }
+
+      const report = parseNativeDiagnosticReport(request.report);
+      if (!report) {
+        return this.unavailableNativeDiagnosticsReport(uri, "Native TypeScript returned a malformed textDocument/diagnostic report");
+      }
+
+      let items: Diagnostic[];
+      if (report.kind === "full") {
+        items = report.items.map((diagnostic) => toDiagnostic(uri, diagnostic));
+      } else {
+        const cached = request.cached;
+        if (cached?.resultId === undefined) {
+          return this.unavailableNativeDiagnosticsReport(
+            uri,
+            "Native TypeScript returned an unchanged diagnostic report without a matching cached result"
+          );
+        }
+        items = [...cached.items];
+      }
+
+      const cache: NativeDiagnosticsCache = {
+        generation: request.generation,
+        resultId: report.resultId,
+        items
+      };
+      this.nativeDiagnosticsByUri.set(uri, cache);
+      this.diagnosticsByUri.set(uri, [...items]);
+      this.diagnosticsSourceRevisionByUri.set(uri, currentDocument.sourceRevision);
+      this.pendingSourceRevisionByUri.delete(uri);
+      this.diagnosticsRevisionByUri.set(uri, (this.diagnosticsRevisionByUri.get(uri) ?? 0) + 1);
+      return {
+        status: "ok",
+        timedOut: false,
+        stale: false,
+        configurationIssues: [...this.configurationIssues],
+        sourceRevision: currentDocument.sourceRevision,
+        items: [...items]
+      };
+    }
+  }
+
+  private async requestNativeDiagnosticWithRecovery(
+    uri: string,
+    signal: AbortSignal,
+    deadlineAt: number
+  ): Promise<{ report: unknown; generation: number; version: number; cached?: NativeDiagnosticsCache }> {
+    let retried = false;
+    while (true) {
+      if (signal.aborted) throw createRequestAbortError();
+      await withDiagnosticsDeadline(this.ensureInitialized(), deadlineAt);
+      if (signal.aborted) throw createRequestAbortError();
+      const client = this.client;
+      const generation = this.generation;
+      const document = this.documentRegistry.get(uri);
+      if (!document) throw new Error("Native TypeScript diagnostic document is no longer open");
+      const currentCache = this.nativeDiagnosticsByUri.get(uri);
+      const cached = currentCache?.generation === generation ? currentCache : undefined;
+      const previousResultId = cached?.resultId;
+      const params = {
+        textDocument: { uri },
+        ...(previousResultId !== undefined ? { previousResultId } : {})
+      };
+
+      try {
+        const report = await client.request<unknown>("textDocument/diagnostic", params, { signal });
+        if (client !== this.client || generation !== this.generation) {
+          if (signal.aborted) throw createRequestAbortError();
+          if (retried) throw new Error("Native TypeScript server changed generation during diagnostic request");
+          retried = true;
+          continue;
+        }
+        return { report, generation, version: document.version, cached };
+      } catch (error) {
+        if (signal.aborted) throw error;
+        const racedWithExit = client !== this.client || generation !== this.generation;
+        if (retried || !racedWithExit || this.disposed) throw error;
+        retried = true;
+      }
+    }
+  }
+
+  private unavailableNativeDiagnosticsReport(uri: string, reason: string): DiagnosticReport {
+    const document = this.documentRegistry.get(uri);
+    return {
+      status: "unavailable",
+      timedOut: false,
+      stale: true,
+      unavailableReason: `Native TypeScript diagnostics unavailable: ${reason}`,
+      configurationIssues: [...this.configurationIssues],
+      ...(document ? { sourceRevision: document.version } : {}),
+      items: []
+    };
+  }
+
   private async notifyWithRecovery(method: string, params: unknown): Promise<void> {
     this.assertRootInstanceCurrent();
     const client = this.client;
@@ -427,7 +598,7 @@ export class LspSemanticProvider implements SemanticProvider {
 
   private async initializeGeneration(client: LspClient, generation: number, reopenDocuments: boolean): Promise<void> {
     try {
-      await client.request("initialize", {
+      const initializeResult = await client.request<unknown>("initialize", {
         processId: process.pid,
         rootPath: this.options.rootPath,
         rootUri: filePathToUri(this.options.rootPath),
@@ -440,6 +611,7 @@ export class LspSemanticProvider implements SemanticProvider {
         capabilities: {
           textDocument: {
             publishDiagnostics: {},
+            ...(this.options.backend === "native" && { diagnostic: {} }),
             definition: {},
             references: {},
             hover: {}
@@ -451,10 +623,17 @@ export class LspSemanticProvider implements SemanticProvider {
           }
         }
       });
+      if (this.options.languageId === "typescript" && this.options.backend === "native" && !hasNativeDiagnosticProvider(initializeResult)) {
+        throw new Error("Native TypeScript LSP server did not advertise textDocument/diagnostic support");
+      }
       client.notify("initialized", {});
 
       this.configurationIssues = [];
-      if (this.options.inferredProjectCompilerOptions) {
+      if (this.options.inferredProjectCompilerOptions && this.options.backend === "native") {
+        this.configurationIssues.push(
+          "Native TypeScript uses project configuration and does not support bridge-inferred TypeScript Server Protocol options"
+        );
+      } else if (this.options.inferredProjectCompilerOptions) {
         try {
           await client.request("workspace/executeCommand", {
             command: "typescript.tsserverRequest",
@@ -663,6 +842,7 @@ export class LspSemanticProvider implements SemanticProvider {
         await this.documentRegistry.runSerialized(canonicalUri, async () => {
           if (!this.documentRegistry.get(canonicalUri)) return;
           this.documentRegistry.delete(canonicalUri);
+          this.nativeDiagnosticsByUri.delete(canonicalUri);
           this.invalidateDiagnosticsCandidate(canonicalUri);
           await this.notifyWithRecovery("textDocument/didClose", {
             textDocument: { uri: canonicalUri }
@@ -779,6 +959,90 @@ function normalizeHoverContents(contents: LspHover["contents"]): string {
     return contents.map((item) => (typeof item === "string" ? item : item.value)).join("\n\n");
   }
   return contents.value;
+}
+
+function hasNativeDiagnosticProvider(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const capabilities = (value as { capabilities?: unknown }).capabilities;
+  if (!capabilities || typeof capabilities !== "object" || Array.isArray(capabilities)) return false;
+  const diagnosticProvider = (capabilities as { diagnosticProvider?: unknown }).diagnosticProvider;
+  return Boolean(diagnosticProvider && typeof diagnosticProvider === "object" && !Array.isArray(diagnosticProvider));
+}
+
+function parseNativeDiagnosticReport(value: unknown): NativeDiagnosticReport | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const candidate = value as { kind?: unknown; resultId?: unknown; items?: unknown };
+  if (candidate.kind === "full") {
+    if (
+      !Array.isArray(candidate.items) ||
+      (candidate.resultId !== undefined && typeof candidate.resultId !== "string") ||
+      !candidate.items.every(isLspDiagnostic)
+    ) {
+      return undefined;
+    }
+    return {
+      kind: "full",
+      ...(typeof candidate.resultId === "string" ? { resultId: candidate.resultId } : {}),
+      items: candidate.items
+    };
+  }
+  if (candidate.kind === "unchanged" && typeof candidate.resultId === "string") {
+    return { kind: "unchanged", resultId: candidate.resultId };
+  }
+  return undefined;
+}
+
+function isLspDiagnostic(value: unknown): value is LspDiagnostic {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as {
+    range?: { start?: unknown; end?: unknown };
+    severity?: unknown;
+    code?: unknown;
+    source?: unknown;
+    message?: unknown;
+  };
+  return (
+    Boolean(candidate.range && isPosition(candidate.range.start) && isPosition(candidate.range.end)) &&
+    (candidate.severity === undefined || typeof candidate.severity === "number") &&
+    (candidate.code === undefined || typeof candidate.code === "string" || typeof candidate.code === "number") &&
+    (candidate.source === undefined || typeof candidate.source === "string") &&
+    typeof candidate.message === "string"
+  );
+}
+
+function isPosition(value: unknown): value is Position {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as { line?: unknown; character?: unknown };
+  return (
+    typeof candidate.line === "number" &&
+    Number.isInteger(candidate.line) &&
+    candidate.line >= 0 &&
+    typeof candidate.character === "number" &&
+    Number.isInteger(candidate.character) &&
+    candidate.character >= 0
+  );
+}
+
+function toDiagnostic(uri: string, diagnostic: LspDiagnostic): Diagnostic {
+  return {
+    file: uriToFilePath(uri),
+    line: diagnostic.range.start.line + 1,
+    character: diagnostic.range.start.character + 1,
+    severity: lspSeverityToText(diagnostic.severity),
+    message: diagnostic.message,
+    source: diagnostic.source,
+    code: diagnostic.code
+  };
+}
+
+function createRequestAbortError(): Error {
+  const error = new Error("LSP request canceled");
+  error.name = "AbortError";
+  return error;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function isPublishDiagnosticsParams(value: unknown): value is PublishDiagnosticsParams {

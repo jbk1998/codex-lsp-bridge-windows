@@ -35,6 +35,10 @@ export interface ServerProcessConfig {
   cwd: string;
 }
 
+export interface LspRequestOptions {
+  signal?: AbortSignal;
+}
+
 export interface PreparedSpawnCommand {
   command: string;
   args: string[];
@@ -45,7 +49,7 @@ export interface LspClient {
   on(eventName: "notification", listener: (method: string, params: unknown) => void): this;
   on(eventName: "stderr", listener: (chunk: string) => void): this;
   on(eventName: "exit", listener: (event: { code: number | null; signal: NodeJS.Signals | null }) => void): this;
-  request<T>(method: string, params?: unknown): Promise<T>;
+  request<T>(method: string, params?: unknown, options?: LspRequestOptions): Promise<T>;
   notify(method: string, params?: unknown): void;
   stop(deadline?: DisposalDeadline): Promise<ProcessTerminationResult | void>;
 }
@@ -73,7 +77,10 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   private protocolFailurePromise: Promise<void> | undefined;
   private stdinFailureGeneration: number | undefined;
   private stdinFailurePromise: Promise<void> | undefined;
-  private readonly pending = new Map<number | string, { resolve: (value: unknown) => void; reject: (reason: Error) => void }>();
+  private readonly pending = new Map<
+    number | string,
+    { resolve: (value: unknown) => void; reject: (reason: Error) => void; cleanup: () => void }
+  >();
 
   constructor(
     private readonly config: ServerProcessConfig,
@@ -144,29 +151,50 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
     });
   }
 
-  async request<T>(method: string, params?: unknown): Promise<T> {
-    return this.requestInternal(method, params, false);
+  async request<T>(method: string, params?: unknown, options?: LspRequestOptions): Promise<T> {
+    return this.requestInternal(method, params, false, options);
   }
 
-  private requestInternal<T>(method: string, params: unknown, allowClosing: boolean): Promise<T> {
+  private requestInternal<T>(method: string, params: unknown, allowClosing: boolean, options: LspRequestOptions = {}): Promise<T> {
     if (this.closing && !allowClosing) return Promise.reject(new Error("LSP server is closing"));
+    if (options.signal?.aborted) return Promise.reject(createAbortError());
     this.start();
+    if (options.signal?.aborted) return Promise.reject(createAbortError());
     const id = this.nextId++;
     const message: JsonRpcMessage = { jsonrpc: "2.0", id, method, params };
 
     let rejectResponse: (reason: unknown) => void = () => undefined;
     const response = new Promise<T>((resolve, reject) => {
       rejectResponse = reject;
-      this.pending.set(id, {
-        resolve: (value) => resolve(value as T),
-        reject
-      });
+      const pending = {
+        resolve: (value: unknown) => resolve(value as T),
+        reject,
+        cleanup: () => options.signal?.removeEventListener("abort", onAbort)
+      };
+      const onAbort = () => {
+        if (!this.pending.delete(id)) return;
+        pending.cleanup?.();
+        try {
+          this.write({ jsonrpc: "2.0", method: "$/cancelRequest", params: { id } });
+        } catch {
+          // The request is already locally canceled; the process failure path reports any write error.
+        }
+        reject(createAbortError());
+      };
+      this.pending.set(id, pending);
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      if (options.signal?.aborted) {
+        onAbort();
+        return;
+      }
     });
 
     try {
-      this.write(message);
+      if (this.pending.has(id)) this.write(message);
     } catch (cause) {
+      const pending = this.pending.get(id);
       this.pending.delete(id);
+      pending?.cleanup();
       rejectResponse(cause instanceof Error ? cause : new Error(String(cause)));
     }
     return response;
@@ -274,7 +302,10 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   }
 
   private rejectPending(error: Error): void {
-    for (const pending of this.pending.values()) pending.reject(error);
+    for (const pending of this.pending.values()) {
+      pending.cleanup();
+      pending.reject(error);
+    }
     this.pending.clear();
   }
 
@@ -370,6 +401,7 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
       const pending = this.pending.get(message.id);
       if (pending) {
         this.pending.delete(message.id);
+        pending.cleanup?.();
         if (message.error) {
           pending.reject(new Error(message.error.message));
         } else {
@@ -392,6 +424,12 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   private respondToServerRequest(message: JsonRpcMessage): void {
     this.write(createServerRequestResponse(message, this.config.cwd));
   }
+}
+
+function createAbortError(): Error {
+  const error = new Error("LSP request canceled");
+  error.name = "AbortError";
+  return error;
 }
 
 function formatStartError(command: string, cause: unknown): Error {

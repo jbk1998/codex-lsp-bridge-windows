@@ -107,3 +107,38 @@ describe("file URI helpers", () => {
     );
   });
 });
+
+describe("native TypeScript server config", () => {
+  let tempRoot = "";
+
+  afterEach(async () => {
+    if (tempRoot) await fs.rm(tempRoot, { recursive: true, force: true });
+    tempRoot = "";
+  });
+
+  it("keeps classic as the default TypeScript backend", () => {
+    expect(createLanguageServerConfig("typescript", ".")).toMatchObject({
+      backend: "classic",
+      server: { args: ["--stdio"] }
+    });
+  });
+
+  it("requires an explicit absolute native TypeScript executable path", async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-ts-native-"));
+    expect(() => createLanguageServerConfig("typescript", tempRoot, { backend: "native" })).toThrow("requires an absolute trusted");
+  });
+
+  it("honors a direct native executable override and rejects npm shell shims", async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-ts-native-"));
+    const executablePath = path.join(tempRoot, "tsc-native.exe");
+
+    expect(createLanguageServerConfig("typescript", tempRoot, { backend: "native", executablePath })).toMatchObject({
+      backend: "native",
+      installHint: expect.stringContaining("TypeScript 7"),
+      server: { command: executablePath, args: ["--lsp", "--stdio"] }
+    });
+    expect(() =>
+      createLanguageServerConfig("typescript", tempRoot, { backend: "native", executablePath: path.join(tempRoot, "tsc.cmd") })
+    ).toThrow("direct executable");
+  });
+});

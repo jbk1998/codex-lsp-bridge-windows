@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LspSemanticProvider } from "../src/core/lsp-semantic-provider.js";
 import { JsonRpcLspClient } from "../src/core/json-rpc-lsp-client.js";
-import type { LspClient, ServerProcessConfig } from "../src/core/json-rpc-lsp-client.js";
+import type { LspClient, LspRequestOptions, ServerProcessConfig } from "../src/core/json-rpc-lsp-client.js";
 import { filePathToUri } from "../src/utils/uri.js";
 import { canonicalizeTargetPathSync } from "../src/core/workspace-root.js";
 
@@ -18,23 +18,32 @@ class FakeClient extends EventEmitter implements LspClient {
   definitionResult: unknown = null;
   referencesResult: unknown[] = [];
   hoverResult: unknown = null;
+  initializeResult: unknown = {};
+  diagnosticResults: unknown[] = [];
   stopped = false;
   initializeDelayMs = 0;
   initializeError: Error | undefined;
   requestFailure?: (method: string) => Error | undefined;
+  diagnosticRequest?: (params: unknown, options?: LspRequestOptions) => Promise<unknown>;
   onNotify?: (method: string, params?: unknown) => void;
 
-  request<T>(method: string, params?: unknown): Promise<T> {
+  request<T>(method: string, params?: unknown, options?: LspRequestOptions): Promise<T> {
     this.requests.push({ method, params });
     const requestFailure = this.requestFailure?.(method);
     if (requestFailure) return Promise.reject(requestFailure);
     if (method === "initialize") {
       if (this.initializeError) return Promise.reject(this.initializeError);
-      if (this.initializeDelayMs === 0) return Promise.resolve({} as T);
-      return new Promise<T>((resolve) => setTimeout(() => resolve({} as T), this.initializeDelayMs));
+      if (this.initializeDelayMs === 0) return Promise.resolve(this.initializeResult as T);
+      return new Promise<T>((resolve) => setTimeout(() => resolve(this.initializeResult as T), this.initializeDelayMs));
+    }
+    if (method === "textDocument/diagnostic") {
+      if (this.diagnosticRequest) return this.diagnosticRequest(params, options).then((result) => result as T);
+      return Promise.resolve(this.diagnosticResults.shift() as T);
     }
     if (method === "workspace/symbol") return Promise.resolve(this.symbolResults as T);
-    if (method === "workspace/executeCommand") return Promise.resolve(this.sourceDefinitionResult as T);
+    if (method === "workspace/executeCommand" || method === "custom/textDocument/sourceDefinition") {
+      return Promise.resolve(this.sourceDefinitionResult as T);
+    }
     if (method === "textDocument/definition") return Promise.resolve(this.definitionResult as T);
     if (method === "textDocument/references") return Promise.resolve(this.referencesResult as T);
     if (method === "textDocument/hover") return Promise.resolve(this.hoverResult as T);
@@ -82,6 +91,22 @@ describe("LspSemanticProvider", () => {
     });
   }
 
+  function createNativeProvider(clientFactory: (config: ServerProcessConfig) => LspClient = () => client): LspSemanticProvider {
+    client.initializeResult = { capabilities: { diagnosticProvider: { identifier: "typescript", workspaceDiagnostics: false } } };
+    return new LspSemanticProvider({
+      rootPath,
+      languageId: "typescript",
+      backend: "native",
+      server: { command: "native-tsc.exe", args: ["--lsp", "--stdio"], cwd: rootPath },
+      workspaceSeedFiles: ["src/editor.ts"],
+      workspaceSeedExtensions: [".ts", ".tsx"],
+      diagnosticsTimeoutMs: 500,
+      diagnosticsStabilityMs: 5,
+      inferredProjectCompilerOptions: { types: ["node"] },
+      clientFactory
+    });
+  }
+
   it("initializes once and captures publishDiagnostics notifications", async () => {
     const provider = createProvider();
     const uri = filePathToUri(filePath);
@@ -116,6 +141,237 @@ describe("LspSemanticProvider", () => {
       workspaceFolders: [{ uri: filePathToUri(rootPath), name: path.basename(rootPath) }],
       capabilities: { workspace: { workspaceFolders: true } }
     });
+  });
+
+  it("uses native pull diagnostics and maps a full report without legacy TypeScript requests", async () => {
+    client.diagnosticResults.push({
+      kind: "full",
+      resultId: "report-1",
+      items: [
+        {
+          range: { start: { line: 1, character: 2 }, end: { line: 1, character: 4 } },
+          severity: 1,
+          code: 2339,
+          source: "typescript",
+          message: "missing property"
+        }
+      ]
+    });
+    const provider = createNativeProvider();
+    const uri = filePathToUri(filePath);
+
+    const report = await provider.diagnostics(uri);
+    expect(report).toMatchObject({
+      status: "ok",
+      stale: false,
+      sourceRevision: 1,
+      items: [{ file: expect.any(String), line: 2, character: 3, severity: "error", code: 2339, message: "missing property" }]
+    });
+    expect(client.requests.filter((request) => request.method === "textDocument/diagnostic")).toHaveLength(1);
+    const openedUri = (
+      client.notifications.find((notification) => notification.method === "textDocument/didOpen")?.params as {
+        textDocument: { uri: string };
+      }
+    ).textDocument.uri;
+    const initialize = client.requests.find((request) => request.method === "initialize");
+    expect(initialize?.params).toMatchObject({ capabilities: { textDocument: { diagnostic: {} } } });
+    expect(client.requests.find((request) => request.method === "textDocument/diagnostic")?.params).toEqual({
+      textDocument: { uri: openedUri }
+    });
+    expect(client.requests.some((request) => request.method === "workspace/executeCommand")).toBe(false);
+    expect(client.requests.some((request) => request.method === "custom/textDocument/sourceDefinition")).toBe(false);
+    expect(client.requests.some((request) => request.method === "workspace/diagnostic")).toBe(false);
+    expect(report.configurationIssues).toContain(
+      "Native TypeScript uses project configuration and does not support bridge-inferred TypeScript Server Protocol options"
+    );
+  });
+
+  it("uses native source-definition and does not send the legacy execute-command request", async () => {
+    const uri = filePathToUri(filePath);
+    client.sourceDefinitionResult = [
+      {
+        uri,
+        range: { start: { line: 0, character: 7 }, end: { line: 0, character: 13 } }
+      }
+    ];
+    const provider = createNativeProvider();
+
+    await expect(provider.definitionAt({ file: filePath, line: 1, character: 14 })).resolves.toMatchObject({
+      file: filePath,
+      line: 1,
+      character: 8
+    });
+    expect(client.requests.some((request) => request.method === "custom/textDocument/sourceDefinition")).toBe(true);
+    expect(client.requests.some((request) => request.method === "workspace/executeCommand")).toBe(false);
+  });
+
+  it("fails visibly when native initialization lacks pull-diagnostic capability", async () => {
+    const provider = createNativeProvider();
+    client.initializeResult = { capabilities: {} };
+
+    await expect(provider.diagnostics(filePathToUri(filePath))).resolves.toMatchObject({
+      status: "unavailable",
+      stale: false,
+      unavailableReason: expect.stringContaining("did not advertise textDocument/diagnostic support"),
+      items: []
+    });
+  });
+
+  it("reuses the cached native report and carries forward the unchanged response result id", async () => {
+    client.diagnosticResults.push(
+      { kind: "full", resultId: "report-1", items: [] },
+      { kind: "unchanged", resultId: "report-2" },
+      { kind: "unchanged", resultId: "report-3" }
+    );
+    const provider = createNativeProvider();
+    const uri = filePathToUri(filePath);
+
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({ status: "ok", items: [] });
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({ status: "ok", stale: false, sourceRevision: 1, items: [] });
+    await expect(provider.diagnostics(uri)).resolves.toMatchObject({ status: "ok", stale: false, sourceRevision: 1, items: [] });
+    const openedUri = (
+      client.notifications.find((notification) => notification.method === "textDocument/didOpen")?.params as {
+        textDocument: { uri: string };
+      }
+    ).textDocument.uri;
+    const requests = client.requests.filter((request) => request.method === "textDocument/diagnostic");
+    expect(requests.map((request) => (request.params as { textDocument: { uri: string } }).textDocument.uri)).toEqual([
+      openedUri,
+      openedUri,
+      openedUri
+    ]);
+    expect((requests[0].params as { previousResultId?: string }).previousResultId).toBeUndefined();
+    expect((requests[1].params as { previousResultId?: string }).previousResultId).toBe("report-1");
+    expect((requests[2].params as { previousResultId?: string }).previousResultId).toBe("report-2");
+  });
+
+  it("uses the diagnostic snapshot sent with each concurrent native pull", async () => {
+    client.diagnosticResults.push({ kind: "full", resultId: "initial", items: [] });
+    const provider = createNativeProvider();
+    const uri = filePathToUri(filePath);
+    await expect(provider.diagnostics(uri, { timeoutMs: 10000 })).resolves.toMatchObject({ status: "ok" });
+
+    const replies: Array<(report: unknown) => void> = [];
+    client.diagnosticRequest = () => new Promise((resolve) => replies.push(resolve));
+    const first = provider.diagnostics(uri, { timeoutMs: 10000 });
+    const second = provider.diagnostics(uri, { timeoutMs: 10000 });
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+
+    replies[0]({ kind: "unchanged", resultId: "next" });
+    await expect(Promise.race([first, second])).resolves.toMatchObject({ status: "ok", stale: false });
+    replies[1]({ kind: "unchanged", resultId: "also-next" });
+    expect(await Promise.all([first, second])).toEqual([
+      expect.objectContaining({ status: "ok", stale: false, items: [] }),
+      expect.objectContaining({ status: "ok", stale: false, items: [] })
+    ]);
+  });
+
+  it("returns unavailable for an unmatched unchanged native diagnostic report", async () => {
+    client.diagnosticResults.push({ kind: "unchanged", resultId: "missing" });
+    const provider = createNativeProvider();
+
+    await expect(provider.diagnostics(filePathToUri(filePath))).resolves.toMatchObject({
+      status: "unavailable",
+      stale: true,
+      unavailableReason: expect.stringContaining("without a matching cached result"),
+      items: []
+    });
+  });
+
+  it("cancels a native diagnostics request when its deadline expires", async () => {
+    let canceled = false;
+    client.diagnosticRequest = (_params, options) =>
+      new Promise((_resolve, reject) => {
+        options?.signal?.addEventListener(
+          "abort",
+          () => {
+            canceled = true;
+            const error = new Error("canceled");
+            error.name = "AbortError";
+            reject(error);
+          },
+          { once: true }
+        );
+      });
+    const provider = createNativeProvider();
+
+    await expect(provider.diagnostics(filePathToUri(filePath), { timeoutMs: 200 })).resolves.toMatchObject({
+      status: "timed_out",
+      timedOut: true,
+      stale: true
+    });
+    expect(client.requests.filter((request) => request.method === "textDocument/diagnostic")).toHaveLength(1);
+    expect(canceled).toBe(true);
+  });
+
+  it("discards a native report if the source changes while diagnostics are in flight", async () => {
+    let calls = 0;
+    let releaseFirst: ((report: unknown) => void) | undefined;
+    client.diagnosticRequest = () => {
+      calls += 1;
+      if (calls === 1) return new Promise((resolve) => (releaseFirst = resolve));
+      return Promise.resolve({ kind: "full", resultId: `report-${calls}`, items: [] });
+    };
+    const provider = createNativeProvider();
+    const uri = filePathToUri(filePath);
+    const olderCall = provider.diagnostics(uri, { timeoutMs: 1000 });
+    await vi.waitFor(() => expect(releaseFirst).toBeTypeOf("function"));
+    await fs.writeFile(filePath, "export const Editor = 2;\n", "utf8");
+    await expect(provider.diagnostics(uri, { timeoutMs: 1000 })).resolves.toMatchObject({ status: "ok", sourceRevision: 2 });
+    releaseFirst?.({
+      kind: "full",
+      resultId: "old-source",
+      items: [
+        {
+          range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+          severity: 1,
+          message: "obsolete diagnostic"
+        }
+      ]
+    });
+
+    await expect(olderCall).resolves.toMatchObject({ status: "ok", sourceRevision: 2, items: [] });
+    expect(calls).toBe(3);
+  });
+
+  it("discards a native response from an exited server generation", async () => {
+    const firstClient = client;
+    const secondClient = new FakeClient();
+    secondClient.initializeResult = { capabilities: { diagnosticProvider: { identifier: "typescript", workspaceDiagnostics: false } } };
+    const currentDiagnostic = {
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 1 } },
+      severity: 1,
+      message: "current generation"
+    };
+    secondClient.diagnosticResults.push(
+      { kind: "full", resultId: "current-1", items: [currentDiagnostic] },
+      { kind: "full", resultId: "current-2", items: [currentDiagnostic] }
+    );
+    let releaseOldResponse: ((value: unknown) => void) | undefined;
+    firstClient.diagnosticRequest = () => new Promise((resolve) => (releaseOldResponse = resolve));
+    const clients = [firstClient, secondClient];
+    const provider = createNativeProvider(() => clients.shift()!);
+    const uri = filePathToUri(filePath);
+    const olderCall = provider.diagnostics(uri, { timeoutMs: 1000 });
+    await vi.waitFor(() => expect(releaseOldResponse).toBeTypeOf("function"));
+    firstClient.emit("exit", { code: 1, signal: null });
+
+    await expect(provider.diagnostics(uri, { timeoutMs: 1000 })).resolves.toMatchObject({
+      status: "ok",
+      sourceRevision: 1,
+      items: [{ message: "current generation" }]
+    });
+    releaseOldResponse?.({
+      kind: "full",
+      resultId: "old-generation",
+      items: [{ ...currentDiagnostic, message: "obsolete generation" }]
+    });
+    await expect(olderCall).resolves.toMatchObject({
+      status: "ok",
+      sourceRevision: 1,
+      items: [{ message: "current generation" }]
+    });
+    expect(clients).toHaveLength(0);
   });
 
   it("uses one timeout budget across slow startup and diagnostics freshness", async () => {

@@ -3,7 +3,11 @@ import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveInferredTypeScriptProjectOptions, resolveNodeTypeRoots } from "../src/core/typescript-project.js";
+import {
+  hasTypeScriptProjectConfig,
+  resolveInferredTypeScriptProjectOptions,
+  resolveNodeTypeRoots
+} from "../src/core/typescript-project.js";
 
 const temporaryRoots: string[] = [];
 const testRequire = createRequire(import.meta.url);
@@ -13,6 +17,18 @@ afterEach(async () => {
 });
 
 describe("standalone TypeScript project discovery", () => {
+  it("detects an explicit workspace TypeScript or JavaScript project config", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-ts-config-"));
+    temporaryRoots.push(root);
+
+    expect(hasTypeScriptProjectConfig(root)).toBe(false);
+    await fs.writeFile(path.join(root, "tsconfig.json"), "{}", "utf8");
+    expect(hasTypeScriptProjectConfig(root)).toBe(true);
+    await fs.rm(path.join(root, "tsconfig.json"));
+    await fs.writeFile(path.join(root, "jsconfig.json"), "{}", "utf8");
+    expect(hasTypeScriptProjectConfig(root)).toBe(true);
+  });
+
   it("finds bundled-style @types/node beside the configured Node runtime", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-skill-root-"));
     const runtimeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-runtime-"));

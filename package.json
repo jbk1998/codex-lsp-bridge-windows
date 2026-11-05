@@ -51,6 +51,8 @@
     "test": "vitest run --coverage",
     "test:run": "vitest run",
     "test:integration": "node scripts/run-integration-tests.mjs",
+    "test:integration:native": "node scripts/run-native-typescript-integration.mjs",
+    "benchmark:typescript-lsp": "npm run build && node scripts/benchmark-typescript-lsp.mjs",
     "type-check": "tsc -p tsconfig.json --noEmit",
     "verify:package": "node scripts/verify-package.mjs",
     "smoke:install": "node scripts/smoke-install.mjs",

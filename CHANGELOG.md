@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add an opt-in TypeScript 7 backend with a trusted direct executable path,
+  pull diagnostics, source navigation, and a Windows integration test. Classic
+  TypeScript remains the default.
+
 - Bound MCP request lines to 1 MiB and active handlers to 64, cap outgoing LSP
   payloads at 16 MiB, and contain asynchronous stdin failures by process
   generation.
