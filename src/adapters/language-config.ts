@@ -2,7 +2,17 @@ import path from "node:path";
 import fs from "node:fs";
 import type { ServerProcessConfig } from "../core/json-rpc-lsp-client.js";
 
-export type SupportedLanguage = "typescript" | "rust" | "python" | "go";
+export type SupportedLanguage = "typescript" | "rust" | "python" | "go" | "xml";
+
+export interface XmlFileAssociation {
+  pattern: string;
+  systemId: string;
+}
+
+export interface XmlLanguageSettings {
+  catalogs: string[];
+  fileAssociations: XmlFileAssociation[];
+}
 
 export interface LanguageServerConfig {
   language: SupportedLanguage;
@@ -77,16 +87,42 @@ const serverByLanguage: Record<
     workspaceSeedFiles: ["main.go", "cmd/main.go"],
     installHint: "go install golang.org/x/tools/gopls@latest",
     supportLevel: "experimental"
+  },
+  xml: {
+    languageId: "xml",
+    command: "lemminx",
+    args: [],
+    extensions: [".xml", ".xsd", ".rels"],
+    workspaceSeedFiles: [],
+    installHint:
+      "Install the official LemMinX 0.31.2 Windows binary and set languageServers.xml.command to its absolute path in trusted .codex/lsp-client.json",
+    supportLevel: "experimental"
   }
 };
 
 export function createLanguageServerConfig(
   language: SupportedLanguage,
   rootPath: string,
-  override: LanguageServerOverride = {}
+  override: LanguageServerOverride = {},
+  xmlSettings: XmlLanguageSettings = { catalogs: [], fileAssociations: [] }
 ): LanguageServerConfig {
   const config = serverByLanguage[language];
   const command = override.command ?? config.command;
+  const server: ServerProcessConfig = {
+    command: resolveServerCommand(rootPath, command),
+    args: [...(override.args ?? config.args)],
+    cwd: path.resolve(rootPath)
+  };
+  if (language === "xml") {
+    const xml = {
+      downloadExternalResources: { enabled: false },
+      validation: { resolveExternalEntities: false },
+      catalogs: [...xmlSettings.catalogs],
+      fileAssociations: xmlSettings.fileAssociations.map((association) => ({ ...association }))
+    };
+    server.initializationOptions = { settings: { xml } };
+    server.workspaceConfiguration = { xml };
+  }
   return {
     language,
     languageId: config.languageId,
@@ -94,11 +130,7 @@ export function createLanguageServerConfig(
     workspaceSeedFiles: [...config.workspaceSeedFiles],
     installHint: config.installHint,
     supportLevel: config.supportLevel,
-    server: {
-      command: resolveServerCommand(rootPath, command),
-      args: [...(override.args ?? config.args)],
-      cwd: path.resolve(rootPath)
-    }
+    server
   };
 }
 
@@ -156,7 +188,7 @@ export function supportedExtensionsForLanguage(language: SupportedLanguage): str
 }
 
 export function detectLanguageFromFile(filePath: string): SupportedLanguage {
-  const extension = path.extname(filePath);
+  const extension = path.extname(filePath).toLowerCase();
   const match = supportedLanguages().find((language) => serverByLanguage[language].extensions.includes(extension));
   if (match) return match;
   throw new Error(`Unsupported file extension for LSP language detection: ${filePath}`);

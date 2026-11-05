@@ -14,6 +14,7 @@ Codex coding sessions:
 
 - TypeScript/JavaScript diagnostics through `typescript-language-server`
 - Python diagnostics through `pyright-langserver`
+- Experimental LemMinX diagnostics for explicit XML, XSD, and OOXML relationship checks
 - Reliable Windows npm shim handling for `.cmd` language-server launchers
 - Root-scoped CLI and MCP calls for detached worktrees and out-of-repo calls
 - Clear metadata when diagnostics are clean, stale, timed out, or unavailable
@@ -259,6 +260,8 @@ the staged process and load baseline.
 - TypeScript remains the primary path
 - Rust adapter and hook coverage are supported experimentally
 - Python and Go adapters are present but less exercised
+- XML diagnostics are experimental and explicit only; they are not included in
+  the automatic PostToolUse hook
 - No broad automatic language server installation; `--with-rust-analyzer` is a
   narrow explicit Rust setup helper
 - No rename/code-action support yet
@@ -275,6 +278,7 @@ the staged process and load baseline.
 | Rust | Experimental | `rust-analyzer` | `.rs` | `rustup component add rust-analyzer` |
 | Python | Experimental | `pyright-langserver` | `.py` | `npm install -g pyright` |
 | Go | Experimental | `gopls` | `.go` | `go install golang.org/x/tools/gopls@latest` |
+| XML | Experimental | `lemminx` | none (explicit requests only) | See the opt-in LemMinX setup below |
 
 For TypeScript projects, install a language server if needed:
 
@@ -525,11 +529,12 @@ codex-lsp-bridge definition --file src/main.rs --line 12 --character 8 --root .
 codex-lsp-bridge references --file src/main.rs --line 12 --character 8 --root .
 codex-lsp-bridge diagnostics --file app.py --language python --root .
 codex-lsp-bridge diagnostics --file main.go --root .
+codex-lsp-bridge diagnostics --file xl/_rels/workbook.xml.rels --language xml --root .
 ```
 
 File-position commands and file diagnostics auto-detect the language from the
-file extension. Symbol-only commands use TypeScript by default unless
-`--language` is provided.
+file extension, including `.xml`, `.xsd`, and `.rels`. Symbol-only commands use
+TypeScript by default unless `--language` is provided.
 
 Diagnostics include trust metadata:
 
@@ -626,11 +631,12 @@ Status request:
 ## Configuration
 
 Optional JSON config is read from `~/.codex/lsp-client.json` and then
-`<workspace>/.codex/lsp-client.json`. Workspace config wins for behavioral
-settings, but executable `languageServers` overrides are accepted only from the
-trusted global config. A present config file must contain valid JSON and valid
-field types; malformed global or workspace config blocks the operation with an
-error naming the exact file and field instead of silently falling back.
+`<workspace>/.codex/lsp-client.json`. Workspace config controls behavioral
+settings such as XML schema catalogs and file associations, but executable
+`languageServers` overrides are accepted only from the trusted global config.
+A present config file must contain valid JSON and valid field types; malformed
+global or workspace config blocks the operation with an error naming the exact
+file and field instead of silently falling back.
 
 Use global config for your personal default and workspace config for large
 repos that need longer language-server warmup. For a Rust-first workspace:
@@ -658,6 +664,65 @@ out repository cannot replace them through workspace config:
     }
   }
 }
+```
+
+### Experimental XML diagnostics
+
+LemMinX can diagnose `.xml`, `.xsd`, and `.rels` files through the existing
+CLI and MCP diagnostics entry points. Select it explicitly with
+`--language xml`; the bridge does not add XML to the automatic hook.
+
+Install the standalone Windows binary from the pinned [Red Hat XML 0.29.3
+release](https://github.com/redhat-developer/vscode-xml/releases/tag/0.29.3).
+That extension release bundles LemMinX 0.31.2. Download
+`lemminx-win32.zip`, verify the archive SHA-256
+`7eaefaac68253b0ec8e0ad1f1c0f2d0755423d4e99e52497428b52f80df28eb7` from the
+release asset metadata, extract it, then verify `lemminx-win32.exe` against
+the included `lemminx-win32.sha256` file. The executable starts in stdio mode
+without arguments and does not require Java.
+
+Add its absolute path to your trusted global `~/.codex/lsp-client.json`:
+
+```json
+{
+  "languageServers": {
+    "xml": {
+      "command": "C:\\Tools\\LemMinX\\lemminx-win32.exe",
+      "args": []
+    }
+  }
+}
+```
+
+Keep schema references local. Workspace `xml.catalogs` and
+`xml.fileAssociations` paths are resolved relative to the workspace root and
+rejected if they escape it. For example, a repository can associate local
+`.rels` files with a checked-in schema:
+
+```json
+{
+  "xml": {
+    "catalogs": ["schemas/catalog.xml"],
+    "fileAssociations": [
+      { "pattern": "**/*.rels", "systemId": "schemas/relationships.xsd" }
+    ]
+  }
+}
+```
+
+External schema downloads and external entity resolution are explicitly
+disabled before LemMinX receives the first document. Supply local schemas or
+an XML catalog for files that need validation. The synthetic xlsx2py fixture
+under `tests/fixtures/lemminx-ooxml` uses a small Relationships XSD to prove the
+path; it is not the complete OOXML schema set. For full workbook validation,
+place a trusted official OOXML catalog and its schema files inside the
+workspace and register that catalog under `xml.catalogs`.
+
+To run the real Windows wire and shutdown check with an installed binary:
+
+```powershell
+$env:CODEX_LSP_LEMMINX_PATH = "C:\Tools\LemMinX\lemminx-win32.exe"
+npm run test:lemminx-integration
 ```
 
 For large monorepos, let the bridge choose a bounded timeout from lightweight

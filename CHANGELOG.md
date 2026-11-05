@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add an experimental, explicit-only LemMinX adapter for `.xml`, `.xsd`, and
+  `.rels`, with local schema/catalog configuration and external downloads and
+  entity resolution disabled before document open. The adapter does not extend
+  automatic PostToolUse diagnostics.
 - Bound MCP request lines to 1 MiB and active handlers to 64, cap outgoing LSP
   payloads at 16 MiB, and contain asynchronous stdin failures by process
   generation.

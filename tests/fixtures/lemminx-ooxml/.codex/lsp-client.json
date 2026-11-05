@@ -1,0 +1,10 @@
+{
+  "xml": {
+    "fileAssociations": [
+      {
+        "pattern": "**/*.rels",
+        "systemId": "schemas/relationships-pilot.xsd"
+      }
+    ]
+  }
+}

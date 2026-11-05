@@ -55,6 +55,7 @@ describe("package contract", () => {
     expect(pkg.scripts).toMatchObject({
       lint: "eslint .",
       "test:integration": "node scripts/run-integration-tests.mjs",
+      "test:lemminx-integration": "node scripts/run-lemminx-integration.mjs",
       "verify:package": "node scripts/verify-package.mjs",
       "smoke:install": "node scripts/smoke-install.mjs",
       "smoke:package": "node scripts/smoke-package.mjs",

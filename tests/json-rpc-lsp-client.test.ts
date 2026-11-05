@@ -299,6 +299,27 @@ describe("JsonRpcLspClient", () => {
       })
     ).toEqual({ jsonrpc: "2.0", id: "config-1", result: [{}, {}] });
 
+    const xmlSettings = {
+      downloadExternalResources: { enabled: false },
+      validation: { resolveExternalEntities: false }
+    };
+    expect(
+      createServerRequestResponse(
+        {
+          jsonrpc: "2.0",
+          id: "xml-config-1",
+          method: "workspace/configuration",
+          params: { items: [{ section: "xml" }, { section: "xml.validation.resolveExternalEntities" }, { section: "python" }] }
+        },
+        process.cwd(),
+        { xml: xmlSettings }
+      )
+    ).toEqual({
+      jsonrpc: "2.0",
+      id: "xml-config-1",
+      result: [xmlSettings, false, {}]
+    });
+
     expect(createServerRequestResponse({ jsonrpc: "2.0", id: 2, method: "workspace/applyEdit" })).toMatchObject({
       id: 2,
       result: { applied: false, failureReason: expect.stringContaining("read-only") }

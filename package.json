@@ -51,6 +51,7 @@
     "test": "vitest run --coverage",
     "test:run": "vitest run",
     "test:integration": "node scripts/run-integration-tests.mjs",
+    "test:lemminx-integration": "node scripts/run-lemminx-integration.mjs",
     "type-check": "tsc -p tsconfig.json --noEmit",
     "verify:package": "node scripts/verify-package.mjs",
     "smoke:install": "node scripts/smoke-install.mjs",

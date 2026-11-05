@@ -13,6 +13,9 @@ npm run test:integration
 `ci:verify` includes type-check, ESLint, Prettier, coverage, build, and package
 smokes. `test:integration` requires and executes the pinned TypeScript and
 Pyright servers and fails if any of its seven tests are skipped.
+`test:lemminx-integration` is an opt-in native Windows check; set
+`CODEX_LSP_LEMMINX_PATH` to an explicitly trusted LemMinX binary before running
+it.
 
 ## Scope
 

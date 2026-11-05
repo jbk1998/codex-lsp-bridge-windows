@@ -11,6 +11,7 @@ import {
   createLanguageServerConfig,
   detectLanguageFromFile,
   type LanguageServerOverride,
+  type XmlLanguageSettings,
   type SupportedLanguage
 } from "../adapters/language-config.js";
 import { resolveInferredTypeScriptProjectOptions } from "./typescript-project.js";
@@ -19,6 +20,7 @@ import { canonicalizeWorkspaceRootSync, workspaceRootInstanceIdentitySync } from
 export interface LspManagerOptions {
   diagnosticsTimeoutMs?: number;
   languageServers?: Partial<Record<SupportedLanguage, LanguageServerOverride>>;
+  xmlSettings?: XmlLanguageSettings;
   providerFactory?: (language: SupportedLanguage) => SemanticProvider;
 }
 
@@ -54,7 +56,12 @@ export class LspManager {
       return injectedProvider;
     }
 
-    const config = createLanguageServerConfig(language, this.rootPath, this.options.languageServers?.[language]);
+    const config = createLanguageServerConfig(
+      language,
+      this.rootPath,
+      this.options.languageServers?.[language],
+      language === "xml" ? this.options.xmlSettings : undefined
+    );
     const inferredProjectOptions =
       language === "typescript" ? resolveInferredTypeScriptProjectOptions(this.rootPath)?.compilerOptions : undefined;
     const provider = new LspSemanticProvider({

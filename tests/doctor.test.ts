@@ -26,7 +26,8 @@ describe("doctor", () => {
           command: expect.stringContaining("pyright-langserver"),
           supportLevel: "experimental"
         }),
-        expect.objectContaining({ language: "go", command: "gopls", supportLevel: "experimental" })
+        expect.objectContaining({ language: "go", command: "gopls", supportLevel: "experimental" }),
+        expect.objectContaining({ language: "xml", command: "lemminx", supportLevel: "experimental" })
       ])
     );
     expect(result.languages.every((entry) => entry.status === "ok" || entry.status === "missing")).toBe(true);

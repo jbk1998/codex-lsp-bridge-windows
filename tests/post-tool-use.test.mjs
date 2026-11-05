@@ -51,6 +51,9 @@ describe("deferred post-tool-use diagnostics helper", () => {
     await fs.writeFile(path.join(rootPath, "src", "index.ts"), "export {}\n");
     await fs.writeFile(path.join(rootPath, "src", "runner.mjs"), "export {}\n");
     await fs.writeFile(path.join(rootPath, "src", "config.cjs"), "module.exports = {}\n");
+    await fs.writeFile(path.join(rootPath, "src", "workbook.xml"), "<workbook />\n");
+    await fs.writeFile(path.join(rootPath, "src", "workbook.xml.rels"), "<Relationships />\n");
+    await fs.writeFile(path.join(rootPath, "src", "schema.xsd"), "<schema />\n");
     await fs.writeFile(path.join(rootPath, "src", "notes.md"), "# notes\n");
     await fs.writeFile(path.join(outsidePath, "outside.ts"), "export {}\n");
 
@@ -59,6 +62,9 @@ describe("deferred post-tool-use diagnostics helper", () => {
         file_path: "src/index.ts",
         module: "src/runner.mjs",
         commonjs: "src/config.cjs",
+        workbook: "src/workbook.xml",
+        relationships: "src/workbook.xml.rels",
+        schema: "src/schema.xsd",
         other: path.join(outsidePath, "outside.ts"),
         notes: "src/notes.md"
       },

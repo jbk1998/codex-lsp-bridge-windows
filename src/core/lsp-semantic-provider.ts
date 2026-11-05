@@ -431,6 +431,9 @@ export class LspSemanticProvider implements SemanticProvider {
         processId: process.pid,
         rootPath: this.options.rootPath,
         rootUri: filePathToUri(this.options.rootPath),
+        ...(this.options.server.initializationOptions !== undefined
+          ? { initializationOptions: this.options.server.initializationOptions }
+          : {}),
         workspaceFolders: [
           {
             uri: filePathToUri(this.options.rootPath),
@@ -447,6 +450,7 @@ export class LspSemanticProvider implements SemanticProvider {
           workspace: {
             symbol: {},
             workspaceFolders: true,
+            ...(this.options.languageId === "xml" && { configuration: true }),
             ...(this.options.languageId === "python" && { didChangeWatchedFiles: { dynamicRegistration: true } })
           }
         }

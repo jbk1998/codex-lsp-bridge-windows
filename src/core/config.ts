@@ -2,7 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { readDiagnosticsTimeoutPolicy, type DiagnosticsTimeoutPolicy } from "./diagnostics-timeout.js";
-import type { SupportedLanguage } from "../adapters/language-config.js";
+import type { SupportedLanguage, XmlFileAssociation, XmlLanguageSettings } from "../adapters/language-config.js";
+import { resolvePathInsideWorkspaceRootSync } from "./workspace-root.js";
 
 export interface LspClientConfig {
   defaultLanguage: SupportedLanguage;
@@ -18,6 +19,7 @@ export interface LspClientConfig {
     verbosePending: boolean;
   };
   languageServers: Partial<Record<SupportedLanguage, { command?: string; args?: string[] }>>;
+  xml: XmlLanguageSettings;
 }
 
 const defaults: LspClientConfig = {
@@ -27,7 +29,8 @@ const defaults: LspClientConfig = {
     maxFiles: 5,
     verbosePending: false
   },
-  languageServers: {}
+  languageServers: {},
+  xml: { catalogs: [], fileAssociations: [] }
 };
 
 /**
@@ -65,7 +68,8 @@ export function loadConfig(rootPath: string): LspClientConfig {
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const globalConfig = readConfig(path.join(codexHome, "lsp-client.json"));
   const localConfig = readConfig(path.join(rootPath, ".codex", "lsp-client.json"));
-  return mergeConfig(defaults, globalConfig, omitWorkspaceExecutableOverrides(localConfig));
+  const merged = mergeConfig(defaults, globalConfig, omitWorkspaceExecutableOverrides(localConfig));
+  return { ...merged, xml: resolveXmlSettingsInsideWorkspace(rootPath, merged.xml) };
 }
 
 /**
@@ -105,7 +109,7 @@ function readConfig(filePath: string): Partial<LspClientConfig> {
 
 function validateConfig(config: Record<string, unknown>, filePath: string): void {
   if (config.defaultLanguage !== undefined && !isSupportedLanguage(config.defaultLanguage)) {
-    throwInvalidField(filePath, "defaultLanguage", "one of: typescript, rust, python, go");
+    throwInvalidField(filePath, "defaultLanguage", "one of: typescript, rust, python, go, xml");
   }
   if (config.diagnosticsTimeoutMs !== undefined && !isValidDiagnosticsTimeout(config.diagnosticsTimeoutMs)) {
     throwInvalidField(filePath, "diagnosticsTimeoutMs", 'a positive finite number or "auto"');
@@ -113,6 +117,7 @@ function validateConfig(config: Record<string, unknown>, filePath: string): void
   if (config.mcpIdleTimeoutMs !== undefined && !isValidNonNegativeInteger(config.mcpIdleTimeoutMs)) {
     throwInvalidField(filePath, "mcpIdleTimeoutMs", "a non-negative safe integer in milliseconds (0 disables it)");
   }
+  if (config.xml !== undefined) validateXmlSettings(config.xml, filePath);
 
   if (config.hook !== undefined) {
     if (!isConfigObject(config.hook)) {
@@ -154,6 +159,35 @@ function throwInvalidField(filePath: string, field: string, expected: string): n
   throw new LspClientConfigError(filePath, `${field} must be ${expected}; fix this field or remove the file`);
 }
 
+function validateXmlSettings(value: unknown, filePath: string): asserts value is Partial<XmlLanguageSettings> {
+  if (!isConfigObject(value)) throwInvalidField(filePath, "xml", "a JSON object");
+  if (value.catalogs !== undefined && (!Array.isArray(value.catalogs) || value.catalogs.some((entry) => !isNonEmptyString(entry)))) {
+    throwInvalidField(filePath, "xml.catalogs", "an array of non-empty local paths");
+  }
+  if (value.fileAssociations !== undefined) {
+    if (!Array.isArray(value.fileAssociations)) throwInvalidField(filePath, "xml.fileAssociations", "an array");
+    for (const association of value.fileAssociations) {
+      if (!isConfigObject(association)) throwInvalidField(filePath, "xml.fileAssociations[]", "a JSON object");
+      if (!isNonEmptyString(association.pattern)) {
+        throwInvalidField(filePath, "xml.fileAssociations[].pattern", "a non-empty file pattern");
+      }
+      if (!isNonEmptyString(association.systemId)) {
+        throwInvalidField(filePath, "xml.fileAssociations[].systemId", "a non-empty local schema path");
+      }
+    }
+  }
+}
+
+function resolveXmlSettingsInsideWorkspace(rootPath: string, settings: XmlLanguageSettings): XmlLanguageSettings {
+  return {
+    catalogs: settings.catalogs.map((catalog) => resolvePathInsideWorkspaceRootSync(rootPath, catalog)),
+    fileAssociations: settings.fileAssociations.map((association) => ({
+      ...association,
+      systemId: resolvePathInsideWorkspaceRootSync(rootPath, association.systemId)
+    }))
+  };
+}
+
 function isConfigObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -168,6 +202,10 @@ function isValidPositiveNumber(value: unknown): value is number {
 
 function isValidNonNegativeInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= 2_147_483_647;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isNodeErrorWithCode(error: unknown, code: string): error is NodeJS.ErrnoException {
@@ -191,10 +229,22 @@ function mergeConfig(...configs: Partial<LspClientConfig>[]): LspClientConfig {
       languageServers: {
         ...merged.languageServers,
         ...config.languageServers
+      },
+      xml: {
+        catalogs: [...new Set([...(merged.xml?.catalogs ?? []), ...(config.xml?.catalogs ?? [])])],
+        fileAssociations: mergeXmlAssociations(merged.xml?.fileAssociations ?? [], config.xml?.fileAssociations ?? [])
       }
     }),
-    { ...defaults, hook: { ...defaults.hook }, languageServers: { ...defaults.languageServers } }
+    { ...defaults, hook: { ...defaults.hook }, languageServers: { ...defaults.languageServers }, xml: { ...defaults.xml } }
   );
+}
+
+function mergeXmlAssociations(existing: XmlFileAssociation[], added: XmlFileAssociation[]): XmlFileAssociation[] {
+  const associations = new Map<string, XmlFileAssociation>();
+  for (const association of [...existing, ...added]) {
+    associations.set(association.pattern, association);
+  }
+  return [...associations.values()];
 }
 
 function readPositiveNumber(value: unknown, fallback: number): number {
@@ -206,5 +256,5 @@ function readNonNegativeInteger(value: unknown, fallback: number | undefined): n
 }
 
 function isSupportedLanguage(value: unknown): value is SupportedLanguage {
-  return value === "typescript" || value === "rust" || value === "python" || value === "go";
+  return value === "typescript" || value === "rust" || value === "python" || value === "go" || value === "xml";
 }

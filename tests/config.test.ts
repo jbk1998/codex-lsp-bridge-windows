@@ -38,8 +38,46 @@ describe("config", () => {
       defaultLanguage: "typescript",
       diagnosticsTimeoutMs: 3000,
       mcpIdleTimeoutMs: 1800000,
-      hook: { maxFiles: 9, verbosePending: true }
+      hook: { maxFiles: 9, verbosePending: true },
+      xml: { catalogs: [], fileAssociations: [] }
     });
+  });
+
+  it("merges local XML catalogs and file associations while resolving paths inside the workspace", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
+    homePath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-home-"));
+    process.env.CODEX_HOME = path.join(homePath, ".codex");
+    await fs.mkdir(process.env.CODEX_HOME, { recursive: true });
+    await fs.mkdir(path.join(rootPath, ".codex"), { recursive: true });
+    await fs.writeFile(
+      path.join(process.env.CODEX_HOME, "lsp-client.json"),
+      JSON.stringify({
+        xml: {
+          catalogs: ["schemas/catalog.xml"],
+          fileAssociations: [{ pattern: "**/*.rels", systemId: "schemas/global-relationships.xsd" }]
+        }
+      })
+    );
+    await fs.writeFile(
+      path.join(rootPath, ".codex", "lsp-client.json"),
+      JSON.stringify({ xml: { fileAssociations: [{ pattern: "**/*.rels", systemId: "schemas/relationships.xsd" }] } })
+    );
+
+    expect(loadConfig(rootPath).xml).toEqual({
+      catalogs: [path.join(rootPath, "schemas", "catalog.xml")],
+      fileAssociations: [{ pattern: "**/*.rels", systemId: path.join(rootPath, "schemas", "relationships.xsd") }]
+    });
+  });
+
+  it("rejects workspace XML schema paths that escape the root", async () => {
+    rootPath = await fs.mkdtemp(path.join(os.tmpdir(), "codex-lsp-config-root-"));
+    await fs.mkdir(path.join(rootPath, ".codex"), { recursive: true });
+    await fs.writeFile(
+      path.join(rootPath, ".codex", "lsp-client.json"),
+      JSON.stringify({ xml: { fileAssociations: [{ pattern: "**/*.rels", systemId: "../outside.xsd" }] } })
+    );
+
+    expect(() => loadConfig(rootPath)).toThrow("Path is outside workspace root");
   });
 
   it("uses a diagnostics timeout suitable for cold language-server analysis by default", async () => {

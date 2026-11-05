@@ -43,11 +43,15 @@ describe("language config", () => {
     expect(detectLanguageFromFile("src/main.rs")).toBe("rust");
     expect(detectLanguageFromFile("src/main.py")).toBe("python");
     expect(detectLanguageFromFile("cmd/server/main.go")).toBe("go");
+    expect(detectLanguageFromFile("xl/workbook.xml")).toBe("xml");
+    expect(detectLanguageFromFile("schemas/package.xsd")).toBe("xml");
+    expect(detectLanguageFromFile("xl/_rels/workbook.xml.rels")).toBe("xml");
+    expect(detectLanguageFromFile("xl/workbook.XML")).toBe("xml");
     expect(() => detectLanguageFromFile("README.md")).toThrow("Unsupported file extension");
   });
 
   it("lists language configs from the canonical registry", () => {
-    expect(supportedLanguages()).toEqual(["typescript", "rust", "python", "go"]);
+    expect(supportedLanguages()).toEqual(["typescript", "rust", "python", "go", "xml"]);
     expect(listLanguageServerConfigs(".")).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -56,9 +60,47 @@ describe("language config", () => {
           installHint: "go install golang.org/x/tools/gopls@latest",
           supportLevel: "experimental",
           server: expect.objectContaining({ command: "gopls" })
+        }),
+        expect.objectContaining({
+          language: "xml",
+          languageId: "xml",
+          supportLevel: "experimental",
+          extensions: [".xml", ".xsd", ".rels"],
+          server: expect.objectContaining({ command: "lemminx", args: [] })
         })
       ])
     );
+  });
+
+  it("pins LemMinX safe XML settings in initialization and scoped configuration responses", () => {
+    const config = createLanguageServerConfig(
+      "xml",
+      tempRoot,
+      {},
+      {
+        catalogs: [path.join(tempRoot, "schemas", "catalog.xml")],
+        fileAssociations: [{ pattern: "**/*.rels", systemId: path.join(tempRoot, "schemas", "relationships.xsd") }]
+      }
+    );
+
+    expect(config.server.initializationOptions).toEqual({
+      settings: {
+        xml: {
+          downloadExternalResources: { enabled: false },
+          validation: { resolveExternalEntities: false },
+          catalogs: [path.join(tempRoot, "schemas", "catalog.xml")],
+          fileAssociations: [{ pattern: "**/*.rels", systemId: path.join(tempRoot, "schemas", "relationships.xsd") }]
+        }
+      }
+    });
+    expect(config.server.workspaceConfiguration).toEqual({
+      xml: {
+        downloadExternalResources: { enabled: false },
+        validation: { resolveExternalEntities: false },
+        catalogs: [path.join(tempRoot, "schemas", "catalog.xml")],
+        fileAssociations: [{ pattern: "**/*.rels", systemId: path.join(tempRoot, "schemas", "relationships.xsd") }]
+      }
+    });
   });
 
   it("resolves local Windows npm shims before falling back to a bare command", async () => {

@@ -33,6 +33,8 @@ export interface ServerProcessConfig {
   command: string;
   args: string[];
   cwd: string;
+  initializationOptions?: unknown;
+  workspaceConfiguration?: Record<string, unknown>;
 }
 
 export interface PreparedSpawnCommand {
@@ -390,7 +392,7 @@ export class JsonRpcLspClient extends EventEmitter implements LspClient {
   }
 
   private respondToServerRequest(message: JsonRpcMessage): void {
-    this.write(createServerRequestResponse(message, this.config.cwd));
+    this.write(createServerRequestResponse(message, this.config.cwd, this.config.workspaceConfiguration));
   }
 }
 
@@ -398,10 +400,18 @@ function formatStartError(command: string, cause: unknown): Error {
   return new Error(`Failed to start LSP server "${command}": ${cause instanceof Error ? cause.message : String(cause)}`);
 }
 
-export function createServerRequestResponse(message: JsonRpcMessage, workspaceRoot?: string): JsonRpcMessage {
+export function createServerRequestResponse(
+  message: JsonRpcMessage,
+  workspaceRoot?: string,
+  workspaceConfiguration?: Record<string, unknown>
+): JsonRpcMessage {
   if (message.method === "workspace/configuration") {
     const items = isWorkspaceConfigurationParams(message.params) ? message.params.items : [];
-    return { jsonrpc: "2.0", id: message.id, result: items.map(() => ({})) };
+    return {
+      jsonrpc: "2.0",
+      id: message.id,
+      result: items.map((item) => readWorkspaceConfiguration(workspaceConfiguration, item))
+    };
   }
 
   if (message.method === "workspace/applyEdit") {
@@ -424,6 +434,17 @@ export function createServerRequestResponse(message: JsonRpcMessage, workspaceRo
   }
 
   return { jsonrpc: "2.0", id: message.id, result: null };
+}
+
+function readWorkspaceConfiguration(configuration: Record<string, unknown> | undefined, item: unknown): unknown {
+  if (!configuration || !item || typeof item !== "object") return {};
+  const section = (item as { section?: unknown }).section;
+  if (typeof section !== "string") return {};
+  const value = section.split(".").reduce<unknown>((current, key) => {
+    if (!current || typeof current !== "object" || !(key in current)) return undefined;
+    return (current as Record<string, unknown>)[key];
+  }, configuration);
+  return value ?? {};
 }
 
 export function prepareSpawnCommand(config: ServerProcessConfig, platform: NodeJS.Platform = process.platform): PreparedSpawnCommand {

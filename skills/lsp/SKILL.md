@@ -1,6 +1,6 @@
 ---
 name: lsp
-description: Use Codex LSP tools from codex-lsp-bridge for substantial code tasks that need semantic diagnostics, go-to-definition, references, symbols, or hover/type information. Trigger when work involves TypeScript, JavaScript, Python, Rust, or Go code and asks about type errors, semantic correctness, blast radius, refactors, imports, call sites, definitions, references, or symbol/type understanding. Do not use for tiny one-line edits, markdown-only work, config-only changes, or when no LSP server is available.
+description: Use Codex LSP tools from codex-lsp-bridge for substantial code tasks that need semantic diagnostics, go-to-definition, references, symbols, or hover/type information. Trigger when work involves TypeScript, JavaScript, Python, Rust, Go, or explicit XML/OOXML diagnostics and asks about type errors, schema validity, semantic correctness, blast radius, refactors, imports, call sites, definitions, references, or symbol/type understanding. Do not use for tiny one-line edits, markdown-only work, config-only changes, or when no LSP server is available.
 ---
 
 # LSP
@@ -23,6 +23,7 @@ they are available.
 - `lsp_symbols`: Search workspace symbols by query when text search is too noisy.
 - `lsp_hover`: Inspect type or hover information at a known file position.
 - `lsp_status`: Check language-server availability and bridge configuration when LSP behavior is unclear.
+- For `.xml`, `.xsd`, and `.rels`, pass `language: "xml"` when needed and keep LemMinX schema catalogs and file associations local to the workspace.
 
 ## High-Leverage Plays
 
@@ -57,6 +58,7 @@ they are available.
 - LSP diagnostics are opened-file language-server diagnostics, not full project validation.
 - Still run project checks such as `tsc --noEmit`, `pyright`, `ruff`, unit tests, or build commands when the task requires whole-project confidence.
 - TypeScript and Pyright require their language-server binaries (`typescript-language-server`, `typescript`, `pyright`) to be installed and discoverable.
+- LemMinX diagnostics are explicit-only and require a trusted binary path. External schema downloads and external entity resolution are disabled; use local schemas or catalogs.
 - Position-based tools use 1-based `line` and `character` values.
 - Recognized roots include `.git`, `.lsp-root`, `AGENTS.md`, `CLAUDE.md`, `SKILL.md`, and common TypeScript, Python, Rust, Go, and Deno project manifests.
 - Treat `status: "timed_out"`, `stale`, `unavailable`, `missing`, or `conclusion: "inconclusive"` as pending or unknown. Never report those states as a clean type-check result.

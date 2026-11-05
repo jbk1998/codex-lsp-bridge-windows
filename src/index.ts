@@ -86,7 +86,8 @@ async function main(): Promise<void> {
       () =>
         new LspManager(resolvedRoot, {
           diagnosticsTimeoutMs: diagnosticsTimeout.timeoutMs,
-          languageServers: rootConfig.languageServers
+          languageServers: rootConfig.languageServers,
+          xmlSettings: rootConfig.xml
         })
     );
     if (lookup.replaced) sourceFileListCache.clear();
@@ -231,7 +232,7 @@ async function main(): Promise<void> {
 function readLanguage(args: string[], fallback: SupportedLanguage): SupportedLanguage {
   const value = readOption(args, "--language");
   if (!value) return fallback;
-  if (value === "typescript" || value === "rust" || value === "python" || value === "go") return value;
+  if (value === "typescript" || value === "rust" || value === "python" || value === "go" || value === "xml") return value;
   throw new Error(`Unsupported language: ${value}`);
 }
 
@@ -273,16 +274,16 @@ function printUsage(stream: "stdout" | "stderr"): void {
   codex-lsp-bridge uninstall [--dry-run]
   codex-lsp-bridge post-tool-diagnostics
   codex-lsp-bridge doctor [--root path]
-  codex-lsp-bridge diagnostics [--file path] [--timeout-ms n] [--language typescript|rust|python|go] [--root path]
+  codex-lsp-bridge diagnostics [--file path] [--timeout-ms n] [--language typescript|rust|python|go|xml] [--root path]
   codex-lsp-bridge diagnostics --dir path [--severity error|warning|information|hint] [--max-files n] [--timeout-budget-ms n] [--concurrency n] [--root path]
-  codex-lsp-bridge definition <symbol> [--language typescript|rust|python|go] [--root path]
-  codex-lsp-bridge definition --file path --line n --character n [--language typescript|rust|python|go] [--root path]
-  codex-lsp-bridge references <symbol> [--language typescript|rust|python|go] [--root path]
-  codex-lsp-bridge references --file path --line n --character n [--language typescript|rust|python|go] [--root path]
-  codex-lsp-bridge symbols <query> [--language typescript|rust|python|go] [--root path]
-  codex-lsp-bridge hover <symbol> [--language typescript|rust|python|go] [--root path]
-  codex-lsp-bridge hover --file path --line n --character n [--language typescript|rust|python|go] [--root path]
-  codex-lsp-bridge mcp [--root path] [--language typescript|rust|python|go]`;
+  codex-lsp-bridge definition <symbol> [--language typescript|rust|python|go|xml] [--root path]
+  codex-lsp-bridge definition --file path --line n --character n [--language typescript|rust|python|go|xml] [--root path]
+  codex-lsp-bridge references <symbol> [--language typescript|rust|python|go|xml] [--root path]
+  codex-lsp-bridge references --file path --line n --character n [--language typescript|rust|python|go|xml] [--root path]
+  codex-lsp-bridge symbols <query> [--language typescript|rust|python|go|xml] [--root path]
+  codex-lsp-bridge hover <symbol> [--language typescript|rust|python|go|xml] [--root path]
+  codex-lsp-bridge hover --file path --line n --character n [--language typescript|rust|python|go|xml] [--root path]
+  codex-lsp-bridge mcp [--root path] [--language typescript|rust|python|go|xml]`;
   if (stream === "stdout") {
     console.log(usage);
     return;

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="http://schemas.openxmlformats.org/package/2006/relationships"
+           xmlns="http://schemas.openxmlformats.org/package/2006/relationships"
+           elementFormDefault="qualified">
+  <xs:element name="Relationships">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Relationship" minOccurs="0" maxOccurs="unbounded">
+          <xs:complexType>
+            <xs:attribute name="Id" type="xs:ID" use="required" />
+            <xs:attribute name="Type" type="xs:anyURI" use="required" />
+            <xs:attribute name="Target" type="xs:anyURI" use="required" />
+          </xs:complexType>
+        </xs:element>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+</xs:schema>
